@@ -1,0 +1,180 @@
+```{r Libraries}
+
+library(Giotto)
+
+```
+
+```{r}
+
+results_folder <- file.path("~/P_lab/CosMx_analysis/Test_data/Results")
+python_path <- NULL
+
+instructions <- createGiottoInstructions(
+    save_dir = results_folder,
+    save_plot = FALSE,
+    show_plot = TRUE,
+    return_plot = FALSE,
+    python_path = python_path
+)
+
+data_path <- file.path("~/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-Flat_files_and_images")
+
+```
+
+```{r Create the CosMx Giotto object}
+
+cosmx <- createGiottoCosMxObject(
+  cosmx_dir = data_path,
+  version = "default",
+  poly_pref = "mask",
+  load_expression = TRUE,
+  load_transcripts = FALSE,
+  feat_type = c("rna", "SystemControl"),
+  split_keyword = list("SystemControl"),
+  instructions = instructions
+)
+
+```
+
+```{r Check what is included}
+
+slotNames(cosmx)
+
+try(Giotto::showGiottoSpatLocs(cosmx), silent = TRUE)
+try(Giotto::showGiottoPolygons(cosmx), silent = TRUE)
+
+grep("polygon|celllabel|mask|segment|boundary", ls("package:Giotto"),
+     ignore.case = TRUE, value = TRUE)
+
+length(list.files(file.path(data_path, "CellLabels"), pattern = "\\.tif$", full.names = TRUE))
+
+```
+
+```{r}
+
+mask_dir <- file.path(data_path, "CellLabels")
+mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
+
+poly_list <- createGiottoPolygonsFromMask(maskfile = mask_files)
+poly_list_2 <- lapply(mask_files, function(f) {
+  createGiottoPolygonsFromMask(maskfile = f)
+})
+
+```
+
+```{r}
+
+cosmx <- addGiottoPolygons(
+  gobject = cosmx,
+  gpolygons = poly_list_2
+)
+```
+
+```{r}
+
+giottoPolygon(cosmx)
+names(cosmx@spatial_info)
+str(cosmx@spatial_info, max.level = 3)
+
+```
+
+```{r}
+
+find_gpolys <- function(x, path = "spatial_info") {
+  out <- list()
+  if (inherits(x, "giottoPolygon")) return(list(path = x))
+  if (is.list(x)) {
+    for (nm in names(x)) out <- c(out, find_gpolys(x[[nm]], paste0(path, "$", nm)))
+  }
+  if (isS4(x)) {
+    for (sn in slotNames(x)) out <- c(out, find_gpolys(slot(x, sn), paste0(path, "@", sn)))
+  }
+  out
+}
+
+hits <- find_gpolys(cosmx@spatial_info)
+names(hits)
+
+```
+
+```{r}
+
+class(cosmx@spatial_info$cell)
+cosmx@spatial_info$cell@name
+cosmx@spatial_info$cell@spatVector
+
+terra::nrow(cosmx@spatial_info$cell@spatVector)
+head(cosmx@spatial_info$cell@unique_ID_cache)
+length(cosmx@spatial_info$cell@unique_ID_cache)
+length(intersect(cosmx@spatial_info$cell@unique_ID_cache, cosmx@cell_ID))
+plotPolygons(gobject = cosmx, polygon_name = "cell")
+getPolygonInfo(gobject = cosmx)
+
+```
+
+```{r}
+
+mask_dir <- file.path(data_path, "CellLabels")
+mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
+poly <- createGiottoPolygonsFromMask(maskfile = mask_files)
+cosmx@spatial_info$cell <- poly
+
+```
+
+```{r}
+
+library(terra)
+terra::nrow(cosmx@spatial_info$cell@spatVector)
+head(cosmx@cell_ID)
+names(cosmx@spatial_info$cell@spatVector)
+head(terra::values(cosmx@spatial_info$cell@spatVector))
+lab <- terra::values(cosmx@spatial_info$cell@spatVector)[[1]]
+cosmx@spatial_info$cell@unique_ID_cache <- lab
+lab <- terra::values(cosmx@spatial_info$cell@spatVector)[[1]]
+cosmx@spatial_info$cell@unique_ID_cache <- as.character(lab)
+length(intersect(cosmx@spatial_info$cell@unique_ID_cache, cosmx@cell_ID))
+plotPolygons(x = cosmx, polygon_name = "cell")
+
+```
+
+```{r}
+
+head(cosmx@cell_ID$cell, 20)
+tail(cosmx@cell_ID$cell, 20)
+table(sub("^c_\\d+_(\\d+)_.*$", "\\1", cosmx@cell_ID$cell))[1:10]
+
+```
+
+```{r}
+
+mask_dir <- file.path(data_path, "CellLabels")
+mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
+
+# helper to parse FOV number from filename like CellLabels_F001.tif
+get_fov <- function(f) as.integer(sub(".*_F(\\d+)\\.tif$", "\\1", basename(f)))
+
+poly_list <- lapply(mask_files, function(f) {
+  fov <- get_fov(f)
+
+  gp <- createGiottoPolygonsFromMask(maskfile = f)
+
+  # attribute column name is "poly_ID" and values like "cell_123"
+  pid <- terra::values(gp@spatVector)[["poly_ID"]]
+
+  # extract numeric part -> 123
+  cellnum <- sub("^cell_", "", pid)
+
+  # build IDs that match Giotto cell IDs (adjust first "1" if needed)
+  new_ids <- paste0("c_1_", fov, "_", cellnum)
+
+  # write back into attribute + cache
+  terra::values(gp@spatVector)[["poly_ID"]] <- new_ids
+  gp@unique_ID_cache <- new_ids
+  gp
+})
+
+# store as list-of-giottoPolygon, which addGiottoPolygons expects
+cosmx <- addGiottoPolygons(gobject = cosmx, gpolygons = poly_list)
+
+```
+
