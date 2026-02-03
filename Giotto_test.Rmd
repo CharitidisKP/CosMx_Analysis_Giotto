@@ -1,23 +1,33 @@
 ```{r Libraries}
 
+library(reticulate)
+python_path <- "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python"
+use_python(python_path, required = TRUE)
+
 library(Giotto)
+library(Matrix)
+library(terra)
+library(tidyverse)
+library(data.table)
+
+source(file = "/mnt/home/koncha/P_lab/CosMx_analysis/Scripts/Helper_Functions.R")
 
 ```
 
-```{r}
+```{r Paths and instructions}
 
 results_folder <- file.path("~/P_lab/CosMx_analysis/Test_data/Results")
-python_path <- NULL
 
 instructions <- createGiottoInstructions(
     save_dir = results_folder,
-    save_plot = FALSE,
+    save_plot = TRUE,
     show_plot = TRUE,
-    return_plot = FALSE,
+    return_plot = FALSE, 
     python_path = python_path
 )
 
-data_path <- file.path("~/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-Flat_files_and_images")
+data_path <- file.path("/mnt/home/koncha/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-Flat_files_and_images")
+fov_shifts <- file.path(data_path, "Lung5_Rep1_fov_positions_file.csv")
 
 ```
 
@@ -25,12 +35,14 @@ data_path <- file.path("~/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-F
 
 cosmx <- createGiottoCosMxObject(
   cosmx_dir = data_path,
-  version = "default",
+  version = "legacy",
   poly_pref = "mask",
   load_expression = TRUE,
-  load_transcripts = FALSE,
+  load_transcripts = FALSE,           
+  load_cellmeta = TRUE,
   feat_type = c("rna", "SystemControl"),
   split_keyword = list("SystemControl"),
+  fov_shifts_path = fov_shifts,      
   instructions = instructions
 )
 
@@ -43,138 +55,666 @@ slotNames(cosmx)
 try(Giotto::showGiottoSpatLocs(cosmx), silent = TRUE)
 try(Giotto::showGiottoPolygons(cosmx), silent = TRUE)
 
-grep("polygon|celllabel|mask|segment|boundary", ls("package:Giotto"),
-     ignore.case = TRUE, value = TRUE)
-
-length(list.files(file.path(data_path, "CellLabels"), pattern = "\\.tif$", full.names = TRUE))
-
-```
-
-```{r}
-
-mask_dir <- file.path(data_path, "CellLabels")
-mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
-
-poly_list <- createGiottoPolygonsFromMask(maskfile = mask_files)
-poly_list_2 <- lapply(mask_files, function(f) {
-  createGiottoPolygonsFromMask(maskfile = f)
-})
-
-```
-
-```{r}
-
-cosmx <- addGiottoPolygons(
-  gobject = cosmx,
-  gpolygons = poly_list_2
-)
-```
-
-```{r}
-
-giottoPolygon(cosmx)
 names(cosmx@spatial_info)
 str(cosmx@spatial_info, max.level = 3)
 
-```
-
-```{r}
-
-find_gpolys <- function(x, path = "spatial_info") {
-  out <- list()
-  if (inherits(x, "giottoPolygon")) return(list(path = x))
-  if (is.list(x)) {
-    for (nm in names(x)) out <- c(out, find_gpolys(x[[nm]], paste0(path, "$", nm)))
-  }
-  if (isS4(x)) {
-    for (sn in slotNames(x)) out <- c(out, find_gpolys(slot(x, sn), paste0(path, "@", sn)))
-  }
-  out
-}
-
-hits <- find_gpolys(cosmx@spatial_info)
-names(hits)
+head(cosmx@cell_ID$cell, 10)
+table(sub("^c_(\\d+)_(\\d+)_.*$", "\\2", cosmx@cell_ID$cell))[1:10]
 
 ```
 
-```{r}
+```{r Prep the functions for the polygons and load the shifts}
 
-class(cosmx@spatial_info$cell)
-cosmx@spatial_info$cell@name
-cosmx@spatial_info$cell@spatVector
-
-terra::nrow(cosmx@spatial_info$cell@spatVector)
-head(cosmx@spatial_info$cell@unique_ID_cache)
-length(cosmx@spatial_info$cell@unique_ID_cache)
-length(intersect(cosmx@spatial_info$cell@unique_ID_cache, cosmx@cell_ID))
-plotPolygons(gobject = cosmx, polygon_name = "cell")
-getPolygonInfo(gobject = cosmx)
-
-```
-
-```{r}
-
-mask_dir <- file.path(data_path, "CellLabels")
-mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
-poly <- createGiottoPolygonsFromMask(maskfile = mask_files)
-cosmx@spatial_info$cell <- poly
-
-```
-
-```{r}
-
-library(terra)
-terra::nrow(cosmx@spatial_info$cell@spatVector)
-head(cosmx@cell_ID)
-names(cosmx@spatial_info$cell@spatVector)
-head(terra::values(cosmx@spatial_info$cell@spatVector))
-lab <- terra::values(cosmx@spatial_info$cell@spatVector)[[1]]
-cosmx@spatial_info$cell@unique_ID_cache <- lab
-lab <- terra::values(cosmx@spatial_info$cell@spatVector)[[1]]
-cosmx@spatial_info$cell@unique_ID_cache <- as.character(lab)
-length(intersect(cosmx@spatial_info$cell@unique_ID_cache, cosmx@cell_ID))
-plotPolygons(x = cosmx, polygon_name = "cell")
-
-```
-
-```{r}
-
-head(cosmx@cell_ID$cell, 20)
-tail(cosmx@cell_ID$cell, 20)
-table(sub("^c_\\d+_(\\d+)_.*$", "\\1", cosmx@cell_ID$cell))[1:10]
-
-```
-
-```{r}
-
-mask_dir <- file.path(data_path, "CellLabels")
-mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
-
-# helper to parse FOV number from filename like CellLabels_F001.tif
 get_fov <- function(f) as.integer(sub(".*_F(\\d+)\\.tif$", "\\1", basename(f)))
 
-poly_list <- lapply(mask_files, function(f) {
-  fov <- get_fov(f)
+## Load masks ##
+mask_dir <- file.path(data_path, "CellLabels")
+mask_files <- sort(list.files(mask_dir, pattern = "\\.tif$", full.names = TRUE))
+stopifnot(length(mask_files) > 0)
 
-  gp <- createGiottoPolygonsFromMask(maskfile = f)
+## Load shifts ##
+shifts <- as.data.table(read.csv(fov_shifts))
+setnames(shifts, tolower(names(shifts)))
+stopifnot(all(c("fov", "x_global_px", "y_global_px") %in% names(shifts)))
 
-  # attribute column name is "poly_ID" and values like "cell_123"
-  pid <- terra::values(gp@spatVector)[["poly_ID"]]
-
-  # extract numeric part -> 123
-  cellnum <- sub("^cell_", "", pid)
-
-  # build IDs that match Giotto cell IDs (adjust first "1" if needed)
-  new_ids <- paste0("c_1_", fov, "_", cellnum)
-
-  # write back into attribute + cache
-  terra::values(gp@spatVector)[["poly_ID"]] <- new_ids
-  gp@unique_ID_cache <- new_ids
-  gp
-})
-
-# store as list-of-giottoPolygon, which addGiottoPolygons expects
-cosmx <- addGiottoPolygons(gobject = cosmx, gpolygons = poly_list)
+## Infer the sample/run index from the cell IDs ##
+sample_id <- sub("^c_(\\d+)_.*$", "\\1", cosmx@cell_ID$cell[1])
 
 ```
+
+
+```{r Create the polygon file from the cell labels}
+
+## Build polygons per FOV, fix IDs, shift to global coords, merge ##
+## Function to make the polygons for each file ##
+build_gp <- function(maskfile, fov, dx, dy, sample_id) {
+
+  ## Build polygons from label mask ##
+  gp <- createGiottoPolygonsFromMask(maskfile = maskfile)
+
+  ##Polygon IDs are stored as the first attribute column in the SpatVector ##
+  vals <- terra::values(gp@spatVector)
+  stopifnot(ncol(vals) >= 1)
+
+  poly_col <- names(vals)[1]
+  pid <- as.character(vals[[poly_col]])
+
+  cellnum <- sub("^cell_", "", pid)
+
+  ## Map polygon IDs to Giotto cell IDs ##
+  new_ids <- paste0("c_", sample_id, "_", fov, "_", cellnum)
+
+  ## Write back IDs ##
+  vals[[poly_col]] <- new_ids
+  terra::values(gp@spatVector) <- vals
+  gp@unique_ID_cache <- new_ids
+
+  ## Shift the current fov to global coordinates ##
+  gp@spatVector <- terra::shift(gp@spatVector, dx = dx, dy = dy)
+
+  ## Return the polygon df ##
+  gp
+}
+
+## Make and merge the polygon files into a list ##
+poly_list <- tibble(maskfile = mask_files) %>%
+  mutate(fov = map_int(maskfile, get_fov)) %>%
+  left_join(as_tibble(shifts), by = "fov") %>%
+  { 
+    ## Stop if any shift is missing or duplicated ##
+    stopifnot(!any(is.na(.$x_global_px) | is.na(.$y_global_px)))
+    stopifnot(!anyDuplicated(.$fov))
+    ## After checks pass the data through instead of TRUE/FALSE ##
+    .
+  } %>%
+  mutate(gp = pmap(
+    ## Parallel mapping of the build_gp function to the given vectors ##
+      list(maskfile, fov, x_global_px, y_global_px),
+      ~ build_gp(..1, ..2, ..3, ..4, sample_id = sample_id)
+      )
+    ) %>%
+  pull(gp)
+  
+## Merge all polygon SpatVectors into one
+sv_all <- do.call(rbind, lapply(poly_list, \(gp) gp@spatVector))
+
+## Create a polygon object using the first one from the list to get the slot names / metadata ##
+gp_all <- poly_list[[1]]
+
+## Include all the files ##
+gp_all@spatVector <- sv_all
+
+##  Get all the IDs ##
+vals_all <- terra::values(gp_all@spatVector)
+
+## Get the slot name ##
+poly_col_all <- names(vals_all)[1]
+
+## Replace the unique_ID_cache slot with all the cell IDs ## 
+gp_all@unique_ID_cache <- as.character(vals_all[[poly_col_all]])
+
+## Add polygons to object ##
+## Use a named list so it lands under spatial_info$cell ##
+cosmx <- addGiottoPolygons(
+  gobject = cosmx,
+  gpolygons = list(cell = gp_all)
+)
+
+## Optionally register polygons as centroids into spatial locations. Useful for a spatlocs layer derived from polygon centroids ##
+cosmx <- setPolygonInfo(
+  gobject = cosmx,
+  x = list(cell = gp_all),
+  centroids_to_spatlocs = TRUE
+)
+
+```
+
+```{r Giotto summary report}
+
+giotto_report_summary <- function(gobj) {
+
+  n_cells <- tryCatch(length(gobj@cell_ID$cell), error = function(e) NA_integer_)
+  n_feats <- tryCatch(length(gobj@feat_ID$rna), error = function(e) NA_integer_)
+
+  spat_names <- tryCatch(names(gobj@spatial_info), error = function(e) character(0))
+  has_polys <- "cell" %in% spat_names && !is.null(gobj@spatial_info$cell)
+  n_polys <- if (has_polys) tryCatch(terra::nrow(gobj@spatial_info$cell@spatVector),
+                                        error = function(e) NA_integer_) else 0
+
+  poly_ids <- if (has_polys) tryCatch(gobj@spatial_info$cell@unique_ID_cache,
+                                      error = function(e) character(0)) else character(0)
+  cell_ids <- tryCatch(gobj@cell_ID$cell, error = function(e) character(0))
+
+  overlap <- length(intersect(poly_ids, cell_ids))
+  poly_only <- length(setdiff(poly_ids, cell_ids))
+  cell_only <- length(setdiff(cell_ids, poly_ids))
+
+  fov_tab <- tryCatch({
+    FOV <- sub("^c_(\\d+)_(\\d+)_.*$", "\\2", cell_ids)
+    tibble(FOV = FOV) %>%
+      count(FOV, name = "Cells") %>%
+      mutate(FOV = as.integer(FOV)) %>%
+      arrange(FOV)
+  }, error = function(e) tibble(FOV = integer(), Cells = integer()))
+
+  list(
+    overview = tibble(
+      Metric = c(
+        "Cells",
+        "Genes (RNA features)",
+        "Spatial info entries",
+        "Cell polygons present",
+        "Cell polygons"
+      ),
+      Value = c(
+        n_cells,
+        n_feats,
+        paste(spat_names, collapse = ", "),
+        has_polys,
+        n_polys
+      )
+    ),
+    polygon_id_check = tibble(
+      Metric = c(
+        "Polygon IDs",
+        "Cell IDs",
+        paste0("Overlap (polygon \u2229 cell)"),
+        "Polygon-only IDs",
+        "Cell-only IDs"
+      ),
+      Value = c(
+        length(poly_ids),
+        length(cell_ids),
+        overlap,
+        poly_only,
+        cell_only
+      )
+    ),
+    fov_cells = fov_tab
+  )
+}
+
+```
+
+```{r Giotto object summaries}
+
+sum <- giotto_report_summary(cosmx)
+
+nbsp <- "\u00A0"
+
+knitr::kable(sum$overview,
+  caption = paste0("Giotto", nbsp, "object", nbsp, "overview")
+)
+
+knitr::kable(sum$polygon_id_check,
+  caption = paste0("Polygon", nbsp, "ID", nbsp, "\u2194", nbsp, "Cell", nbsp, "ID", nbsp, "consistency")
+)
+
+knitr::kable(sum$fov_cells,
+  caption = paste0("Cells", nbsp, "per", nbsp, "FOV")
+)
+
+```
+
+
+```{r Filtering function and thresholds}
+
+## Filtering parameters ##
+filter_cosmx_giotto <- function(
+  gobj,
+  feat_type = "rna",
+  spat_unit = "cell",
+  values = "raw", 
+  expr_threshold = 1,
+  ## Keep_genes: > 0 in at least 1 cell ##
+  gene_min_cells = 1,
+  ## Gene counts per cell > 50 ##
+  cell_min_genes = 50,             
+  ## Gene counts per cell < 2000 ##
+  cell_max_genes = 2000,  
+  ## Threshold_area = 5 * geom_mean_area (per Sample) ##
+  area_gm_mult = 5,
+  ## Per-group quantile thresholds ##
+  bg_quantile = 0.99,
+  ## Fallback if non-finite ##
+  bg_fallback = 0.05,              
+  filter_tissue_outliers = TRUE,
+  ## x/y quantiles per Sample ##
+  tissue_q = c(0.005, 0.995), 
+  tissue_group = c("Sample", "fov"))
+{
+
+  ## Standard Giotto matrix-based filtering ##
+  gobj <- filterGiotto(
+    gobj,
+    feat_type = feat_type,
+    expression_threshold = expr_threshold,
+    feat_det_in_min_cells = gene_min_cells,
+    min_det_feats_per_cell = cell_min_genes
+  )
+
+  ## Compute QC metrics from expression and metadata ##
+  counts <- getExpression(gobj, feat_type = feat_type, spat_unit = spat_unit, values = values)@exprMat
+
+  ## Extract metadata ##
+  meta <- pDataDT(gobj) %>% 
+    as_tibble()  
+  
+  ## Ensure a cell_ID column exists ##
+  if (!"cell_ID" %in% names(meta)) {
+    meta <- meta %>% 
+      mutate(cell_ID = colnames(counts))
+  }
+
+  ## QC metrics ##
+  qc <- meta %>%
+    mutate(
+      Total_Counts = Matrix::colSums(counts),
+      Num_Features = Matrix::colSums(counts > 0)
+    )
+  
+  ## Negative probs ##
+  neg_genes <- rownames(counts)[grepl("^NegPrb", rownames(counts))]
+  qc <- qc %>%
+    mutate(
+      neg_counts = if (length(neg_genes) > 0) Matrix::colSums(counts[neg_genes, , drop = FALSE]) else NA_real_,
+      bg_neg = if (length(neg_genes) > 0) neg_counts / pmax(Total_Counts, 1) else NA_real_
+    )
+
+  ## Standardize optional fields via the helpers ##
+  qc <- qc %>%
+    add_area_to_qc() %>%
+    add_xy_to_qc(gobj = gobj, spat_unit = spat_unit)
+
+  ## Choose grouping variable for area + tissue thresholds ##
+  grp_col <- tissue_group[tissue_group %in% names(qc)][1]
+  if (is.na(grp_col)) 
+    grp_col <- NULL
+  
+  ## Area filtering, per sample. Keep area <= area_gm_mult * geometric mean ##
+  ## Expects an area column. Might need name adjusting since Seurat used Area.um2 ##
+  if ("area_um2" %in% names(qc) && any(is.finite(qc$area_um2) & qc$area_um2 > 0, na.rm = TRUE)) {
+
+    if (!is.null(grp_col)) {
+      qc <- qc %>%
+        group_by(.data[[grp_col]]) %>%
+        mutate(
+          Geom_mean_area = exp(mean(log(area_um2[is.finite(area_um2) & area_um2 > 0]), na.rm = TRUE)),
+          Threshold_area = area_gm_mult * Geom_mean_area
+        ) %>%
+        ungroup()
+    } else {
+      gm <- exp(mean(log(qc$area_um2[is.finite(qc$area_um2) & qc$area_um2 > 0]), na.rm = TRUE))
+      qc <- qc %>% mutate(Geom_mean_area = gm, Threshold_area = area_gm_mult * gm)
+    }
+
+  } else {
+    qc <- qc %>% mutate(Geom_mean_area = NA_real_, Threshold_area = Inf)
+  }
+
+
+  ## Background / negative probe ratios filtering ##
+  ## Check if they exist in the object ##
+  bg_present <- "bg_neg" %in% names(qc) && any(!is.na(qc$bg_neg))
+  
+  if (bg_present) {
+  
+    if ("Group" %in% names(qc)) {
+      qc <- qc %>%
+        group_by(Group) %>%
+        mutate(thr_neg = quantile(bg_neg, bg_quantile, na.rm = TRUE)) %>%
+        ungroup()
+    } else {
+      qc <- qc %>%
+        mutate(thr_neg = quantile(bg_neg, bg_quantile, na.rm = TRUE))
+    }
+  
+    qc <- qc %>%
+      mutate(thr_neg = ifelse(is.finite(thr_neg), thr_neg, bg_fallback))
+  
+  } else {
+    qc <- qc %>% mutate(thr_neg = Inf)
+  }
+
+  ## Tissue outlier filtering, per sample on x_slide_mm/y_slide_mm ##
+  if (filter_tissue_outliers && all(c("x", "y") %in% names(qc)) &&
+      any(is.finite(qc$x), na.rm = TRUE) && any(is.finite(qc$y), na.rm = TRUE)) {
+
+    if (!is.null(grp_col)) {
+      qc <- qc %>%
+        group_by(.data[[grp_col]]) %>%
+        mutate(
+          x_low  = quantile(x, tissue_q[1], na.rm = TRUE),
+          x_high = quantile(x, tissue_q[2], na.rm = TRUE),
+          y_low  = quantile(y, tissue_q[1], na.rm = TRUE),
+          y_high = quantile(y, tissue_q[2], na.rm = TRUE)
+        ) %>%
+        ungroup()
+    } else {
+      qc <- qc %>%
+        mutate(
+          x_low  = quantile(x, tissue_q[1], na.rm = TRUE),
+          x_high = quantile(x, tissue_q[2], na.rm = TRUE),
+          y_low  = quantile(y, tissue_q[1], na.rm = TRUE),
+          y_high = quantile(y, tissue_q[2], na.rm = TRUE)
+        )
+    }
+
+  } else {
+    qc <- qc %>% mutate(x_low = -Inf, x_high = Inf, y_low = -Inf, y_high = Inf)
+  }
+
+  ## Apply the filtering rules ##
+  qc <- qc %>%
+    mutate(
+      keep =
+        ## Area constraint ##
+        (is.na(area_um2) | (is.finite(area_um2) & area_um2 > 0 & area_um2 <= Threshold_area)) &
+        ## Gene number ##
+        (Num_Features > cell_min_genes) &
+        (Num_Features < cell_max_genes) &
+        ## Background (allows for NA) ##
+        (is.na(bg_neg) | bg_neg < thr_neg) &
+        # (is.na(bg_falsecode) | bg_falsecode < thr_fc) &
+        ## Tissue position ##
+        (is.na(x) | (x >= x_low & x <= x_high)) &
+        (is.na(y) | (y >= y_low & y <= y_high))
+    )
+
+  ## Select the final cells ##
+  cells_keep <- qc %>% 
+    filter(keep) %>% 
+    pull(cell_ID)
+  
+  stopifnot(length(cells_keep) > 0)
+
+  ## Subset Giotto object to kept cells ##
+  gobj <- subsetGiotto(gobj, cell_ids = cells_keep)
+
+  ## Re-filter features after removing cells (drops genes that became zero) ##
+  gobj <- filterGiotto(
+    gobj,
+    feat_type = feat_type,
+    expression_threshold = expr_threshold,
+    feat_det_in_min_cells = gene_min_cells,
+    min_det_feats_per_cell = cell_min_genes
+  )
+
+  ## Return the object and the QC metrics ##
+  list(gobject = gobj, qc_table = qc)
+}
+
+# cosmx <- filterGiotto(cosmx,
+#     feat_type = "rna",
+#     expression_threshold = 1,
+#     feat_det_in_min_cells = 10,
+#     min_det_feats_per_cell = 100
+# )
+
+```
+
+```{r Apply the filtering}
+
+res <- filter_cosmx_giotto(cosmx)
+cosmx_filt <- res$gobject
+qc <- res$qc_table
+
+## QC report ##
+qc %>% summarise(
+  n_before = n(),
+  n_keep = sum(keep, na.rm = TRUE),
+  pct_drop = 100 * (1 - n_keep / n_before)
+)
+
+```
+
+
+
+
+
+
+
+
+
+```{r Normalisation}
+
+cosmx <- normalizeGiotto(
+  gobject = cosmx,
+  norm_methods = "standard",
+  scalefactor = 6000,
+  scale_order = "first_feats"
+)
+
+```
+
+```{r Expression distibutions}
+
+filterDistributions(cosmx,
+    plot_type = "hist",
+    detection = "cells",
+    method = "sum",
+    feat_type = "rna",
+    nr_bins = 100,
+    save_param = list(
+        save_name = "3_filter_dist_rna",
+        base_height = 3
+    )
+)
+
+## If you have negative probs ##
+# filterDistributions(cosmx,
+#     plot_type = "hist",
+#     detection = "cells",
+#     method = "sum",
+#     feat_type = "negprobes",
+#     nr_bins = 25,
+#     save_param = list(
+#         save_name = "4_filter_dist_negprobes",
+#         base_height = 3
+#     )
+# )
+
+```
+
+```{r Density plots}
+
+spatFeatPlot2D(
+  gobject = cosmx,
+  spat_unit = "cell",
+  feat_type = "rna",
+  show_image = FALSE,
+  expression_values = "raw",     # or "raw" if you didn’t normalize
+  feats = c("MMP2","EPCAM"),
+  cow_n_col = 2,
+  point_size = 0.4,
+  save_plot = TRUE,
+  save_param = list(save_name = "5_gene_spatial", base_width = 16, base_height = 8, dpi = 300)
+)
+
+```
+
+```{r Basic QC}
+
+cosmx <- addStatistics(cosmx, expression_values = "raw")
+
+## Mitochondrial counts ##
+mt <- grep("^MT-", fDataDT(cosmx)$feat_ID, value = TRUE)
+if (length(mt)) {
+  cosmx <- addFeatsPerc(cosmx, feats = mt, vector_name = "mito")
+}
+
+## Inspect QC ##
+spatPlot2D(cosmx, show_image = FALSE, cell_color_gradient = "nr_feats", point_size = 0.2)
+spatPlot2D(cosmx, show_image = FALSE, cell_color_gradient = "total_expr", point_size = 0.2)
+
+if ("mito" %in% colnames(pDataDT(cosmx))) {
+  spatPlot2D(cosmx, show_image = FALSE, cell_color = "mito", point_size = 0.2)
+}
+
+# filter (tune thresholds per dataset)
+g_filt <- filterGiotto(
+  gobject = cosmx,
+  expression_threshold = 1,
+  feat_det_in_min_cells = 10,
+  min_det_feats_per_cell= 100
+)
+```
+
+```{r Analysis time}
+
+pDataDT(cosmx)
+fDataDT(cosmx)
+
+locs <- Giotto::getSpatialLocations(
+  gobject = cosmx,
+  spat_unit = "cell"
+)
+
+p <- spatPlot2D(gobject = cosmx, 
+                show_image   = TRUE,
+                point_size   = 0.2,
+                point_alpha  = 0.7,
+                return_plot  = TRUE) 
+
+```
+
+```{r}
+
+
+neg_points <- cosmx[[, "SystemControl"]][[1]]
+plot(neg_points, feats = featIDs(neg_points))
+
+```
+
+```{r Aggregate subcellular features}
+
+cosmx <- calculateOverlapRaster(cosmx, feat_info = "rna")
+cosmx <- calculateOverlapRaster(cosmx, feat_info = "negprobes")
+
+cosmx <- overlapToMatrix(cosmx, feat_info = "rna")
+cosmx <- overlapToMatrix(cosmx, feat_info = "negprobes")
+
+```
+
+```{r}
+
+fc <- filterCombinations(
+  gobject = cosmx,
+  expression_thresholds = c(1, 2),
+  feat_det_in_min_cells = c(2, 5, 10),
+  min_det_feats_per_cell = c(100, 200, 500)
+)
+
+my_giotto_object <- filterGiotto(gobject = cosmx,
+                                 expression_threshold = 1,
+                                 feat_det_in_min_cells = 10,
+                                 min_det_feats_per_cell = 100)
+
+```
+
+```{r Normalise and get stats}
+
+my_giotto_object <- normalizeGiotto(gobject = my_giotto_object,
+                                    norm_methods = "standard",
+                                    scalefactor = 6000,
+                                    scale_order = "first_feats")
+
+my_giotto_object <- addStatistics(gobject = my_giotto_object)
+
+head(fDataDT(my_giotto_object))
+head(pDataDT(my_giotto_object))
+
+```
+
+```{r Filter MT counts}
+
+mitochondrial_genes <- grep("MT-", my_giotto_object@feat_ID, value = T)
+
+my_giotto_object = addFeatsPerc(gobject = my_giotto_object,
+                                feats = mitochondrial_genes, 
+                                vector_name = "mito")
+
+spatPlot2D(gobject = my_giotto_object,
+           show_image = FALSE,
+           point_alpha = 1,
+           point_size = 1,
+           cell_color = "nr_feats", color_as_factor = F)
+
+# mitochondrial content percentage
+spatPlot2D(gobject = my_giotto_object,
+           show_image = FALSE,
+           point_alpha = 1,
+           point_size = 1,
+           cell_color = "mito", color_as_factor = F)
+
+```
+
+```{r}
+
+showGiottoImageNames(cosmx)
+
+fov_path <- "~/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-Flat_files_and_images/Lung5_Rep1_fov_positions_file.csv"
+fov_dt <- fread(fov_path)
+
+fov_dt[, fov3 := sprintf("%03d", fov)]
+
+comp_names <- paste0("composite_fov", fov_dt$fov3)
+
+comp_tiles <- lapply(comp_names, function(nm) {
+  getGiottoImage(gobject = cosmx, image_type = "largeImage", name = nm)
+})
+
+fov_dt <- fov_dt[order(fov), ]
+
+FOV_positions <- data.frame(
+  FOV_xcol = fov_dt$x_global_px,
+  FOV_ycol = fov_dt$y_global_px
+)
+
+stitched_preview <- stitchGiottoLargeImage(
+  largeImage_list = comp_tiles,
+  FOV_positions   = FOV_positions,
+  FOV_xcol        = "FOV_xcol",
+  FOV_ycol        = "FOV_ycol",
+  FOV_inverty     = TRUE,      # try TRUE first for image-coordinate conventions
+  method          = "mosaic",
+  round_positions = TRUE,
+  dryRun          = TRUE
+)
+
+out_file <- file.path(data_path, "Lung5_Rep1_composite_STITCHED.tif")
+out_file <- normalizePath(path.expand(out_file), mustWork = FALSE)
+dir.create(dirname(out_file), recursive = TRUE, showWarnings = FALSE)
+
+stopifnot(is.character(out_file), length(out_file) == 1L, nzchar(out_file))
+
+comp_tiles_named <- setNames(comp_tiles, comp_names)
+
+stitched_comp <- GiottoClass::stitchGiottoLargeImage(
+  largeImage_list = comp_tiles_named,
+  FOV_positions   = FOV_positions,
+  FOV_xcol        = "FOV_xcol",
+  FOV_ycol        = "FOV_ycol",
+  FOV_inverty     = TRUE,
+  method          = "mosaic",
+  round_positions = TRUE,
+  filename        = out_file,
+  fileType        = "GTiff",  
+  overwrite       = TRUE,   
+  dryRun          = FALSE
+)
+
+```
+
+```{r Highly variable features}
+
+HVF_cosmx <- calculateHVF(gobject = my_giotto_object, 
+                          method = "cov_loess",
+                          save_plot = FALSE, 
+                          show_plot = TRUE)
+
+```
+
+
+
 
