@@ -1,7 +1,7 @@
 ```{r Libraries}
 
 library(reticulate)
-python_path <- "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python"
+python_path <- "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
 use_python(python_path, required = TRUE)
 
 library(Giotto)
@@ -9,6 +9,12 @@ library(Matrix)
 library(terra)
 library(tidyverse)
 library(data.table)
+library(pheatmap)
+library(igraph)
+library(patchwork)
+library(viridis)
+library(cowplot)
+library(ggpubr)
 
 source(file = "/mnt/home/koncha/P_lab/CosMx_analysis/Scripts/Helper_Functions.R")
 
@@ -16,7 +22,9 @@ source(file = "/mnt/home/koncha/P_lab/CosMx_analysis/Scripts/Helper_Functions.R"
 
 ```{r Paths and instructions}
 
+main_dir <- file.path("~/P_lab/CosMx_analysis")
 results_folder <- file.path("~/P_lab/CosMx_analysis/Test_data/Results")
+output_directory <- file.path("~/P_lab/CosMx_analysis/Output")
 
 instructions <- createGiottoInstructions(
     save_dir = results_folder,
@@ -478,8 +486,8 @@ qc %>% summarise(
 
 ```{r Normalisation}
 
-cosmx <- normalizeGiotto(
-  gobject = cosmx,
+cosmx_norm <- normalizeGiotto(
+  gobject = cosmx_filt,
   norm_methods = "standard",
   scalefactor = 6000,
   scale_order = "first_feats"
@@ -489,7 +497,7 @@ cosmx <- normalizeGiotto(
 
 ```{r Expression distibutions}
 
-filterDistributions(cosmx,
+filterDistributions(cosmx_norm,
     plot_type = "hist",
     detection = "cells",
     method = "sum",
@@ -519,11 +527,11 @@ filterDistributions(cosmx,
 ```{r Density plots}
 
 spatFeatPlot2D(
-  gobject = cosmx,
+  gobject = cosmx_norm,
   spat_unit = "cell",
   feat_type = "rna",
   show_image = FALSE,
-  expression_values = "raw",     # or "raw" if you didn’t normalize
+  expression_values = "normalized",     # or "raw" if you didn’t normalize
   feats = c("MMP2","EPCAM"),
   cow_n_col = 2,
   point_size = 0.4,
@@ -533,44 +541,48 @@ spatFeatPlot2D(
 
 ```
 
-```{r Basic QC}
+```{r Basic stats}
 
-cosmx <- addStatistics(cosmx, expression_values = "raw")
+cosmx_norm <- addStatistics(cosmx_norm, expression_values = "raw")
+cosmx_norm <- addStatistics(cosmx_norm, expression_values = "normalized")
 
 ## Mitochondrial counts ##
-mt <- grep("^MT-", fDataDT(cosmx)$feat_ID, value = TRUE)
+mt <- grep("^MT-", fDataDT(cosmx_norm)$feat_ID, value = TRUE)
 if (length(mt)) {
-  cosmx <- addFeatsPerc(cosmx, feats = mt, vector_name = "mito")
+  cosmx_norm <- addFeatsPerc(cosmx_norm, feats = mt, vector_name = "mito")
 }
 
 ## Inspect QC ##
-spatPlot2D(cosmx, show_image = FALSE, cell_color_gradient = "nr_feats", point_size = 0.2)
-spatPlot2D(cosmx, show_image = FALSE, cell_color_gradient = "total_expr", point_size = 0.2)
+spatPlot2D(gobject = cosmx_norm,
+           show_image = FALSE,
+           point_alpha = 1,
+           point_size = 1,
+           cell_color = "nr_feats", color_as_factor = F)
 
-if ("mito" %in% colnames(pDataDT(cosmx))) {
-  spatPlot2D(cosmx, show_image = FALSE, cell_color = "mito", point_size = 0.2)
+spatPlot2D(gobject = cosmx_norm,
+           show_image = FALSE,
+           point_alpha = 1,
+           point_size = 1,
+           cell_color = "total_expr", color_as_factor = F)
+
+if ("mito" %in% colnames(pDataDT(cosmx_norm))) {
+  spatPlot2D(cosmx_norm, show_image = FALSE, cell_color = "mito", point_size = 0.2)
 }
 
-# filter (tune thresholds per dataset)
-g_filt <- filterGiotto(
-  gobject = cosmx,
-  expression_threshold = 1,
-  feat_det_in_min_cells = 10,
-  min_det_feats_per_cell= 100
-)
+
 ```
 
 ```{r Analysis time}
 
-pDataDT(cosmx)
-fDataDT(cosmx)
+pDataDT(cosmx_norm)
+fDataDT(cosmx_norm)
 
 locs <- Giotto::getSpatialLocations(
-  gobject = cosmx,
+  gobject = cosmx_norm,
   spat_unit = "cell"
 )
 
-p <- spatPlot2D(gobject = cosmx, 
+p <- spatPlot2D(gobject = cosmx_norm, 
                 show_image   = TRUE,
                 point_size   = 0.2,
                 point_alpha  = 0.7,
@@ -578,70 +590,17 @@ p <- spatPlot2D(gobject = cosmx,
 
 ```
 
-```{r}
-
-
-neg_points <- cosmx[[, "SystemControl"]][[1]]
-plot(neg_points, feats = featIDs(neg_points))
-
-```
-
-```{r Aggregate subcellular features}
-
-cosmx <- calculateOverlapRaster(cosmx, feat_info = "rna")
-cosmx <- calculateOverlapRaster(cosmx, feat_info = "negprobes")
-
-cosmx <- overlapToMatrix(cosmx, feat_info = "rna")
-cosmx <- overlapToMatrix(cosmx, feat_info = "negprobes")
-
-```
-
-```{r}
-
-fc <- filterCombinations(
-  gobject = cosmx,
-  expression_thresholds = c(1, 2),
-  feat_det_in_min_cells = c(2, 5, 10),
-  min_det_feats_per_cell = c(100, 200, 500)
-)
-
-my_giotto_object <- filterGiotto(gobject = cosmx,
-                                 expression_threshold = 1,
-                                 feat_det_in_min_cells = 10,
-                                 min_det_feats_per_cell = 100)
-
-```
-
-```{r Normalise and get stats}
-
-my_giotto_object <- normalizeGiotto(gobject = my_giotto_object,
-                                    norm_methods = "standard",
-                                    scalefactor = 6000,
-                                    scale_order = "first_feats")
-
-my_giotto_object <- addStatistics(gobject = my_giotto_object)
-
-head(fDataDT(my_giotto_object))
-head(pDataDT(my_giotto_object))
-
-```
 
 ```{r Filter MT counts}
 
-mitochondrial_genes <- grep("MT-", my_giotto_object@feat_ID, value = T)
+mitochondrial_genes <- grep("MT-", cosmx_norm@feat_ID, value = T)
 
-my_giotto_object = addFeatsPerc(gobject = my_giotto_object,
+cosmx_norm = addFeatsPerc(gobject = cosmx_norm,
                                 feats = mitochondrial_genes, 
                                 vector_name = "mito")
 
-spatPlot2D(gobject = my_giotto_object,
-           show_image = FALSE,
-           point_alpha = 1,
-           point_size = 1,
-           cell_color = "nr_feats", color_as_factor = F)
-
 # mitochondrial content percentage
-spatPlot2D(gobject = my_giotto_object,
+spatPlot2D(gobject = cosmx_norm,
            show_image = FALSE,
            point_alpha = 1,
            point_size = 1,
@@ -649,72 +608,596 @@ spatPlot2D(gobject = my_giotto_object,
 
 ```
 
-```{r}
-
-showGiottoImageNames(cosmx)
-
-fov_path <- "~/P_lab/CosMx_analysis/Test_data/Lung5_Rep1/Lung5_Rep1-Flat_files_and_images/Lung5_Rep1_fov_positions_file.csv"
-fov_dt <- fread(fov_path)
-
-fov_dt[, fov3 := sprintf("%03d", fov)]
-
-comp_names <- paste0("composite_fov", fov_dt$fov3)
-
-comp_tiles <- lapply(comp_names, function(nm) {
-  getGiottoImage(gobject = cosmx, image_type = "largeImage", name = nm)
-})
-
-fov_dt <- fov_dt[order(fov), ]
-
-FOV_positions <- data.frame(
-  FOV_xcol = fov_dt$x_global_px,
-  FOV_ycol = fov_dt$y_global_px
-)
-
-stitched_preview <- stitchGiottoLargeImage(
-  largeImage_list = comp_tiles,
-  FOV_positions   = FOV_positions,
-  FOV_xcol        = "FOV_xcol",
-  FOV_ycol        = "FOV_ycol",
-  FOV_inverty     = TRUE,      # try TRUE first for image-coordinate conventions
-  method          = "mosaic",
-  round_positions = TRUE,
-  dryRun          = TRUE
-)
-
-out_file <- file.path(data_path, "Lung5_Rep1_composite_STITCHED.tif")
-out_file <- normalizePath(path.expand(out_file), mustWork = FALSE)
-dir.create(dirname(out_file), recursive = TRUE, showWarnings = FALSE)
-
-stopifnot(is.character(out_file), length(out_file) == 1L, nzchar(out_file))
-
-comp_tiles_named <- setNames(comp_tiles, comp_names)
-
-stitched_comp <- GiottoClass::stitchGiottoLargeImage(
-  largeImage_list = comp_tiles_named,
-  FOV_positions   = FOV_positions,
-  FOV_xcol        = "FOV_xcol",
-  FOV_ycol        = "FOV_ycol",
-  FOV_inverty     = TRUE,
-  method          = "mosaic",
-  round_positions = TRUE,
-  filename        = out_file,
-  fileType        = "GTiff",  
-  overwrite       = TRUE,   
-  dryRun          = FALSE
-)
-
-```
-
 ```{r Highly variable features}
 
-HVF_cosmx <- calculateHVF(gobject = my_giotto_object, 
-                          method = "cov_loess",
-                          save_plot = FALSE, 
-                          show_plot = TRUE)
+HVF_cosmx <- calculateHVF(gobject = cosmx_norm, 
+                          method = "cov_loess", 
+                          var_number = 500, 
+                          save_plot = TRUE, 
+                          show_plot = TRUE, 
+                          save_param = list(save_name = "7_HVF.png", 
+                                            base_width = 16, 
+                                            base_height = 8, 
+                                            dpi = 300))
+
+hvgs <- fDataDT(HVF_cosmx)[hvf == "yes", feat_ID]
+
+```
+
+```{r Remove duplicates using the custom function}
+
+source("Remove_HVF_duplicates.R")
+
+## After HVF calculation ##
+dedup_result <- remove_hvf_duplicates(
+  gobj = HVF_cosmx,
+  hvgs = hvgs,
+  output_dir = output_directory,
+  verbose = TRUE
+)
+
+## Update objects ##
+HVF_cosmx <- dedup_result$gobject
+cosmx_norm <- dedup_result$gobject
+
+cat("\nFinal cell count:", length(HVF_cosmx@cell_ID$cell), "\n")
+cat("Cells removed:", dedup_result$n_removed, "\n")
+
+## Verify polygons are still valid ##
+tryCatch({
+  showGiottoSpatialInfo(HVF_cosmx)
+  cat("Polygons are valid\n")
+}, error = function(e) {
+  cat("Polygon error:", conditionMessage(e), "\n")
+})
+
+cat("\nHVF duplicate removal complete\n")
+
+```
+
+```{r PCA}
+
+cosmx_dim <- runPCA(
+  gobject = HVF_cosmx,
+  feat_type = "rna",
+  expression_values = "normalized",  
+  scale_unit = FALSE,                
+  center = TRUE,
+  feats_to_use = hvgs,               
+  ncp = 30
+)
+
+screePlot(cosmx_dim,
+    ncp = 20, 
+    save_param = list(
+        save_name = "8_scree"
+    )
+)
+
+```
+
+```{r Visualise the PCA}
+
+plotPCA(cosmx_dim,
+    cell_color = "nr_feats",
+    dim1_to_use = 1,
+    dim2_to_use = 2,
+    color_as_factor = FALSE,
+    point_size = 0.8,
+    gradient_style = "sequential",
+    point_border_stroke = 0,
+    background_color = "white",
+    save_param = list(
+        save_name = "9_pca"
+    )
+)
+
+plotPCA_3D(cosmx_dim,
+    cell_color = "nr_feats",
+    dim1_to_use = 1,
+    dim2_to_use = 2,
+    dim3_to_use = 3,
+    color_as_factor = FALSE,
+    point_size = 0.8,
+    save_param = list(
+        save_name = "10_pca_3D"
+    ))
+
+```
+
+```{r Nearest neighbour graph}
+
+cosmx_dim <- createNearestNetwork(
+  gobject = cosmx_dim,
+  dim_reduction_to_use = "pca",
+  dim_reduction_name = "pca",
+  k = 15
+)
+
+nn <- getNearestNetwork(
+  gobject = cosmx_dim, 
+  nn_type = "sNN", 
+  name = "sNN.pca" 
+)
 
 ```
 
 
+```{r Inspect the sNN}
 
+source("Inspect_sNN_network.R")
+
+results <- inspect_nn_network(
+  gobject = cosmx_dim,
+  nn_name = "sNN.pca",
+  output_dir = output_directory,
+  sample_id = "cosmx_sample1",
+  n_cells_subgraph = 100000,
+  save_plots = TRUE,
+  verbose = TRUE
+)
+
+```
+
+```{r UMAP}
+
+cosmx_dim <- runUMAP(
+  gobject = cosmx_dim,
+  dim_reduction_to_use = "pca",
+  dim_reduction_name = "pca",
+  n_components = 2
+)
+
+```
+
+```{r UMAP visualisation}
+
+plotUMAP(
+  cosmx_dim,
+  dim_reduction_name = "umap",
+  show_NN_network = TRUE,     
+  point_size = 0.1
+)
+
+```
+
+```{r tSNE}
+
+cosmx_dim <- runtSNE(cosmx_dim,
+                     dim_reduction_to_use = "pca", 
+                     dimensions_to_use = 1:10, 
+                     perplexity = 30, theta = 0.5, 
+                     check_duplicates = TRUE
+)
+
+```
+
+```{r Visualise the dimentionallity reductions by the fovs}
+
+plotTSNE(cosmx_dim,
+    cell_color = "fov",
+    show_center_label = FALSE,
+    save_param = list(
+        save_name = "11_tsne_fov"
+    )
+)
+
+plotUMAP(cosmx_dim,
+    cell_color = "fov",
+    show_center_label = FALSE,
+    save_param = list(
+        save_name = "12_umap_fov"
+    )
+)
+
+```
+
+```{r Load the Marker dataframe and check existing genes in the panel}
+
+B_markers <- read_csv(file.path(main_dir, "B_Markers/B_Cell_Markers.csv")) %>% 
+  mutate(Gene = str_replace(Gene, pattern = "\\*", replacement = ""))
+
+panel_genes <- fDataDT(cosmx_dim, feat_type = "rna")$feat_ID
+
+panel_genes %>% 
+  grep("\\*", ., value = TRUE)
+
+B_markers_clean <- B_markers %>%
+  mutate(Gene = coalesce(Gene, ""),
+         Synonyms = coalesce(Synonyms, "")) %>%
+  pivot_longer(c(Gene, Synonyms), names_to = "source", values_to = "symbol_raw") %>%
+  mutate(symbol_raw = str_squish(as.character(symbol_raw))) %>%
+  separate_rows(symbol_raw, sep = "\\s*[+,]\\s*") %>%
+  mutate(Gene = toupper(str_squish(symbol_raw))) %>%
+  filter(Gene != "", !is.na(Gene)) %>%
+  select(-symbol_raw) %>% 
+  select(Gene, everything())
+
+marker_presence_df <- tibble(Marker = B_markers_clean$Gene) %>%
+  distinct() %>%
+  mutate(Marker = toupper(Marker),
+         in_panel = Marker %in% toupper(panel_genes)) %>%
+  arrange(desc(in_panel), Marker)
+
+marker_presence_df %>% 
+  filter(in_panel == TRUE)
+
+
+```
+
+```{r Visualisation of the B marker feature plots}
+
+source("Arrange_Feature_plots.R")
+source("Feature_plots_panel.R")
+
+## Get UMAP coordinates ##
+umap_coords <- getDimReduction(
+  gobject = cosmx_dim,
+  reduction = "cells",
+  reduction_method = "umap",
+  name = "umap",
+  output = "matrix"
+)
+
+umap_df <- as.data.frame(umap_coords)
+colnames(umap_df) <- c("UMAP_1", "UMAP_2")
+umap_df$cell_ID <- rownames(umap_df)
+
+## Get normalized expression matrix ##
+expr_norm <- getExpression(
+  gobject = cosmx_dim,
+  values = "normalized",
+  output = "matrix"
+)
+
+## Calculate global expression limits for consistent legend ##
+B_markers_present <- marker_presence_df %>% 
+  filter(in_panel == TRUE) %>% 
+  pull(Marker)
+
+## Get expression values for all B markers ##
+b_marker_expr <- expr_norm[B_markers_present, ]
+global_expr_max <- max(b_marker_expr, na.rm = TRUE)
+global_expr_limits <- c(0, global_expr_max)
+
+cat("Global expression range for B markers: 0 to", round(global_expr_max, 2), "\n")
+
+## Create optimal panel layout ##
+marker_panels <- create_marker_panels(B_markers_present)
+
+## Create enhanced panels with consistent legend ##
+out_dir <- file.path(results_folder, "B_marker_umap_panels")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+for (i in seq_along(marker_panels)) {
+  
+  panel <- marker_panels[[i]]
+  markers_in_panel <- panel$markers
+  grid_dims <- panel$grid
+  
+  cat("\nCreating panel", i, "of", length(marker_panels), "\n")
+  cat("Number of markers:", paste(length(markers_in_panel)), "\n")
+  cat("Markers:", paste(head(markers_in_panel, 10), collapse = ", "), "\n")
+  cat("Grid:", grid_dims$ncol, "x", grid_dims$nrow, "\n")
+  
+  ## Create individual plots with consistent limits ##
+  plot_list <- lapply(markers_in_panel, function(marker) {
+    create_feature_plot(
+      feature = marker, 
+      umap_df = umap_df, 
+      expr_matrix = expr_norm,
+      expr_limits = global_expr_limits,
+      point_size_low = 0.1,
+      point_size_high = 0.5,
+      alpha_low = 0.3,
+      alpha_high = 0.9
+    )
+  })
+  
+  ## Remove NULL plots ##
+  plot_list <- plot_list[!sapply(plot_list, is.null)]
+  
+  if (length(plot_list) > 0) {
+    ## Combine plots with shared legend ##
+    combined_plot <- wrap_plots(
+      plot_list,
+      ncol = grid_dims$ncol,
+      guides = "collect"
+    ) +
+      plot_annotation(
+        title = sprintf("B Cell Markers - Panel %d/%d", i, length(marker_panels)),
+        theme = theme(
+          plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+          plot.background = element_rect(fill = "white", color = NA)
+        )
+      ) &
+      theme(legend.position = "right")
+    
+    ## Save panel ##
+    ggsave(
+      filename = file.path(out_dir, sprintf("B_markers_panel_%02d.png", i)),
+      plot = combined_plot,
+      width = grid_dims$ncol * 4.5,
+      height = grid_dims$nrow * 3,
+      units = "in",
+      dpi = 300,
+      bg = "white"
+    )
+    
+    cat("Panel", i, "saved successfully\n")
+  }
+}
+
+cat("\nAll panels saved to:", out_dir, "\n")
+
+```
+
+```{r leiden clustering}
+
+## Normal doLeidenCluster fails due to python. Haven't troubleshooted why ##
+cosmx_dim <- doLeidenClusterIgraph(
+  gobject = cosmx_dim,
+  spat_unit = "cell",
+  feat_type = "rna",
+  nn_network_to_use = "sNN",
+  network_name = "sNN.pca",
+  resolution = 0.1,
+  name = "leiden_clus"
+)
+
+clus_colors <- getColors("Vivid", length(unique(cosmx_dim$leiden_clus)))
+
+```
+
+```{r leiden clustering visualisation}
+
+# Get UMAP coordinates
+umap_coords <- getDimReduction(
+  gobject = cosmx_dim,
+  reduction = "cells",
+  reduction_method = "umap",
+  name = "umap",
+  output = "matrix"
+)
+
+# Get tSNE coordinates
+tsne_coords <- getDimReduction(
+  gobject = cosmx_dim,
+  reduction = "cells",
+  reduction_method = "tsne",
+  name = "tsne",
+  output = "matrix"
+)
+
+# Get cluster labels
+metadata <- pDataDT(cosmx_dim)
+
+# Create UMAP plot data - ensure cluster is factor
+umap_df <- umap_coords %>%
+  as.data.frame() %>%
+  setNames(., c("UMAP_1", "UMAP_2")) %>%
+  rownames_to_column(var = "cell_ID") %>%
+  inner_join(metadata %>%
+    select(cell_ID, leiden_clus), by = "cell_ID") %>%
+  mutate(cluster = factor(as.character(metadata$leiden_clus),
+    levels = as.character(sort(unique(as.integer(metadata$leiden_clus))))
+  ))
+
+# Create tSNE plot data - ensure cluster is factor
+tsne_df <- tsne_coords %>% 
+  as.data.frame() %>%
+  setNames(., c("tSNE_1", "tSNE_2")) %>%
+  rownames_to_column(var = "cell_ID") %>%
+  inner_join(metadata %>%
+    select(cell_ID, leiden_clus), by = "cell_ID") %>%
+  mutate(cluster = factor(as.character(metadata$leiden_clus),
+    levels = as.character(sort(unique(as.integer(metadata$leiden_clus))))
+  ))
+
+# Get unique cluster levels
+cluster_levels <- sort(as.numeric(levels(umap_df$cluster)))
+n_clusters <- length(cluster_levels)
+
+cat("Number of clusters detected:", n_clusters, "\n")
+cat("Cluster IDs:", paste(cluster_levels, collapse = ", "), "\n")
+
+# Create or verify clus_colors
+if (!exists("clus_colors") || length(clus_colors) < n_clusters) {
+  clus_colors <- getColors(palette = "Paired", n = n_clusters)
+  names(clus_colors) <- as.character(cluster_levels)
+} else {
+  # Ensure names match cluster levels
+  if (is.null(names(clus_colors))) {
+    names(clus_colors) <- as.character(cluster_levels[1:min(length(clus_colors), n_clusters)])
+  }
+  # Trim or extend if needed
+  clus_colors <- clus_colors[1:n_clusters]
+  names(clus_colors) <- as.character(cluster_levels)
+}
+
+# Print color mapping
+cat("\nCluster color mapping:\n")
+print(data.frame(
+  Cluster = names(clus_colors),
+  Color = clus_colors,
+  row.names = NULL
+))
+
+# Custom UMAP plot
+custom_umap <- ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = cluster)) +
+  geom_point(size = 1, alpha = 0.8, stroke = 0) +
+  scale_color_manual(
+    values = clus_colors,
+    name = "Leiden Cluster"
+  ) +
+  labs(
+    title = "Cell Clusters - UMAP Projection",
+    x = "UMAP Dimension 1",
+    y = "UMAP Dimension 2"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+
+ggsave(
+  filename = file.path(results_folder, "14_leiden_umap.png"),
+  plot = custom_umap,
+  width = 11,
+  height = 8,
+  dpi = 300,
+  bg = "white"
+)
+
+# Custom tSNE plot
+custom_tsne <- ggplot(tsne_df, aes(x = tSNE_1, y = tSNE_2, color = cluster)) +
+  geom_point(size = 1, alpha = 0.8, stroke = 0) +
+  scale_color_manual(
+    values = clus_colors,
+    name = "Leiden Cluster"
+  ) +
+  labs(
+    title = "Cell Clusters - t-SNE Projection",
+    x = "t-SNE Dimension 1",
+    y = "t-SNE Dimension 2"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+
+ggsave(
+  filename = file.path(results_folder, "15_leiden_tsne.png"),
+  plot = custom_tsne,
+  width = 11,
+  height = 8,
+  dpi = 300,
+  bg = "white"
+)
+
+# Side-by-side comparison
+combined_dim_reduction <- (custom_umap | custom_tsne) +
+  plot_annotation(
+    title = "Leiden Clustering Results",
+    theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
+  )
+
+ggsave(
+  filename = file.path(results_folder, "16_leiden_umap_tsne.png"),
+  plot = combined_dim_reduction,
+  width = 20,
+  height = 8,
+  dpi = 300,
+  bg = "white"
+)
+
+cat("\nPlots saved to:", results_folder, "\n")
+
+```
+
+```{r Spatial plot with leiden Giotto}
+
+spatDimPlot2D(cosmx_dim,
+    show_image = FALSE,
+    # image_name = image_names,
+    cell_color = "leiden_clus",
+    cell_color_code = clus_colors,
+    spat_point_size = 1,
+    show_plot = TRUE,
+    save_param = list(
+        base_width = 9,
+        base_height = 15,
+        save_name = "17_sdplot"
+    )
+)
+
+```
+
+```{r}
+
+spat_locs <- getSpatialLocations(
+  gobject = cosmx_dim,
+  spat_unit = "cell",
+  output = "data.table"
+)
+
+# Get cluster assignments
+metadata <- pDataDT(cosmx_dim)
+
+# Combine spatial and cluster data
+spatial_df <- spat_locs %>%
+  as_tibble() %>%
+  select(cell_ID, sdimx, sdimy) %>%
+  inner_join(
+    metadata %>% select(cell_ID, leiden_clus),
+    by = "cell_ID"
+  ) %>%
+  mutate(
+    cluster = factor(
+      as.character(leiden_clus),
+      levels = as.character(sort(unique(as.integer(leiden_clus))))
+    )
+  )
+
+
+# Create enhanced spatial plot
+custom_spatial <- ggplot(spatial_df, aes(x = sdimx, y = sdimy, color = cluster)) +
+  geom_point(size = 1, alpha = 0.8, stroke = 0) +
+  scale_color_manual(
+    values = clus_colors,
+    name = "Leiden Cluster"
+  ) +
+  labs(
+    title = "Spatial Distribution of Cell Clusters",
+    x = "Spatial X (microns)",
+    y = "Spatial Y (microns)"
+  ) +
+  coord_fixed() +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
+    axis.title = element_text(size = 13, face = "bold"),
+    axis.text = element_text(size = 11),
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    legend.position = "right",
+    panel.background = element_rect(fill = "white"),
+    plot.background = element_rect(fill = "white")
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
+
+
+combined_leiden <- (custom_umap + custom_tsne + custom_spatial) +
+  plot_layout(guides = "collect") +
+  plot_annotation(title = "Leiden Clustering Results", 
+                  theme = theme(plot.title = element_text(hjust = 0.5, 
+                                                          face = "bold", 
+                                                          size = 18)))
+ggsave(
+  filename = file.path(results_folder, "18_leiden_final.png"),
+  plot = combined_leiden,
+  width = 20,
+  height = 10,
+  dpi = 300,
+  bg = "white"
+)
+
+
+```
 
