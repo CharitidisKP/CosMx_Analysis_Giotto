@@ -23,17 +23,17 @@ inspect_nn_network <- function(gobject,
                                save_plots = TRUE,
                                verbose = TRUE) {
   
-  # Load required libraries
-  required_packages <- c("ggplot2", "patchwork", "pheatmap", "igraph", 
-                         "ggraph", "tidygraph", "gridExtra", "grid", "knitr", "kableExtra")
-  
-  for (pkg in required_packages) {
-    if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
-      if (verbose) message(paste("Installing package:", pkg))
-      install.packages(pkg, quiet = TRUE)
-      library(pkg, character.only = TRUE)
-    }
-  }
+  # # Load required libraries
+  # required_packages <- c("ggplot2", "patchwork", "pheatmap", "igraph", 
+  #                        "ggraph", "tidygraph", "gridExtra", "grid", "knitr", "kableExtra")
+  # 
+  # for (pkg in required_packages) {
+  #   if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+  #     if (verbose) message(paste("Installing package:", pkg))
+  #     install.packages(pkg, quiet = TRUE)
+  #     library(pkg, character.only = TRUE)
+  #   }
+  # }
   
   # Create full output path: output_dir/sample_id/subfolder_name
   full_output_path <- file.path(output_dir, sample_id, subfolder_name)

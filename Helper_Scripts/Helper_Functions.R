@@ -78,3 +78,9 @@ add_bg_to_qc <- function(qc,
   
   qc
 }
+
+# Load reference profiles from Nanostring ---------------------------------
+read_profile_csv <- function(url) {
+  as.matrix(read.csv(url, row.names = 1, check.names = FALSE))
+}
+
