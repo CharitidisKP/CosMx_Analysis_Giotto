@@ -7,8 +7,6 @@
 # ==============================================================================
 
 #' Load reference profile based on configuration
-#' @param profile_config Profile configuration list
-#' @return Reference profile matrix
 load_reference_profile <- function(profile_config) {
   
   if (profile_config$type == "url") {
@@ -36,19 +34,6 @@ load_reference_profile <- function(profile_config) {
 }
 
 #' Annotate Cells Using InSituType
-#'
-#' @param gobj Giotto object or path
-#' @param sample_id Sample identifier
-#' @param output_dir Output directory
-#' @param profiles List of profile configurations
-#' @param default_profile Name of default profile to use (if NULL, uses first)
-#' @param align_genes Align genes between reference and data
-#' @param n_clusts_semi Number of novel clusters for semi-supervised
-#' @param n_starts Number of random starts (semi-supervised only)
-#' @param cohort_column Column to use as cohort for semi-supervised
-#' @param min_gene_overlap Minimum gene overlap required (default: 100)
-#' @param create_plots Create visualization plots
-#' @return Giotto object with annotations
 annotate_cells <- function(gobj,
                            sample_id,
                            output_dir,
@@ -75,10 +60,9 @@ annotate_cells <- function(gobj,
   results_folder <- file.path(output_dir, "07_Annotation")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
   
-  # Prepare data for InSituType
+  # Prepare data
   cat("Preparing data for InSituType...\n")
   
-  # Get raw counts (genes x cells)
   counts_raw <- getExpression(
     gobject = gobj,
     feat_type = "rna",
@@ -87,46 +71,35 @@ annotate_cells <- function(gobj,
     output = "matrix"
   )
   
-  # Transpose to cells x genes (InSituType format)
   counts_mat <- t(as.matrix(counts_raw))
-  
   cat("  Count matrix:", nrow(counts_mat), "cells x", ncol(counts_mat), "genes\n")
   
-  # === CORRECT BACKGROUND CALCULATION ===
-  # Extract negative control genes from ORIGINAL matrix (before transpose)
+  # Background calculation
   all_feats <- rownames(counts_raw)
   neg_genes <- grep("^Negative", all_feats, value = TRUE, ignore.case = TRUE)
   
   if (length(neg_genes) > 0) {
     cat("  Using", length(neg_genes), "negative control genes for background\n")
-    
-    # Get negative probe counts (genes x cells)
     neg_counts_mat <- counts_raw[neg_genes, , drop = FALSE]
-    
-    # Calculate MEAN across negative probes per cell
     bg_per_cell <- colMeans(as.matrix(neg_counts_mat))
-    
-    cat("  Background per cell - Mean:", round(mean(bg_per_cell), 3), 
+    cat("  Background - Mean:", round(mean(bg_per_cell), 3), 
         "Median:", round(median(bg_per_cell), 3), "\n")
   } else {
-    cat("  No negative probes found, using 1% of mean expression\n")
+    cat("  No negative probes, using 1% of mean expression\n")
     mean_counts_per_cell <- Matrix::rowMeans(counts_mat)
     bg_per_cell <- mean_counts_per_cell * 0.01
   }
   
-  # Ensure bg_per_cell matches counts_mat order
   names(bg_per_cell) <- rownames(counts_mat)
-  
   cat("✓ Data prepared\n\n")
   
-  # Store original cell order
   cell_order <- rownames(counts_mat)
   
-  # Determine which profile to use as default
+  # Determine default profile
   if (!is.null(default_profile)) {
     default_idx <- which(sapply(profiles, function(p) p$name == default_profile))
     if (length(default_idx) == 0) {
-      cat("⚠ Default profile '", default_profile, "' not found, using first profile\n")
+      cat("⚠ Default profile '", default_profile, "' not found, using first\n")
       default_idx <- 1
     }
   } else {
@@ -135,7 +108,7 @@ annotate_cells <- function(gobj,
   
   cat("Default profile:", profiles[[default_idx]]$name, "\n\n")
   
-  # Process each reference profile
+  # Process each profile
   for (i in seq_along(profiles)) {
     
     profile_config <- profiles[[i]]
@@ -152,15 +125,15 @@ annotate_cells <- function(gobj,
     
     tryCatch({
       
-      # Load reference profile
+      # Load reference
       cat("Loading reference profile...\n")
       ref_profiles <- load_reference_profile(profile_config)
       
       cat("✓ Profile loaded\n")
       cat("  Cell types:", ncol(ref_profiles), "\n")
-      cat("  Genes in reference:", nrow(ref_profiles), "\n")
+      cat("  Genes:", nrow(ref_profiles), "\n")
       
-      # Check gene overlap
+      # Check overlap
       ref_genes <- rownames(ref_profiles)
       data_genes <- colnames(counts_mat)
       common_genes <- intersect(ref_genes, data_genes)
@@ -175,9 +148,8 @@ annotate_cells <- function(gobj,
       
       cat("  Sufficient overlap - proceeding\n\n")
       
-      # === SUPERVISED ANNOTATION ===
+      # === SUPERVISED ===
       cat("Running InSituType (supervised)...\n")
-      cat("  Align genes:", align_genes, "\n\n")
       
       insitu_supervised <- InSituType::insitutypeML(
         x = counts_mat,
@@ -189,48 +161,51 @@ annotate_cells <- function(gobj,
       cat("✓ Supervised complete\n")
       cat("  Cell types found:", length(unique(insitu_supervised$clust)), "\n\n")
       
-      # Create annotation columns
+      # Build annotation data frame - EXACTLY like manual working code
       celltype_col_sup <- paste0("celltype_", profile_name, "_supervised")
       score_col_sup <- paste0("score_", profile_name, "_supervised")
       
-      # Also create default annotation columns if this is the default profile
-      if (is_default) {
-        default_celltype_col <- "celltype"
-        default_score_col <- "celltype_score"
-      }
-      
-      # Build annotation data frame
+      # Create data frame exactly as in working manual code
       annot_sup <- data.frame(
         cell_ID = cell_order,
-        celltype = as.character(insitu_supervised$clust),
-        max_score = apply(insitu_supervised$prob, 1, max),
+        temp_celltype = as.character(insitu_supervised$clust),
+        temp_score = insitu_supervised$prob,
         stringsAsFactors = FALSE
       )
       
-      names(annot_sup)[2:3] <- c(celltype_col_sup, score_col_sup)
+      # Rename columns
+      names(annot_sup)[2] <- celltype_col_sup
+      names(annot_sup)[3] <- score_col_sup
       
       # Add default columns if this is default profile
       if (is_default) {
-        annot_sup[[default_celltype_col]] <- annot_sup[[celltype_col_sup]]
-        annot_sup[[default_score_col]] <- annot_sup[[score_col_sup]]
+        annot_sup$celltype <- annot_sup[[celltype_col_sup]]
+        annot_sup$celltype_score <- annot_sup[[score_col_sup]]
       }
       
       cat("Adding annotations to Giotto object...\n")
-      gobj <- addCellMetadata(gobj, annot_sup, by_column = TRUE, column_cell_ID = "cell_ID")
+      cat("  Data frame dimensions:", nrow(annot_sup), "x", ncol(annot_sup), "\n")
+      cat("  Column names:", paste(names(annot_sup), collapse = ", "), "\n")
       
-      # Save results
+      gobj <- addCellMetadata(
+        gobject = gobj,
+        new_metadata = annot_sup,
+        by_column = TRUE,
+        column_cell_ID = "cell_ID"
+      )
+      
       write_csv(annot_sup, 
                 file.path(profile_folder, paste0(sample_id, "_supervised_celltypes.csv")))
       
       cat("✓ Annotations added and saved\n\n")
       
-      # === SEMI-SUPERVISED ANNOTATION ===
+      # === SEMI-SUPERVISED ===
       if (cohort_column %in% names(pDataDT(gobj)) && n_clusts_semi > 0) {
         
         cat("Running InSituType (semi-supervised)...\n")
         cat("  Novel clusters:", n_clusts_semi, "\n")
-        cat("  Cohort column:", cohort_column, "\n")
-        cat("  Random starts:", n_starts, "\n\n")
+        cat("  Cohort:", cohort_column, "\n")
+        cat("  Starts:", n_starts, "\n\n")
         
         metadata_dt <- pDataDT(gobj)
         cohort_vec <- as.character(metadata_dt[[cohort_column]])
@@ -251,7 +226,7 @@ annotate_cells <- function(gobj,
         
         annot_semi <- data.frame(
           cell_ID = cell_order,
-          celltype = as.character(insitu_semi$clust),
+          temp_celltype = as.character(insitu_semi$clust),
           stringsAsFactors = FALSE
         )
         names(annot_semi)[2] <- celltype_col_semi
@@ -261,7 +236,7 @@ annotate_cells <- function(gobj,
         write_csv(annot_semi,
                   file.path(profile_folder, paste0(sample_id, "_semi_celltypes.csv")))
         
-        cat("✓ Semi-supervised annotations added\n\n")
+        cat("✓ Semi-supervised added\n\n")
       }
       
       # === SUMMARIES ===
@@ -298,7 +273,7 @@ annotate_cells <- function(gobj,
           )
           dev.off()
           cat("  ✓ Flight plot\n")
-        }, error = function(e) cat("  ⚠ Flight plot warning\n"))
+        }, error = function(e) cat("  ⚠ Flight plot\n"))
         
         # UMAP
         tryCatch({
@@ -309,7 +284,7 @@ annotate_cells <- function(gobj,
                                         save_dir = profile_folder, base_width = 12, base_height = 9))
           })
           cat("  ✓ UMAP\n")
-        }, error = function(e) cat("  ⚠ UMAP warning\n"))
+        }, error = function(e) cat("  ⚠ UMAP\n"))
         
         # Spatial
         tryCatch({
@@ -320,7 +295,7 @@ annotate_cells <- function(gobj,
                                          save_dir = profile_folder, base_width = 14, base_height = 10))
           })
           cat("  ✓ Spatial\n")
-        }, error = function(e) cat("  ⚠ Spatial warning\n"))
+        }, error = function(e) cat("  ⚠ Spatial\n"))
         
         # Proportions
         tryCatch({
@@ -329,18 +304,17 @@ annotate_cells <- function(gobj,
             geom_bar(stat = "identity") + coord_flip() +
             labs(title = paste(sample_id, "-", profile_name), x = "Cell Type", y = "Cells") +
             theme_classic() + 
-            theme(legend.position = "none", 
-                  plot.title = element_text(hjust = 0.5, face = "bold"))
+            theme(legend.position = "none", plot.title = element_text(hjust = 0.5, face = "bold"))
           
           ggsave(file.path(profile_folder, paste0(sample_id, "_proportions.png")),
                  p, width = 10, height = max(6, nrow(sup_summary) * 0.4), dpi = 300)
           cat("  ✓ Proportions\n")
-        }, error = function(e) cat("  ⚠ Proportions warning\n"))
+        }, error = function(e) cat("  ⚠ Proportions\n"))
         
         cat("✓ Visualizations complete\n\n")
       }
       
-      cat("✓ Annotation complete:", profile_name, "\n\n")
+      cat("✓ Complete:", profile_name, "\n\n")
       
     }, error = function(e) {
       cat("✗ Error with", profile_name, ":\n")
@@ -365,7 +339,6 @@ if (!interactive()) {
     if (!is.null(config_file) && file.exists(config_file)) {
       config <- yaml::read_yaml(config_file)
       
-      # Source helper functions
       helper_path <- file.path(config$paths$scripts_dir, "Helper_Scripts/Helper_Functions.R")
       if (file.exists(helper_path)) source(helper_path)
       
@@ -377,7 +350,7 @@ if (!interactive()) {
       cohort_column <- config$parameters$annotation$cohort_column
       min_gene_overlap <- config$parameters$annotation$min_gene_overlap %||% 100
     } else {
-      stop("Config file required")
+      stop("Config required")
     }
     
     gobj <- annotate_cells(
