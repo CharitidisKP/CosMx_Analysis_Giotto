@@ -81,9 +81,7 @@ parameters:
     min_gene_overlap: 100
     
     # Visualization
-    create_flightplots: true
-    create_spatial_plots: true
-    create_umap_plots: true
+    create_plots: true
   
   visualization:
     celltype_columns: null
