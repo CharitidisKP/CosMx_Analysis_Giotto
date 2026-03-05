@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# get_samples.R
+# Get_samples.R
 # Smart sample loader: uses CSV if exists, auto-detects otherwise
 # ==============================================================================
 
