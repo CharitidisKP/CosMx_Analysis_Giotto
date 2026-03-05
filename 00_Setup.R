@@ -25,7 +25,7 @@ setup_environment <- function(verbose = TRUE) {
     "RColorBrewer", "scales", "patchwork", "cowplot", "ggpubr", 
     "pheatmap", "gridExtra", "grid", "knitr", "kableExtra",
     "igraph", "tidygraph", "ggraph", "scran", "SingleR", 
-    "celldex", "InSituType", "reticulate", "Giotto"
+    "celldex", "InSituType", "reticulate", "SpatialDecon", "Giotto"
   )
   
   # Check which packages are already loaded
