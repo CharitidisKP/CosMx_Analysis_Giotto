@@ -1,14 +1,10 @@
 # Cell type annotation using InSituType with multiple reference profiles -------
 
 #!/usr/bin/env Rscript
-# ==============================================================================
 # 07_Annotation.R
-# ==============================================================================
 
 
-# ==============================================================================
-# Colour palette
-# ==============================================================================
+# Colour palette ----------------------------------------------------------
 
 .annotation_palette <- function(n) {
   base_cols <- c(
@@ -36,13 +32,10 @@
 }
 
 
-# ==============================================================================
-# Helper: extract UMAP matrix from Giotto robustly
-# ==============================================================================
+# Helper: extract UMAP matrix from Giotto robustly ------------------------
 
 .get_umap_df <- function(gobj) {
   
-  # Primary path: output = "matrix" — rownames are cell_IDs
   umap_mat <- tryCatch(
     getDimReduction(
       gobject          = gobj,
@@ -110,19 +103,54 @@
 }
 
 
-# ==============================================================================
-# Helper: Custom UMAP plot
-# ==============================================================================
+# Helper: per-cluster mean confidence from insitutype logliks -------------
 
-#' @param gobj          Giotto object (must already have a umap reduction)
+# insitutypeML() returns $prob as a plain numeric vector (per-cell max
+# posterior for the assigned type only). insitutype() returns a full
+# cells x types matrix.
+#
+# To handle BOTH cases robustly we always derive confidence from $logliks,
+# which is a cells x types matrix present in all insitutype result objects.
+# Per-cell softmax normalisation converts logliks to posteriors, then we
+# take the column mean for each cluster type.
+#
+# @param insitu_result  Output of insitutypeML() or insitutype()
+# @return Named numeric vector: names = cluster type, values = mean posterior
+
+.cluster_mean_confidence <- function(insitu_result) {
+  
+  logliks <- insitu_result$logliks
+  clust   <- insitu_result$clust
+  
+  if (is.null(logliks) || !is.matrix(logliks))
+    stop("insitu_result$logliks is NULL or not a matrix")
+  
+  # Row-wise softmax (subtract row max for numerical stability)
+  log_max  <- apply(logliks, 1, max, na.rm = TRUE)
+  exp_liks <- exp(logliks - log_max)
+  post_mat <- exp_liks / rowSums(exp_liks, na.rm = TRUE)
+  
+  ct_types  <- colnames(post_mat)
+  mean_conf <- vapply(ct_types, function(ct) {
+    cell_idx <- which(clust == ct)
+    if (length(cell_idx) == 0) return(NA_real_)
+    mean(post_mat[cell_idx, ct], na.rm = TRUE)
+  }, numeric(1))
+  
+  names(mean_conf) <- ct_types
+  mean_conf
+}
+
+
+# Helper: custom UMAP plot ------------------------------------------------
+
+#' @param gobj          Giotto object (must have a umap reduction)
 #' @param clust_vec     Named character vector: names = cell_IDs, values = cell types
 #' @param colour_map    Named character vector from .build_colour_map()
 #' @param profile_name  String used in plot title and file name
 #' @param sample_id     String used in plot title and file name
 #' @param out_dir       Directory to save the PNG
 #' @param ann_type      "supervised", "semi", or "supervised_refined"
-#' @param point_size / point_alpha / label_size / label_alpha  aesthetics
-#' @param width / height / dpi  ggsave dimensions
 
 plot_giotto_umap <- function(gobj,
                              clust_vec,
@@ -149,23 +177,16 @@ plot_giotto_umap <- function(gobj,
   cat("    UMAP data:", nrow(umap_df), "cells, columns:",
       paste(colnames(umap_df), collapse = ", "), "\n")
   
-  # Factor levels follow colour_map order (n_cells descending = flightpath order)
   ann_df <- tibble::tibble(
     cell_ID  = names(clust_vec),
-    CellType = factor(as.character(clust_vec),
-                      levels = names(colour_map))
+    CellType = factor(as.character(clust_vec), levels = names(colour_map))
   )
   
   plot_df <- dplyr::inner_join(umap_df, ann_df, by = "cell_ID")
-  
   cat("    After join:", nrow(plot_df), "cells matched\n")
   
   if (nrow(plot_df) == 0) {
     cat("    \u26A0 No overlapping cell IDs between UMAP and annotation\n")
-    cat("    UMAP cell_ID examples:",
-        paste(head(umap_df$cell_ID, 3), collapse = ", "), "\n")
-    cat("    clust_vec name examples:",
-        paste(head(names(clust_vec), 3), collapse = ", "), "\n")
     return(invisible(NULL))
   }
   
@@ -200,12 +221,8 @@ plot_giotto_umap <- function(gobj,
       max.overlaps = Inf,
       inherit.aes  = FALSE
     ) +
-    ggplot2::labs(
-      title  = title_txt,
-      x      = "UMAP 1",
-      y      = "UMAP 2",
-      colour = "Cell type"
-    ) +
+    ggplot2::labs(title = title_txt, x = "UMAP 1", y = "UMAP 2",
+                  colour = "Cell type") +
     ggplot2::guides(colour = ggplot2::guide_legend(
       ncol = 1, override.aes = list(size = 3, alpha = 1))) +
     ggplot2::theme_minimal(base_size = 12) +
@@ -218,22 +235,17 @@ plot_giotto_umap <- function(gobj,
     )
   
   fname <- paste0(sample_id, "_umap_", profile_name, "_", ann_type, "_custom.png")
-  ggplot2::ggsave(
-    filename = file.path(out_dir, fname),
-    plot     = p, width = width, height = height, dpi = dpi, device = "png"
-  )
+  ggplot2::ggsave(file.path(out_dir, fname), p,
+                  width = width, height = height, dpi = dpi, device = "png")
   cat("  \u2713 Custom UMAP saved:", fname, "\n")
   invisible(p)
 }
 
 
-# ==============================================================================
-# Helper: Custom Flightpath plot
-# ==============================================================================
+# Helper: custom flightpath plot ------------------------------------------
 
 #' @param insitu_result  Output of insitutypeML() / insitutype() / refineClusters()
 #' @param colour_map     Named character vector from .build_colour_map()
-#' @param profile_name / sample_id / out_dir / ann_type  as above
 
 plot_custom_flightpath <- function(insitu_result,
                                    colour_map,
@@ -303,7 +315,6 @@ plot_custom_flightpath <- function(insitu_result,
     ) %>%
     dplyr::arrange(dplyr::desc(n_cells))
   
-  # Derive Cluster_lab colour map from the shared colour_map by cell type name
   lab_colour_map <- stats::setNames(
     colour_map[as.character(Cluster_stats$Cluster)],
     Cluster_stats$Cluster_lab
@@ -335,15 +346,10 @@ plot_custom_flightpath <- function(insitu_result,
     ggrepel::geom_label_repel(
       data         = clustpos_df,
       ggplot2::aes(x = x, y = y, label = Cluster),
-      colour       = "black",
-      fill         = "white",
-      label.size   = 0.2,
-      fontface     = "bold",
-      label.r      = grid::unit(0.1, "lines"),
-      size         = label_size,
-      show.legend  = FALSE,
-      max.overlaps = Inf,
-      inherit.aes  = FALSE
+      colour = "black", fill = "white", label.size = 0.2,
+      fontface = "bold", label.r = grid::unit(0.1, "lines"),
+      size = label_size, show.legend = FALSE,
+      max.overlaps = Inf, inherit.aes = FALSE
     ) +
     ggplot2::theme_void(base_size = 12) +
     ggplot2::labs(title = title_txt, colour = "InSituType Clusters") +
@@ -351,33 +357,316 @@ plot_custom_flightpath <- function(insitu_result,
       override.aes = list(size = 4), ncol = 1)) +
     ggplot2::theme(
       legend.position = "right",
-      plot.title      = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
-      legend.title    = ggplot2::element_text(face = "bold", size = 11),
-      legend.text     = ggplot2::element_text(size = 8)
+      plot.title   = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
+      legend.title = ggplot2::element_text(face = "bold", size = 11),
+      legend.text  = ggplot2::element_text(size = 8)
     )
   
   fname <- paste0(sample_id, "_flightpath_", profile_name, "_", ann_type, "_custom.png")
-  ggplot2::ggsave(
-    filename = file.path(out_dir, fname),
-    plot     = p, width = width, height = height, dpi = dpi, device = "png"
-  )
+  ggplot2::ggsave(file.path(out_dir, fname), p,
+                  width = width, height = height, dpi = dpi, device = "png")
   cat("  \u2713 Custom flightpath saved:", fname, "\n")
   invisible(p)
 }
 
 
-# ==============================================================================
-# Helper: Cluster refinement
-# Standalone — call after annotate_cells() if desired.
+# Helper: proportions bar chart with percentage labels --------------------
+
+# Shared helper used by supervised, semi-supervised and refined blocks so
+# the label/expand logic only lives in one place.
 #
-# refineClusters() is a POST-HOC EDITING tool. It works by deleting named
-# cluster types from the logliks matrix. Every cell that was assigned to a
-# deleted type is automatically re-assigned to its next-best type via logliks.
+# @param summary_df   data.frame with columns: <celltype_col>, n_cells
+# @param celltype_col Column name string for the cell type variable
+# @param colour_map   Named colour vector
+# @param title        Plot title string
+# @param out_path     Full file path for the saved PNG
+
+.plot_proportions <- function(summary_df,
+                              celltype_col,
+                              colour_map,
+                              title,
+                              out_path,
+                              dpi = 300) {
+  
+  p <- ggplot2::ggplot(
+    summary_df,
+    ggplot2::aes(
+      x    = reorder(!!dplyr::sym(celltype_col), n_cells),
+      y    = n_cells,
+      fill = !!dplyr::sym(celltype_col))) +
+    ggplot2::geom_bar(stat = "identity") +
+    ggplot2::scale_fill_manual(values = colour_map) +
+    ggplot2::coord_flip() +
+    ggplot2::geom_text(
+      ggplot2::aes(
+        label = paste0(round(n_cells / sum(n_cells) * 100, 1), "%")
+      ),
+      hjust    = -0.15,
+      size     = 3,
+      colour   = "grey20",
+      fontface = "bold"
+    ) +
+    ggplot2::scale_y_continuous(
+      expand = ggplot2::expansion(mult = c(0, 0.12))
+    ) +
+    ggplot2::labs(title = title, x = "Cell Type", y = "Cells") +
+    ggplot2::theme_classic() +
+    ggplot2::theme(
+      legend.position = "none",
+      plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold")
+    )
+  
+  ggplot2::ggsave(
+    out_path, p,
+    width  = 16,
+    height = max(6, nrow(summary_df) * 0.4),
+    dpi    = dpi
+  )
+  invisible(p)
+}
+
+
+# Helper: marker gene heatmap ---------------------------------------------
+
+# The heatmap shows z-score-scaled mean log-normalised expression per
+# cell type x gene, making it easy to confirm whether each cluster is
+# driven by the expected markers (Bruker/NanoString recommended QC).
 #
-# This function identifies which cluster types have mean posterior probability
-# below conf_threshold and passes them as to_delete. It does NOT accept
-# a per-cell clust vector or align_genes (those are not parameters of
-# refineClusters()).
+# @param counts_mat      cells x genes matrix (raw counts)
+# @param clust_vec       Named character vector: names = cell_IDs,
+#                        values = cell type assignments
+# @param colour_map      Named colour vector from .build_colour_map()
+# @param profile_name    String used in file name / title
+# @param sample_id       String used in file name / title
+# @param out_dir         Directory to save the PNG
+# @param ann_type        "supervised", "semi", or "supervised_refined"
+# @param top_n_markers   Top specifically-expressed genes per cluster
+# @param min_cells       Minimum cells per cluster to include
+
+.plot_annotation_heatmap <- function(counts_mat,
+                                     clust_vec,
+                                     colour_map,
+                                     profile_name,
+                                     sample_id,
+                                     out_dir,
+                                     ann_type      = "supervised",
+                                     top_n_markers = 5,
+                                     min_cells     = 5,
+                                     width         = 20,
+                                     height        = 14,
+                                     dpi           = 300) {
+  
+  shared <- intersect(rownames(counts_mat), names(clust_vec))
+  if (length(shared) == 0) {
+    cat("    \u26A0 Heatmap: no shared cell IDs between counts_mat and clust_vec\n")
+    return(invisible(NULL))
+  }
+  
+  mat   <- counts_mat[shared, , drop = FALSE]
+  clust <- clust_vec[shared]
+  
+  ct_keep <- names(which(table(clust) >= min_cells))
+  keep    <- clust %in% ct_keep
+  mat     <- mat[keep, , drop = FALSE]
+  clust   <- clust[keep]
+  
+  if (length(unique(clust)) < 2) {
+    cat("    \u26A0 Heatmap: fewer than 2 clusters after filtering\n")
+    return(invisible(NULL))
+  }
+  
+  # Log-normalise (library-size normalise to median then log1p)
+  lib_size <- rowSums(mat)
+  med_lib  <- stats::median(lib_size[lib_size > 0])
+  norm_mat <- log1p(mat / pmax(lib_size, 1) * med_lib)
+  
+  # Mean expression per cluster (matrix: genes x cell-types)
+  ct_ordered <- names(colour_map)[names(colour_map) %in% unique(clust)]
+  mean_expr  <- do.call(cbind, lapply(ct_ordered, function(ct) {
+    idx <- which(clust == ct)
+    colMeans(norm_mat[idx, , drop = FALSE], na.rm = TRUE)
+  }))
+  colnames(mean_expr) <- ct_ordered
+  
+  # Select top_n_markers per cluster by specificity score
+  global_mean <- rowMeans(mean_expr, na.rm = TRUE)
+  sel_genes   <- unique(unlist(lapply(ct_ordered, function(ct) {
+    spec_score <- mean_expr[, ct] - global_mean
+    head(names(sort(spec_score, decreasing = TRUE)), top_n_markers)
+  })))
+  
+  if (length(sel_genes) < 2) {
+    cat("    \u26A0 Heatmap: not enough marker genes selected\n")
+    return(invisible(NULL))
+  }
+  
+  plot_mat <- mean_expr[sel_genes, , drop = FALSE]
+  
+  # Row-wise z-score, clipped to [-3, 3]
+  row_sd  <- pmax(apply(plot_mat, 1, stats::sd, na.rm = TRUE), 1e-6)
+  z_mat   <- (plot_mat - rowMeans(plot_mat, na.rm = TRUE)) / row_sd
+  z_mat   <- pmin(pmax(z_mat, -3), 3)
+  
+  ann_col     <- data.frame(CellType = ct_ordered, row.names = ct_ordered)
+  ann_colours <- list(CellType = colour_map[ct_ordered])
+  
+  title_txt <- paste0(sample_id, " \u2014 ", profile_name,
+                      " ", ann_type, "\nMarker gene mean expression (z-score)")
+  fname <- paste0(sample_id, "_heatmap_", profile_name, "_", ann_type, ".png")
+  
+  grDevices::png(file.path(out_dir, fname),
+                 width = width, height = height, units = "in", res = dpi)
+  pheatmap::pheatmap(
+    z_mat,
+    color             = grDevices::colorRampPalette(
+      c("#2166AC", "white", "#B2182B"))(100),
+    cluster_rows      = TRUE,
+    cluster_cols      = FALSE,
+    annotation_col    = ann_col,
+    annotation_colors = ann_colours,
+    fontsize_row      = max(5, min(9,  180 / length(sel_genes))),
+    fontsize_col      = max(6, min(10, 180 / length(ct_ordered))),
+    angle_col         = 45,
+    main              = title_txt,
+    border_color      = NA,
+    legend            = TRUE
+  )
+  grDevices::dev.off()
+  
+  cat("  \u2713 Heatmap saved:", fname, "\n")
+  invisible(NULL)
+}
+
+
+# Helper: marker gene dot plot --------------------------------------------
+
+# Dot plot combines mean expression (colour) with the fraction of cells
+# expressing the gene (dot size), matching the AtoMx SIP recommended
+# output format for annotation QC.
+#
+# @param counts_mat      cells x genes matrix (raw counts)
+# @param clust_vec       Named character vector: names = cell_IDs,
+#                        values = cell type assignments
+# @param colour_map      Named colour vector from .build_colour_map()
+# @param top_n_markers   Top specifically-expressed genes per cluster
+# @param min_cells       Minimum cells per cluster to include
+
+.plot_annotation_dotplot <- function(counts_mat,
+                                     clust_vec,
+                                     colour_map,
+                                     profile_name,
+                                     sample_id,
+                                     out_dir,
+                                     ann_type      = "supervised",
+                                     top_n_markers = 3,
+                                     min_cells     = 5,
+                                     width         = 20,
+                                     height        = 12,
+                                     dpi           = 300) {
+  
+  shared <- intersect(rownames(counts_mat), names(clust_vec))
+  if (length(shared) == 0) {
+    cat("    \u26A0 Dot plot: no shared cell IDs\n")
+    return(invisible(NULL))
+  }
+  
+  mat   <- counts_mat[shared, , drop = FALSE]
+  clust <- clust_vec[shared]
+  
+  ct_keep <- names(which(table(clust) >= min_cells))
+  keep    <- clust %in% ct_keep
+  mat     <- mat[keep, , drop = FALSE]
+  clust   <- clust[keep]
+  
+  if (length(unique(clust)) < 2) {
+    cat("    \u26A0 Dot plot: fewer than 2 clusters after filtering\n")
+    return(invisible(NULL))
+  }
+  
+  # Log-normalise
+  lib_size <- rowSums(mat)
+  med_lib  <- stats::median(lib_size[lib_size > 0])
+  norm_mat <- log1p(mat / pmax(lib_size, 1) * med_lib)
+  
+  ct_ordered <- names(colour_map)[names(colour_map) %in% unique(clust)]
+  mean_expr  <- do.call(cbind, lapply(ct_ordered, function(ct) {
+    idx <- which(clust == ct)
+    colMeans(norm_mat[idx, , drop = FALSE], na.rm = TRUE)
+  }))
+  colnames(mean_expr) <- ct_ordered
+  
+  global_mean <- rowMeans(mean_expr, na.rm = TRUE)
+  sel_genes   <- unique(unlist(lapply(ct_ordered, function(ct) {
+    spec_score <- mean_expr[, ct] - global_mean
+    head(names(sort(spec_score, decreasing = TRUE)), top_n_markers)
+  })))
+  
+  if (length(sel_genes) < 2) {
+    cat("    \u26A0 Dot plot: not enough marker genes\n")
+    return(invisible(NULL))
+  }
+  
+  # Long data frame: mean expression + pct expressing per cluster x gene
+  dot_df <- do.call(rbind, lapply(ct_ordered, function(ct) {
+    idx     <- which(clust == ct)
+    sub_mat <- norm_mat[idx, sel_genes, drop = FALSE]
+    data.frame(
+      CellType   = ct,
+      Gene       = sel_genes,
+      MeanExpr   = colMeans(sub_mat, na.rm = TRUE),
+      PctExpress = colMeans(sub_mat > 0, na.rm = TRUE) * 100,
+      stringsAsFactors = FALSE
+    )
+  }))
+  
+  dot_df$CellType <- factor(dot_df$CellType, levels = rev(ct_ordered))
+  dot_df$Gene     <- factor(dot_df$Gene,     levels = sel_genes)
+  
+  title_txt <- paste0(sample_id, " \u2014 ", profile_name,
+                      " ", ann_type, " \u2014 marker gene dot plot")
+  
+  p <- ggplot2::ggplot(
+    dot_df,
+    ggplot2::aes(x = Gene, y = CellType,
+                 size  = PctExpress,
+                 color = MeanExpr)) +
+    ggplot2::geom_point() +
+    ggplot2::scale_size_continuous(
+      name   = "% Expressing",
+      range  = c(0.5, 8),
+      limits = c(0, 100)
+    ) +
+    ggplot2::scale_color_gradientn(
+      name    = "Mean log-norm\nexpression",
+      colours = c("#2166AC", "#F7F7F7", "#B2182B")
+    ) +
+    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+    ggplot2::theme_classic(base_size = 11) +
+    ggplot2::theme(
+      plot.title   = ggplot2::element_text(face = "bold", hjust = 0.5, size = 12),
+      axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, size = 8),
+      axis.text.y  = ggplot2::element_text(size = 9),
+      legend.title = ggplot2::element_text(size = 9),
+      legend.text  = ggplot2::element_text(size = 8)
+    )
+  
+  fname <- paste0(sample_id, "_dotplot_", profile_name, "_", ann_type, ".png")
+  ggplot2::ggsave(file.path(out_dir, fname), p,
+                  width = width, height = height, dpi = dpi, device = "png")
+  cat("  \u2713 Dot plot saved:", fname, "\n")
+  invisible(p)
+}
+
+
+# Helper: cluster refinement ----------------------------------------------
+
+# refineClusters() is a post-hoc editing tool that operates on the logliks
+# matrix. It does NOT accept a per-cell clust vector or align_genes.
+#
+# Confidence is derived from $logliks via per-cell softmax normalisation
+# (see .cluster_mean_confidence). Cluster types whose mean posterior <
+# conf_threshold are passed as to_delete; refineClusters() then re-assigns
+# those cells to their next-best type via the loglik matrix.
 #
 # @param gobj              Annotated Giotto object
 # @param insitu_result     insitutypeML() result for the profile
@@ -391,7 +680,6 @@ plot_custom_flightpath <- function(insitu_result,
 # @param conf_threshold    Cluster types with mean posterior < this are deleted
 #                          and their cells reassigned (default 0.8)
 # @param create_plots      Whether to produce visualisation outputs
-# ==============================================================================
 
 refine_annotation <- function(gobj,
                               insitu_result,
@@ -410,42 +698,39 @@ refine_annotation <- function(gobj,
   refined_folder <- file.path(results_folder, "refined")
   dir.create(refined_folder, recursive = TRUE, showWarnings = FALSE)
   
-  # --------------------------------------------------------------------------
-  # 1. Compute per-cluster mean posterior probability
-  #    insitu_result$prob is a cells x cell-types matrix of posteriors
-  # --------------------------------------------------------------------------
-  prob_mat <- insitu_result$prob
+  # 1. Per-cluster mean confidence -----------------------------------------
+  mean_conf_per_type <- tryCatch(
+    .cluster_mean_confidence(insitu_result),
+    error = function(e) {
+      cat("  \u26A0 Could not compute cluster confidence:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
   
-  if (!is.matrix(prob_mat)) {
-    cat("  \u26A0 insitu_result$prob is not a matrix\n")
-    cat("    class(prob):", class(prob_mat), "\n")
-    cat("    Cannot compute per-cluster means — aborting refinement\n")
-    return(invisible(gobj))
-  }
-  
-  # Mean posterior for each cluster type (column = cell type)
-  mean_conf_per_type <- colMeans(prob_mat, na.rm = TRUE)
+  if (is.null(mean_conf_per_type)) return(invisible(gobj))
   
   conf_df <- data.frame(
     cell_type = names(mean_conf_per_type),
     mean_conf = round(mean_conf_per_type, 3),
+    n_cells   = as.integer(table(insitu_result$clust)[names(mean_conf_per_type)]),
     stringsAsFactors = FALSE
   )
   conf_df <- conf_df[order(conf_df$mean_conf), ]
   
-  cat("  Per-cluster mean confidence:\n")
+  cat("  Per-cluster mean confidence (from logliks softmax):\n")
   print(conf_df, row.names = FALSE)
   cat("\n")
   
-  # Save confidence table regardless of whether anything gets deleted
   readr::write_csv(
     conf_df,
     file.path(refined_folder,
               paste0(sample_id, "_cluster_confidence_scores.csv"))
   )
   
-  # Identify cluster types to delete
-  to_delete <- names(mean_conf_per_type)[mean_conf_per_type < conf_threshold]
+  # 2. Identify types to delete --------------------------------------------
+  to_delete <- names(mean_conf_per_type)[
+    !is.na(mean_conf_per_type) & mean_conf_per_type < conf_threshold
+  ]
   
   if (length(to_delete) == 0) {
     cat("  No cluster types below threshold (", conf_threshold,
@@ -453,7 +738,6 @@ refine_annotation <- function(gobj,
     return(invisible(gobj))
   }
   
-  # Safety: cannot delete ALL types
   remaining <- setdiff(colnames(insitu_result$logliks), to_delete)
   if (length(remaining) == 0) {
     cat("  \u26A0 Threshold", conf_threshold,
@@ -466,10 +750,7 @@ refine_annotation <- function(gobj,
   cat("   ", paste(to_delete, collapse = ", "), "\n")
   cat("  Retained types:", length(remaining), "\n\n")
   
-  # --------------------------------------------------------------------------
-  # 2. Run refineClusters()
-  #    Deleted cells are automatically re-assigned via the loglik matrix.
-  # --------------------------------------------------------------------------
+  # 3. Run refineClusters() ------------------------------------------------
   cat("  Running InSituType::refineClusters()...\n")
   
   insitu_refined <- tryCatch({
@@ -486,34 +767,25 @@ refine_annotation <- function(gobj,
   
   if (is.null(insitu_refined)) return(invisible(gobj))
   
-  cat("  \u2713 Refinement complete\n")
+  cat("  \u2713 refineClusters() complete\n")
   
-  # Extract per-cell cluster assignments and scores
-  refined_clust <- insitu_refined$clust
+  refined_clust    <- insitu_refined$clust
+  refined_prob_raw <- insitu_refined$prob
   
-  # prob may be a matrix (cells x types) or a per-cell vector
-  refined_prob <- insitu_refined$prob
-  if (is.matrix(refined_prob)) {
-    # Extract the posterior for each cell's assigned cluster
-    refined_score <- vapply(
-      seq_len(nrow(refined_prob)),
-      function(idx) {
-        ct <- refined_clust[idx]
-        if (is.na(ct) || !ct %in% colnames(refined_prob)) return(NA_real_)
-        refined_prob[idx, ct]
-      },
-      numeric(1)
-    )
+  refined_score <- if (is.matrix(refined_prob_raw)) {
+    vapply(seq_along(refined_clust), function(i) {
+      ct <- refined_clust[i]
+      if (is.na(ct) || !ct %in% colnames(refined_prob_raw)) return(NA_real_)
+      refined_prob_raw[i, ct]
+    }, numeric(1))
   } else {
-    refined_score <- as.numeric(refined_prob)
+    as.numeric(refined_prob_raw)
   }
   
   cat("  Cell types after refinement:",
       length(unique(stats::na.omit(refined_clust))), "\n\n")
   
-  # --------------------------------------------------------------------------
-  # 3. Annotation data frame + Giotto metadata
-  # --------------------------------------------------------------------------
+  # 4. Annotation data frame + Giotto metadata -----------------------------
   celltype_col_ref <- paste0("celltype_", profile_name, "_supervised_refined")
   score_col_ref    <- paste0("score_",    profile_name, "_supervised_refined")
   
@@ -559,9 +831,7 @@ refine_annotation <- function(gobj,
   print(ref_summary)
   cat("\n")
   
-  # --------------------------------------------------------------------------
-  # 4. Colour map — inherit from original, assign new colours for any new types
-  # --------------------------------------------------------------------------
+  # 5. Colour map ----------------------------------------------------------
   ref_types      <- names(sort(table(stats::na.omit(refined_clust)),
                                decreasing = TRUE))
   colour_map_ref <- colour_map[ref_types]
@@ -576,12 +846,11 @@ refine_annotation <- function(gobj,
   }
   colour_map_ref <- colour_map_ref[!is.na(colour_map_ref)]
   
-  # --------------------------------------------------------------------------
-  # 5. Visualisations
-  # --------------------------------------------------------------------------
+  # 6. Visualisations ------------------------------------------------------
   if (create_plots) {
     cat("  Creating refined visualizations...\n")
     
+    # Refined — flightpath
     tryCatch({
       plot_custom_flightpath(
         insitu_result = insitu_refined,
@@ -595,6 +864,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Flightpath (refined) failed:", conditionMessage(e), "\n")
     })
     
+    # Refined — UMAP
     tryCatch({
       clust_named_ref <- stats::setNames(
         as.character(refined_clust), cell_order)
@@ -611,6 +881,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 UMAP (refined) failed:", conditionMessage(e), "\n")
     })
     
+    # Refined — spatial
     tryCatch({
       suppressWarnings({
         spatPlot2D(gobj,
@@ -629,36 +900,53 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Spatial (refined) failed:", conditionMessage(e), "\n")
     })
     
+    # Refined — proportions
     tryCatch({
-      p_prop_ref <- ggplot2::ggplot(
-        ref_summary,
-        ggplot2::aes(
-          x    = reorder(!!dplyr::sym(celltype_col_ref), n_cells),
-          y    = n_cells,
-          fill = !!dplyr::sym(celltype_col_ref))) +
-        ggplot2::geom_bar(stat = "identity") +
-        ggplot2::scale_fill_manual(values = colour_map_ref) +
-        ggplot2::coord_flip() +
-        ggplot2::labs(
-          title = paste0(sample_id, " - ", profile_name,
-                         " (refined, conf \u2265 ", conf_threshold, ")"),
-          x     = "Cell Type",
-          y     = "Cells") +
-        ggplot2::theme_classic() +
-        ggplot2::theme(
-          legend.position = "none",
-          plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold"))
-      
-      ggplot2::ggsave(
-        file.path(refined_folder,
-                  paste0(sample_id, "_proportions_supervised_refined.png")),
-        p_prop_ref,
-        width  = 16,
-        height = max(6, nrow(ref_summary) * 0.4),
-        dpi    = 300)
+      .plot_proportions(
+        summary_df   = ref_summary,
+        celltype_col = celltype_col_ref,
+        colour_map   = colour_map_ref,
+        title        = paste0(sample_id, " - ", profile_name,
+                              " (refined, conf \u2265 ", conf_threshold, ")"),
+        out_path     = file.path(refined_folder,
+                                 paste0(sample_id,
+                                        "_proportions_supervised_refined.png"))
+      )
       cat("  \u2713 Proportions (refined)\n")
     }, error = function(e) {
       cat("  \u26A0 Proportions (refined) failed:", conditionMessage(e), "\n")
+    })
+    
+    # Refined — heatmap
+    tryCatch({
+      .plot_annotation_heatmap(
+        counts_mat   = counts_mat,
+        clust_vec    = stats::setNames(
+          as.character(refined_clust), cell_order),
+        colour_map   = colour_map_ref,
+        profile_name = paste0(profile_name, "_refined"),
+        sample_id    = sample_id,
+        out_dir      = refined_folder,
+        ann_type     = "supervised_refined"
+      )
+    }, error = function(e) {
+      cat("  \u26A0 Heatmap (refined) failed:", conditionMessage(e), "\n")
+    })
+    
+    # Refined — dot plot
+    tryCatch({
+      .plot_annotation_dotplot(
+        counts_mat   = counts_mat,
+        clust_vec    = stats::setNames(
+          as.character(refined_clust), cell_order),
+        colour_map   = colour_map_ref,
+        profile_name = paste0(profile_name, "_refined"),
+        sample_id    = sample_id,
+        out_dir      = refined_folder,
+        ann_type     = "supervised_refined"
+      )
+    }, error = function(e) {
+      cat("  \u26A0 Dot plot (refined) failed:", conditionMessage(e), "\n")
     })
     
     cat("  \u2713 Refined visualizations complete\n\n")
@@ -669,9 +957,7 @@ refine_annotation <- function(gobj,
 }
 
 
-# ==============================================================================
-# load_reference_profile
-# ==============================================================================
+# load_reference_profile --------------------------------------------------
 
 load_reference_profile <- function(profile_config) {
   
@@ -700,9 +986,7 @@ load_reference_profile <- function(profile_config) {
 }
 
 
-# ==============================================================================
-# annotate_cells  — main pipeline function
-# ==============================================================================
+# annotate_cells — main pipeline function ---------------------------------
 
 annotate_cells <- function(gobj,
                            sample_id,
@@ -732,9 +1016,7 @@ annotate_cells <- function(gobj,
   results_folder <- file.path(output_dir, "07_Annotation")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
   
-  # --------------------------------------------------------------------------
-  # Count matrix + background
-  # --------------------------------------------------------------------------
+  # Count matrix + background ---------------------------------------------
   cat("Preparing data for InSituType...\n")
   
   counts_raw <- getExpression(
@@ -767,9 +1049,7 @@ annotate_cells <- function(gobj,
   
   cell_order <- rownames(counts_mat)
   
-  # --------------------------------------------------------------------------
-  # Default profile index
-  # --------------------------------------------------------------------------
+  # Default profile index -------------------------------------------------
   if (!is.null(default_profile)) {
     default_idx <- which(sapply(profiles, function(p) p$name == default_profile))
     if (length(default_idx) == 0) {
@@ -782,9 +1062,7 @@ annotate_cells <- function(gobj,
   
   cat("Default profile:", profiles[[default_idx]]$name, "\n\n")
   
-  # --------------------------------------------------------------------------
-  # Cohort vector aligned to cell_order
-  # --------------------------------------------------------------------------
+  # Cohort vector aligned to cell_order -----------------------------------
   metadata_dt <- as.data.frame(pDataDT(gobj))
   
   if (cohort_column %in% names(metadata_dt)) {
@@ -800,8 +1078,8 @@ annotate_cells <- function(gobj,
       cat("\u26A0", length(missing_cells),
           "cells in counts_mat have no metadata row\n")
     
-    cohort_vec              <- rep(NA_character_, length(cell_order))
-    names(cohort_vec)       <- cell_order
+    cohort_vec               <- rep(NA_character_, length(cell_order))
+    names(cohort_vec)        <- cell_order
     cohort_vec[shared_cells] <- as.character(
       metadata_dt[shared_cells, cohort_column])
     
@@ -815,12 +1093,9 @@ annotate_cells <- function(gobj,
         "' not found \u2014 semi-supervised will run without cohort vector\n\n")
   }
   
-  # Store insitutype results for optional post-hoc refinement
   insitu_results_store <- list()
   
-  # --------------------------------------------------------------------------
-  # Loop over profiles
-  # --------------------------------------------------------------------------
+  # Loop over profiles ----------------------------------------------------
   for (i in seq_along(profiles)) {
     
     profile_config <- profiles[[i]]
@@ -837,7 +1112,6 @@ annotate_cells <- function(gobj,
     
     tryCatch({
       
-      # ---- Load reference -------------------------------------------------
       cat("Loading reference profile...\n")
       ref_profiles <- load_reference_profile(profile_config)
       
@@ -855,9 +1129,7 @@ annotate_cells <- function(gobj,
       }
       cat("  Sufficient overlap - proceeding\n\n")
       
-      # ======================================================================
-      # BLOCK A: SUPERVISED
-      # ======================================================================
+      # BLOCK A: SUPERVISED ------------------------------------------------
       cat("--- SUPERVISED ---\n")
       cat("Running InSituType (supervised)...\n")
       
@@ -871,9 +1143,7 @@ annotate_cells <- function(gobj,
       cat("\u2713 Supervised complete\n")
       cat("  Cell types found:", length(unique(insitu_supervised$clust)), "\n\n")
       
-      # Shared colour map — built once, passed to both flightpath and UMAP
-      colour_map_sup <- .build_colour_map(insitu_supervised$clust)
-      
+      colour_map_sup   <- .build_colour_map(insitu_supervised$clust)
       celltype_col_sup <- paste0("celltype_", profile_name, "_supervised")
       score_col_sup    <- paste0("score_",    profile_name, "_supervised")
       
@@ -926,7 +1196,6 @@ annotate_cells <- function(gobj,
       print(sup_summary)
       cat("\n")
       
-      # Store for post-hoc use via attr(result, "insitu_results")
       insitu_results_store[[profile_name]] <- list(
         supervised     = insitu_supervised,
         colour_map     = colour_map_sup,
@@ -936,9 +1205,7 @@ annotate_cells <- function(gobj,
         profile_folder = profile_folder
       )
       
-      # ======================================================================
-      # BLOCK B: SEMI-SUPERVISED
-      # ======================================================================
+      # BLOCK B: SEMI-SUPERVISED -------------------------------------------
       insitu_semi       <- NULL
       annot_semi        <- NULL
       semi_summary      <- NULL
@@ -980,7 +1247,6 @@ annotate_cells <- function(gobj,
           cat("\u2713 Semi-supervised complete\n")
           cat("  Cell types found:", length(unique(insitu_semi$clust)), "\n\n")
           
-          # Semi gets its own colour map (novel clusters won't be in sup map)
           colour_map_semi <- .build_colour_map(insitu_semi$clust)
           
           annot_semi <- data.frame(
@@ -1031,13 +1297,11 @@ annotate_cells <- function(gobj,
         cat("Semi-supervised skipped (n_clusts_semi = 0)\n\n")
       }
       
-      # ======================================================================
-      # BLOCK C: VISUALISATIONS
-      # ======================================================================
+      # BLOCK C: VISUALISATIONS --------------------------------------------
       if (create_plots) {
         cat("Creating visualizations...\n")
         
-        # ---- Supervised -----------------------------------------------------
+        # Supervised — flightpath
         tryCatch({
           plot_custom_flightpath(
             insitu_result = insitu_supervised,
@@ -1051,6 +1315,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Flightpath (supervised) failed:", conditionMessage(e), "\n")
         })
         
+        # Supervised — UMAP
         tryCatch({
           clust_named_sup <- stats::setNames(
             as.character(insitu_supervised$clust), cell_order)
@@ -1067,6 +1332,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 UMAP (supervised) failed:", conditionMessage(e), "\n")
         })
         
+        # Supervised — spatial
         tryCatch({
           suppressWarnings({
             spatPlot2D(gobj,
@@ -1085,40 +1351,59 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Spatial (supervised) failed:", conditionMessage(e), "\n")
         })
         
+        # Supervised — proportions
         tryCatch({
-          p_prop_sup <- ggplot2::ggplot(
-            sup_summary,
-            ggplot2::aes(
-              x    = reorder(!!dplyr::sym(celltype_col_sup), n_cells),
-              y    = n_cells,
-              fill = !!dplyr::sym(celltype_col_sup))) +
-            ggplot2::geom_bar(stat = "identity") +
-            ggplot2::scale_fill_manual(values = colour_map_sup) +
-            ggplot2::coord_flip() +
-            ggplot2::labs(
-              title = paste0(sample_id, " - ", profile_name, " (supervised)"),
-              x     = "Cell Type",
-              y     = "Cells") +
-            ggplot2::theme_classic() +
-            ggplot2::theme(
-              legend.position = "none",
-              plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold"))
-          
-          ggplot2::ggsave(
-            file.path(profile_folder,
-                      paste0(sample_id, "_proportions_supervised.png")),
-            p_prop_sup,
-            width  = 16,
-            height = max(6, nrow(sup_summary) * 0.4),
-            dpi    = 300)
+          .plot_proportions(
+            summary_df   = sup_summary,
+            celltype_col = celltype_col_sup,
+            colour_map   = colour_map_sup,
+            title        = paste0(sample_id, " - ", profile_name,
+                                  " (supervised)"),
+            out_path     = file.path(profile_folder,
+                                     paste0(sample_id,
+                                            "_proportions_supervised.png"))
+          )
           cat("  \u2713 Proportions (supervised)\n")
         }, error = function(e) {
           cat("  \u26A0 Proportions (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # ---- Semi-supervised ------------------------------------------------
+        # Supervised — heatmap
+        tryCatch({
+          .plot_annotation_heatmap(
+            counts_mat   = counts_mat,
+            clust_vec    = stats::setNames(
+              as.character(insitu_supervised$clust), cell_order),
+            colour_map   = colour_map_sup,
+            profile_name = profile_name,
+            sample_id    = sample_id,
+            out_dir      = profile_folder,
+            ann_type     = "supervised"
+          )
+        }, error = function(e) {
+          cat("  \u26A0 Heatmap (supervised) failed:", conditionMessage(e), "\n")
+        })
+        
+        # Supervised — dot plot
+        tryCatch({
+          .plot_annotation_dotplot(
+            counts_mat   = counts_mat,
+            clust_vec    = stats::setNames(
+              as.character(insitu_supervised$clust), cell_order),
+            colour_map   = colour_map_sup,
+            profile_name = profile_name,
+            sample_id    = sample_id,
+            out_dir      = profile_folder,
+            ann_type     = "supervised"
+          )
+        }, error = function(e) {
+          cat("  \u26A0 Dot plot (supervised) failed:", conditionMessage(e), "\n")
+        })
+        
+        # Semi-supervised plots (only if semi succeeded)
         if (!is.null(insitu_semi) && !is.null(annot_semi)) {
           
+          # Semi — flightpath
           tryCatch({
             plot_custom_flightpath(
               insitu_result = insitu_semi,
@@ -1132,6 +1417,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 Flightpath (semi) failed:", conditionMessage(e), "\n")
           })
           
+          # Semi — UMAP
           tryCatch({
             clust_named_semi <- stats::setNames(
               as.character(insitu_semi$clust), cell_order)
@@ -1148,6 +1434,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 UMAP (semi) failed:", conditionMessage(e), "\n")
           })
           
+          # Semi — spatial
           tryCatch({
             suppressWarnings({
               spatPlot2D(gobj,
@@ -1166,48 +1453,63 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 Spatial (semi) failed:", conditionMessage(e), "\n")
           })
           
+          # Semi — proportions
           if (!is.null(semi_summary)) {
             tryCatch({
-              p_prop_semi <- ggplot2::ggplot(
-                semi_summary,
-                ggplot2::aes(
-                  x    = reorder(!!dplyr::sym(celltype_col_semi), n_cells),
-                  y    = n_cells,
-                  fill = !!dplyr::sym(celltype_col_semi))) +
-                ggplot2::geom_bar(stat = "identity") +
-                ggplot2::scale_fill_manual(values = colour_map_semi) +
-                ggplot2::coord_flip() +
-                ggplot2::labs(
-                  title = paste0(sample_id, " - ", profile_name,
-                                 " (semi-supervised)"),
-                  x     = "Cell Type",
-                  y     = "Cells") +
-                ggplot2::theme_classic() +
-                ggplot2::theme(
-                  legend.position = "none",
-                  plot.title      = ggplot2::element_text(hjust = 0.5,
-                                                          face = "bold"))
-              
-              ggplot2::ggsave(
-                file.path(profile_folder,
-                          paste0(sample_id, "_proportions_semi.png")),
-                p_prop_semi,
-                width  = 16,
-                height = max(6, nrow(semi_summary) * 0.4),
-                dpi    = 300)
+              .plot_proportions(
+                summary_df   = semi_summary,
+                celltype_col = celltype_col_semi,
+                colour_map   = colour_map_semi,
+                title        = paste0(sample_id, " - ", profile_name,
+                                      " (semi-supervised)"),
+                out_path     = file.path(profile_folder,
+                                         paste0(sample_id,
+                                                "_proportions_semi.png"))
+              )
               cat("  \u2713 Proportions (semi)\n")
             }, error = function(e) {
               cat("  \u26A0 Proportions (semi) failed:", conditionMessage(e), "\n")
             })
           }
-        }
+          
+          # Semi — heatmap
+          tryCatch({
+            .plot_annotation_heatmap(
+              counts_mat   = counts_mat,
+              clust_vec    = stats::setNames(
+                as.character(insitu_semi$clust), cell_order),
+              colour_map   = colour_map_semi,
+              profile_name = profile_name,
+              sample_id    = sample_id,
+              out_dir      = profile_folder,
+              ann_type     = "semi"
+            )
+          }, error = function(e) {
+            cat("  \u26A0 Heatmap (semi) failed:", conditionMessage(e), "\n")
+          })
+          
+          # Semi — dot plot
+          tryCatch({
+            .plot_annotation_dotplot(
+              counts_mat   = counts_mat,
+              clust_vec    = stats::setNames(
+                as.character(insitu_semi$clust), cell_order),
+              colour_map   = colour_map_semi,
+              profile_name = profile_name,
+              sample_id    = sample_id,
+              out_dir      = profile_folder,
+              ann_type     = "semi"
+            )
+          }, error = function(e) {
+            cat("  \u26A0 Dot plot (semi) failed:", conditionMessage(e), "\n")
+          })
+          
+        }  # end semi-supervised plots block
         
         cat("\u2713 Visualizations complete\n\n")
-      }
+      }  # end if (create_plots)
       
-      # ======================================================================
-      # BLOCK D: OPTIONAL INLINE REFINEMENT
-      # ======================================================================
+      # BLOCK D: OPTIONAL INLINE REFINEMENT --------------------------------
       if (!is.null(conf_threshold) && conf_threshold > 0) {
         gobj <- refine_annotation(
           gobj           = gobj,
@@ -1229,16 +1531,14 @@ annotate_cells <- function(gobj,
     }, error = function(e) {
       cat("\u2717 Error with", profile_name, ":\n  ", conditionMessage(e), "\n\n")
     })
-  }
+  }  # end for loop over profiles
   
   cat("\u2713 All annotations complete for", sample_id, "\n\n")
   
-  # --------------------------------------------------------------------------
-  # Save annotated Giotto object
-  # --------------------------------------------------------------------------
+  # Save annotated Giotto object ------------------------------------------
   if (save_object) {
-    obj_dir <- file.path(output_dir, "Giotto_Object_Annotated")
-    cat("Saving annotated Giotto object to:", obj_dir, "\n")
+    cat("Saving annotated Giotto object to:",
+        file.path(output_dir, "Giotto_Object_Annotated"), "\n")
     tryCatch({
       saveGiotto(gobj,
                  dir        = output_dir,
@@ -1250,15 +1550,13 @@ annotate_cells <- function(gobj,
     })
   }
   
-  # Attach insitu_results for post-hoc use
   attr(gobj, "insitu_results") <- insitu_results_store
   return(gobj)
 }
 
 
-# ==============================================================================
-# Command-line interface
-# ==============================================================================
+# Command-line interface --------------------------------------------------
+
 if (!interactive()) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 2) {
