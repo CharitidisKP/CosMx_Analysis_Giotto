@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 09_merged_batch_correction.R
+# 10_merged_batch_correction.R
 # Merge Giotto objects and correct slide-level batch effects with Harmony
 # ==============================================================================
 
@@ -101,7 +101,7 @@ merge_giotto_samples <- function(gobject_list,
     )
   }
   
-  results_dir <- ensure_dir(file.path(output_dir, "09_Merged"))
+  results_dir <- ensure_dir(file.path(output_dir, "10_Merged"))
   readr::write_csv(sample_table, file.path(results_dir, "merged_sample_manifest.csv"))
   readr::write_csv(as_tibble(pDataDT(merged_gobj)), file.path(results_dir, "merged_cell_metadata.csv"))
   
@@ -128,7 +128,7 @@ batch_correct_merged_object <- function(gobj,
                                         create_plots = TRUE,
                                         save_object = FALSE) {
   cat("\n========================================\n")
-  cat("STEP 09: Merged Batch Correction\n")
+  cat("STEP 10: Merged Batch Correction\n")
   cat("Run:", sample_id, "\n")
   cat("========================================\n\n")
   
@@ -141,7 +141,7 @@ batch_correct_merged_object <- function(gobj,
     }
   }
   
-  results_dir <- ensure_dir(file.path(output_dir, "09_Merged", "Batch_Correction"))
+  results_dir <- ensure_dir(file.path(output_dir, "10_Merged", "Batch_Correction"))
   dimensions_to_use <- parse_dimension_vector(dimensions_to_use)
   
   metadata <- pDataDT(gobj) %>% as_tibble()
