@@ -988,6 +988,18 @@ load_reference_profile <- function(profile_config) {
 
 # annotate_cells — main pipeline function ---------------------------------
 
+if (!exists("%||%")) {
+  `%||%` <- function(x, y) {
+    if (is.null(x) || length(x) == 0) {
+      return(y)
+    }
+    if (length(x) == 1 && is.atomic(x) && is.na(x)) {
+      return(y)
+    }
+    x
+  }
+}
+
 annotate_cells <- function(gobj,
                            sample_id,
                            output_dir,
@@ -996,7 +1008,7 @@ annotate_cells <- function(gobj,
                            align_genes      = TRUE,
                            n_clusts_semi    = 3,
                            n_starts         = 10,
-                           cohort_column    = "leiden_clus",
+                           cohort_column    = "leiden_clust",
                            min_gene_overlap = 100,
                            create_plots     = TRUE,
                            conf_threshold   = NULL,
@@ -1557,7 +1569,7 @@ annotate_cells <- function(gobj,
 
 # Command-line interface --------------------------------------------------
 
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 2) {
     sample_id   <- args[1]

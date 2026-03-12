@@ -128,7 +128,7 @@ marker_analysis <- function(gobj,
 }
 
 # Run if sourced directly
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 2) {
     sample_id <- args[1]

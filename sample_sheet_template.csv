@@ -1,0 +1,4 @@
+sample_id,directory_name,slide_num,patient_id,pair_id,group_id,treatment,include,notes
+LN_001,ProjectA_Slide1_LN_001,1,PT_001,PAIR_001,discovery,Untreated,TRUE,
+LN_001_post,ProjectA_Slide2_LN_001_post,2,PT_001,PAIR_001,discovery,Mycophenolate,TRUE,
+LN_002,ProjectB_Slide3_LN_002,3,PT_002,PAIR_002,validation,Belimumab,TRUE,

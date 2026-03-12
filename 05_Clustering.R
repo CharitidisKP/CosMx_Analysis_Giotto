@@ -19,7 +19,10 @@ perform_clustering <- function(gobj,
                                output_dir,
                                k_nn = 15,
                                resolution = 0.5,
-                               dimensions_to_use = 1:30) {
+                               dimensions_to_use = 1:30,
+                               dim_reduction_to_use = "pca",
+                               dim_reduction_name = NULL,
+                               network_name = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 05: Clustering\n")
@@ -38,11 +41,15 @@ perform_clustering <- function(gobj,
   # Create nearest neighbor network
   cat("Creating nearest neighbor network...\n")
   cat("  k:", k_nn, "\n")
+  cat("  Dimensionality reduction:", dim_reduction_to_use, "\n")
   
   gobj <- createNearestNetwork(
     gobject = gobj,
+    dim_reduction_to_use = dim_reduction_to_use,
+    dim_reduction_name = dim_reduction_name,
     dimensions_to_use = dimensions_to_use,
-    k = k_nn
+    k = k_nn,
+    name = network_name
   )
   
   cat("✓ NN network created\n\n")
@@ -139,7 +146,7 @@ perform_clustering <- function(gobj,
 }
 
 # Run if sourced directly
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 2) {
     sample_id <- args[1]

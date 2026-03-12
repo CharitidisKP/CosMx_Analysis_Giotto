@@ -6,35 +6,45 @@
 # ==============================================================================
 
 setup_environment <- function(verbose = TRUE) {
-  
+
   if (verbose) {
     cat("\n========================================\n")
     cat("STEP 00: Setting Up Environment\n")
     cat("========================================\n\n")
   }
-  
+
   start_time <- Sys.time()
-  
-  # Python configuration
-  python_path <- "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
-  
+
+  project_dir <- Sys.getenv("COSMX_PROJECT_DIR", unset = getwd())
+  project_dir <- normalizePath(project_dir, winslash = "/", mustWork = FALSE)
+
+  python_path <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")
+  if (!nzchar(python_path)) {
+    python_path <- getOption(
+      "cosmx.python_path",
+      "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
+    )
+  }
+
   # Define package list in STRICT load order
   packages <- c(
-    "Matrix", "data.table", "tibble", "dplyr", "tidyr", "readr", 
-    "purrr", "stringr", "ggplot2", "terra", "sf", "viridis", 
-    "RColorBrewer", "scales", "patchwork", "cowplot", "ggpubr", 
+    "Matrix", "data.table", "tibble", "dplyr", "tidyr", "readr",
+    "purrr", "stringr", "ggplot2", "terra", "sf", "viridis",
+    "RColorBrewer", "scales", "patchwork", "cowplot", "ggpubr",
     "pheatmap", "gridExtra", "grid", "knitr", "kableExtra",
-    "igraph", "tidygraph", "ggraph", "scran", "SingleR", 
-    "celldex", "InSituType", "reticulate", "SpatialDecon", "Giotto"
+    "igraph", "tidygraph", "ggraph", "scran", "SingleR",
+    "celldex", "InSituType", "reticulate", "SpatialDecon", "Giotto",
+    "yaml", "optparse", "readxl", "jsonlite", "processx",
+    "harmony", "shiny", "bslib", "DT"
   )
-  
+
   # Check which packages are already loaded
   already_loaded <- sapply(packages, function(pkg) {
     paste0("package:", pkg) %in% search()
   })
-  
+
   packages_to_load <- packages[!already_loaded]
-  
+
   if (verbose) {
     if (sum(already_loaded) > 0) {
       cat("Already loaded:", sum(already_loaded), "packages\n")
@@ -45,14 +55,14 @@ setup_environment <- function(verbose = TRUE) {
       cat("  To load:", paste(packages_to_load, collapse = ", "), "\n\n")
     }
   }
-  
+
   # Function to safely load package
   load_package <- function(pkg) {
     # First check if already loaded
     if (paste0("package:", pkg) %in% search()) {
       return(TRUE)
     }
-    
+
     # Check if installed
     if (!requireNamespace(pkg, quietly = TRUE)) {
       if (verbose) cat("  Installing", pkg, "...\n")
@@ -60,19 +70,19 @@ setup_environment <- function(verbose = TRUE) {
         install.packages(pkg, repos = "https://cloud.r-project.org", quiet = TRUE)
       )
     }
-    
+
     # Try to load
     success <- suppressPackageStartupMessages({
       require(pkg, character.only = TRUE, quietly = TRUE)
     })
-    
+
     return(success)
   }
-  
+
   # Load packages
   if (length(packages_to_load) > 0) {
     if (verbose) cat("Loading new packages...\n")
-    
+
     failed_packages <- c()
     for (pkg in packages_to_load) {
       success <- load_package(pkg)
@@ -83,38 +93,38 @@ setup_environment <- function(verbose = TRUE) {
         failed_packages <- c(failed_packages, pkg)
       }
     }
-    
+
     if (verbose) cat("\n")
-    
+
     # Only stop if critical packages failed
-    critical_failed <- intersect(failed_packages, 
+    critical_failed <- intersect(failed_packages,
                                  c("Giotto", "Matrix", "terra", "ggplot2"))
     if (length(critical_failed) > 0) {
-      stop("Critical packages failed to load: ", 
+      stop("Critical packages failed to load: ",
            paste(critical_failed, collapse = ", "))
     }
-    
+
     if (length(failed_packages) > 0) {
-      warning("Some packages failed to load: ", 
+      warning("Some packages failed to load: ",
               paste(failed_packages, collapse = ", "))
     }
   } else {
     if (verbose) cat("✓ All required packages already loaded\n\n")
   }
-  
+
   # Verify critical packages
   critical_packages <- c("Giotto", "Matrix", "terra", "ggplot2")
   loaded_check <- sapply(critical_packages, function(pkg) {
     paste0("package:", pkg) %in% search()
   })
-  
+
   if (!all(loaded_check)) {
     missing <- names(loaded_check)[!loaded_check]
     stop("Critical packages not available: ", paste(missing, collapse = ", "))
   }
-  
+
   if (verbose) cat("✓ All critical packages verified\n\n")
-  
+
   # Configure Python
   if (verbose) cat("Configuring Python...\n")
   tryCatch({
@@ -126,15 +136,23 @@ setup_environment <- function(verbose = TRUE) {
   }, error = function(e) {
     if (verbose) cat("⚠ Python warning, continuing...\n\n")
   })
-  
+
   # Source helpers
   if (verbose) cat("Loading helper functions...\n")
-  helper_dir <- "~/P_lab/CosMx_analysis/Scripts/Helper_Scripts"
-  
-  if (!dir.exists(helper_dir)) {
-    dir.create(helper_dir, recursive = TRUE)
+  helper_dir_env <- Sys.getenv("COSMX_HELPER_DIR", unset = "")
+  helper_candidates <- c(
+    helper_dir_env,
+    file.path(project_dir, "Helper_Scripts"),
+    file.path(project_dir, "Scripts", "Helper_Scripts"),
+    "~/P_lab/CosMx_analysis/Scripts/Helper_Scripts"
+  )
+  helper_candidates <- unique(helper_candidates[nzchar(helper_candidates)])
+  helper_dir <- helper_candidates[file.exists(file.path(helper_candidates, "Helper_Functions.R"))][1]
+
+  if (is.na(helper_dir) || !nzchar(helper_dir)) {
+    helper_dir <- helper_candidates[1]
   }
-  
+
   helper_files <- c(
     "Helper_Functions.R",
     "Inspect_sNN_network.R",
@@ -143,7 +161,7 @@ setup_environment <- function(verbose = TRUE) {
     "Arrange_Feature_plots.R",
     "Feature_plots_panel.R"
   )
-  
+
   sourced_count <- 0
   for (hf in helper_files) {
     path <- file.path(helper_dir, hf)
@@ -159,14 +177,15 @@ setup_environment <- function(verbose = TRUE) {
       if (verbose) cat("  ⚠", hf, "- not found\n")
     }
   }
-  
+
   if (verbose) {
     cat("\n✓ Environment setup complete\n")
     cat("  Packages loaded:", sum(already_loaded) + sum(!already_loaded), "\n")
     cat("  Helpers loaded:", sourced_count, "/", length(helper_files), "\n\n")
   }
-  
+
   return(invisible(list(
+    project_dir = project_dir,
     python_path = python_path,
     helper_dir = helper_dir,
     packages_loaded = sum(sapply(packages, function(p) paste0("package:", p) %in% search()))
@@ -176,13 +195,15 @@ setup_environment <- function(verbose = TRUE) {
 # Auto-execute
 if (!exists(".cosmx_env_setup_complete")) {
   env_config <- setup_environment()
+  .cosmx_project_dir <<- env_config$project_dir
   python_path <<- env_config$python_path
   .cosmx_env_setup_complete <<- TRUE
 } else {
   cat("\n✓ Environment already initialized\n\n")
   env_config <- list(
+    project_dir = get(".cosmx_project_dir", envir = .GlobalEnv),
     python_path = get("python_path", envir = .GlobalEnv),
-    helper_dir = "~/P_lab/CosMx_analysis/Scripts/Helper_Scripts"
+    helper_dir = Sys.getenv("COSMX_HELPER_DIR", unset = file.path(getwd(), "Helper_Scripts"))
   )
 }
 

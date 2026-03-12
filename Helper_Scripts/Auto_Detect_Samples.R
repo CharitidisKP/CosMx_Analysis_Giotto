@@ -6,12 +6,20 @@
 
 library(tidyverse)
 
+default_project_dir <- function() {
+  project_dir <- Sys.getenv("COSMX_PROJECT_DIR", unset = "")
+  if (nzchar(project_dir)) {
+    return(path.expand(project_dir))
+  }
+  getwd()
+}
+
 #' Auto-detect samples from raw data directory
 #'
 #' @param raw_data_dir Path to raw data directory
 #' @return Tibble with sample information
 
-auto_detect_samples <- function(raw_data_dir = "~/P_lab/CosMx_analysis/Data/Raw_data") {
+auto_detect_samples <- function(raw_data_dir = file.path(default_project_dir(), "Data", "Raw_data")) {
   
   cat("Scanning directory:", raw_data_dir, "\n")
   
@@ -40,7 +48,7 @@ auto_detect_samples <- function(raw_data_dir = "~/P_lab/CosMx_analysis/Data/Raw_
       
       # Create full paths
       data_dir = file.path(raw_data_dir, directory_name),
-      output_dir = file.path("~/P_lab/CosMx_analysis/Output", paste0("Sample_", sample_id)),
+      output_dir = file.path(default_project_dir(), "Output", paste0("Sample_", sample_id)),
       
       # Detect file type prefix (everything before "Slide")
       prefix = str_extract(directory_name, "^.*(?=Slide)")
@@ -114,8 +122,8 @@ validate_samples <- function(samples) {
 #' @param csv_path Path to sample registry CSV
 #' @param raw_data_dir Base directory for raw data
 #' @return Tibble with sample information
-load_samples_from_csv <- function(csv_path = "~/P_lab/CosMx_analysis/Data/sample_registry.csv",
-                                  raw_data_dir = "~/P_lab/CosMx_analysis/Data/Raw_data") {
+load_samples_from_csv <- function(csv_path = file.path(default_project_dir(), "Data", "sample_registry.csv"),
+                                  raw_data_dir = file.path(default_project_dir(), "Data", "Raw_data")) {
   
   if (!file.exists(csv_path)) {
     stop("Sample registry CSV not found: ", csv_path)
@@ -129,7 +137,7 @@ load_samples_from_csv <- function(csv_path = "~/P_lab/CosMx_analysis/Data/sample
       sample_id = Sample_ID,
       slide_num = as.character(Slide_num),
       data_dir = file.path(raw_data_dir, directory_name),
-      output_dir = file.path("~/P_lab/CosMx_analysis/Output", paste0("Sample_", sample_id))
+      output_dir = file.path(default_project_dir(), "Output", paste0("Sample_", sample_id))
     ) %>%
     select(sample_id, slide_num, directory_name, data_dir, output_dir, Notes)
   
@@ -141,7 +149,7 @@ load_samples_from_csv <- function(csv_path = "~/P_lab/CosMx_analysis/Data/sample
 #' Create sample registry CSV from auto-detection
 #'
 #' @param output_path Where to save the CSV
-create_sample_registry <- function(output_path = "~/P_lab/CosMx_analysis/Data/sample_registry.csv") {
+create_sample_registry <- function(output_path = file.path(default_project_dir(), "Data", "sample_registry.csv")) {
   
   cat("Creating sample registry...\n\n")
   
@@ -175,6 +183,6 @@ create_sample_registry <- function(output_path = "~/P_lab/CosMx_analysis/Data/sa
 }
 
 # If run directly, create registry
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   registry <- create_sample_registry()
 }

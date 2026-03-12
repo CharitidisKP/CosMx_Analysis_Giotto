@@ -4,13 +4,28 @@
 # Smart batch loading with automatic registry creation and validation
 # ==============================================================================
 
-# Setup
-setwd("~/P_lab/CosMx_analysis")
-source("Scripts/00_Setup.R")
-source("Scripts/01_Load_data.R")
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
 
-# Source helper functions
-source("Scripts/Helper_Scripts/Auto_Detect_Samples.R")
+project_dir <- normalizePath(file.path(current_script_dir(), ".."), winslash = "/", mustWork = FALSE)
+Sys.setenv(COSMX_PROJECT_DIR = project_dir)
+setwd(project_dir)
+source(file.path(project_dir, "00_Setup.R"))
+source(file.path(project_dir, "01_Load_data.R"))
+source(file.path(project_dir, "Helper_Scripts", "Auto_Detect_Samples.R"))
 
 #' Smart sample getter - creates registry if needed
 #'
@@ -19,7 +34,7 @@ source("Scripts/Helper_Scripts/Auto_Detect_Samples.R")
 #' @param filter_ids Optional sample IDs to process
 #' @return Validated sample information
 
-get_samples_smart <- function(csv_path = "~/P_lab/CosMx_analysis/Data/sample_registry.csv",
+get_samples_smart <- function(csv_path = file.path(project_dir, "Data", "sample_registry.csv"),
                               force_detect = FALSE,
                               filter_ids = NULL) {
   
@@ -250,11 +265,11 @@ batch_load_cosmx <- function(sample_ids = NULL,
   
   # Save results summary
   timestamp <- format(Sys.time(), "%Y%m%d_%H%M%S")
-  results_file <- file.path("~/P_lab/CosMx_analysis/Output", 
+  results_file <- file.path(project_dir, "Output",
                             paste0("batch_load_results_", timestamp, ".csv"))
   
   # Create Output directory if needed
-  dir.create("~/P_lab/CosMx_analysis/Output", recursive = TRUE, showWarnings = FALSE)
+  dir.create(file.path(project_dir, "Output"), recursive = TRUE, showWarnings = FALSE)
   write_csv(results, results_file)
   
   # Print summary
@@ -295,7 +310,7 @@ batch_load_cosmx <- function(sample_ids = NULL,
 }
 
 # Command-line interface
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   
   library(optparse)
   
