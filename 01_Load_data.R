@@ -2,18 +2,140 @@
 
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 01_load_data.R
+# 01_Load_data.R
 # Load CosMx data and create Giotto object with provided polygons
 # ==============================================================================
 
+#' Internal: Giotto object integrity report
+#'
+#' Checks polygon <-> cell ID consistency and per-FOV cell counts.
+#' Writes two CSVs to results_folder and prints a console summary.
+#' Stops with an informative error if overlap falls below min_overlap_pct.
+#'
+#' @param gobj            Giotto object (post-polygon attachment)
+#' @param sample_id       Sample identifier string
+#' @param results_folder  Directory to write the CSV reports
+#' @param min_overlap_pct Minimum acceptable polygon<->cell ID overlap (0-100).
+#'                        Default 80. Set to 0 to warn only.
+#' @return Invisibly returns a list: overview, fov_cells, overlap_pct,
+#'         n_poly_only, n_cell_only
+
+.giotto_object_report <- function(gobj,
+                                  sample_id,
+                                  results_folder,
+                                  min_overlap_pct = 80) {
+  
+  cat("\n--- Object integrity report ---\n")
+  
+  # ── Basic counts ─────────────────────────────────────────────────────────────
+  n_cells <- tryCatch(length(gobj@cell_ID$cell), error = function(e) NA_integer_)
+  n_feats <- tryCatch(length(gobj@feat_ID$rna),  error = function(e) NA_integer_)
+  
+  # ── Polygon presence ────────────────────────────────────────────────────────��─
+  spat_names <- tryCatch(names(gobj@spatial_info), error = function(e) character(0))
+  has_polys  <- "cell" %in% spat_names && !is.null(gobj@spatial_info$cell)
+  
+  n_polys <- if (has_polys) {
+    tryCatch(
+      length(gobj@spatial_info$cell@unique_ID_cache),
+      error = function(e) NA_integer_
+    )
+  } else { 0L }
+  
+  # ── ID overlap ────────────────────────────────────────────────────────────────
+  poly_ids <- if (has_polys) {
+    tryCatch(gobj@spatial_info$cell@unique_ID_cache, error = function(e) character(0))
+  } else { character(0) }
+  
+  cell_ids <- tryCatch(gobj@cell_ID$cell, error = function(e) character(0))
+  
+  n_overlap   <- length(intersect(poly_ids, cell_ids))
+  n_poly_only <- length(setdiff(poly_ids, cell_ids))   # orphan polygons
+  n_cell_only <- length(setdiff(cell_ids, poly_ids))   # cells missing a polygon
+  
+  overlap_pct <- if (length(cell_ids) > 0) {
+    round(100 * n_overlap / length(cell_ids), 1)
+  } else { 0 }
+  
+  # ── Per-FOV cell counts ────────────────────────────────────────────────────────
+  fov_tab <- tryCatch({
+    fov_str <- sub("^c_(\\d+)_(\\d+)_.*$", "\\2", cell_ids)
+    fov_df  <- data.frame(FOV = as.integer(fov_str))
+    fov_df  <- aggregate(list(n_cells = fov_df$FOV), list(FOV = fov_df$FOV), length)
+    fov_df[order(fov_df$FOV), ]
+  }, error = function(e) data.frame(FOV = integer(), n_cells = integer()))
+  
+  # ── Console output ────────────────────────────────────────────────────────────
+  cat(sprintf("  Cells loaded:           %d\n", n_cells))
+  cat(sprintf("  RNA features:           %d\n", n_feats))
+  cat(sprintf("  Cell polygons:          %d\n", n_polys))
+  cat(sprintf("  Polygon \u2229 cell overlap:  %d / %d cells (%.1f%%)\n",
+              n_overlap, length(cell_ids), overlap_pct))
+  
+  if (n_poly_only > 0)
+    cat(sprintf("  \u26A0 Orphan polygons (no matching cell): %d\n", n_poly_only))
+  if (n_cell_only > 0)
+    cat(sprintf("  \u26A0 Cells missing polygon:              %d\n", n_cell_only))
+  
+  cat(sprintf("  FOVs represented:       %d\n", nrow(fov_tab)))
+  if (nrow(fov_tab) > 0)
+    cat(sprintf("  Cells/FOV (min/med/max): %d / %g / %d\n",
+                min(fov_tab$n_cells),
+                stats::median(fov_tab$n_cells),
+                max(fov_tab$n_cells)))
+  
+  # ── Write CSV reports ──────────────────────────────────────────────────────────
+  overview_df <- data.frame(
+    Metric = c("Cells", "RNA features", "Cell polygons",
+               "Polygon-cell overlap (n)", "Polygon-cell overlap (%)",
+               "Orphan polygons", "Cells missing polygon", "FOVs"),
+    Value  = c(n_cells, n_feats, n_polys,
+               n_overlap, overlap_pct,
+               n_poly_only, n_cell_only, nrow(fov_tab))
+  )
+  
+  write.csv(overview_df,
+            file.path(results_folder, paste0(sample_id, "_object_overview.csv")),
+            row.names = FALSE)
+  
+  if (nrow(fov_tab) > 0)
+    write.csv(fov_tab,
+              file.path(results_folder, paste0(sample_id, "_cells_per_fov.csv")),
+              row.names = FALSE)
+  
+  # ── Hard stop if overlap is critically low ─────────────────────────────────────
+  if (min_overlap_pct > 0 && overlap_pct < min_overlap_pct) {
+    stop(sprintf(
+      paste0("Polygon<->cell ID overlap is %.1f%% (threshold: %.0f%%).\n",
+             "  Check polygon IDs were built with the correct sample_id prefix.\n",
+             "  Orphan polygons: %d  |  Cells missing polygon: %d"),
+      overlap_pct, min_overlap_pct, n_poly_only, n_cell_only
+    ))
+  }
+  
+  cat("\u2713 Object integrity report complete\n")
+  
+  invisible(list(
+    overview    = overview_df,
+    fov_cells   = fov_tab,
+    overlap_pct = overlap_pct,
+    n_poly_only = n_poly_only,
+    n_cell_only = n_cell_only
+  ))
+}
+
+
 #' Load CosMx Sample with Provided Polygons
 #'
-#' @param sample_id Sample identifier
-#' @param data_dir Path to raw data directory
-#' @param output_dir Output directory for this sample
+#' @param sample_id       Sample identifier
+#' @param data_dir        Path to raw data directory
+#' @param output_dir      Output directory for this sample
+#' @param min_overlap_pct Minimum polygon<->cell ID overlap %. Default 80.
+#'                        Set to 0 to warn only (no hard stop).
 #' @return Giotto object with polygons
 
-load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
+load_cosmx_sample <- function(sample_id, data_dir, output_dir,
+                              min_overlap_pct = 80) {
   
   cat("\n========================================\n")
   cat("STEP 01: Loading CosMx Data\n")
@@ -37,21 +159,21 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
   # Find required files
   cat("Searching for data files...\n")
   
-  expr_file <- list.files(data_dir, pattern = "_exprMat_file\\.csv", 
+  expr_file <- list.files(data_dir, pattern = "_exprMat_file\\.csv",
                           full.names = TRUE)[1]
-  meta_file <- list.files(data_dir, pattern = "_metadata_file\\.csv", 
+  meta_file <- list.files(data_dir, pattern = "_metadata_file\\.csv",
                           full.names = TRUE)[1]
-  fov_file <- list.files(data_dir, pattern = "_fov_positions_file\\.csv", 
-                         full.names = TRUE)[1]
-  poly_file <- list.files(data_dir, pattern = "-polygons\\.csv", 
+  fov_file  <- list.files(data_dir, pattern = "_fov_positions_file\\.csv",
+                          full.names = TRUE)[1]
+  poly_file <- list.files(data_dir, pattern = "-polygons\\.csv",
                           full.names = TRUE)[1]
   
   # Validate files exist
   required_files <- list(
     "Expression matrix" = expr_file,
-    "Metadata" = meta_file,
-    "FOV positions" = fov_file,
-    "Polygons" = poly_file
+    "Metadata"          = meta_file,
+    "FOV positions"     = fov_file,
+    "Polygons"          = poly_file
   )
   
   for (file_type in names(required_files)) {
@@ -112,16 +234,16 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
   }
   
   # Extract gene columns
-  meta_cols <- c("fov", "cell_ID", "giotto_cell_ID")
+  meta_cols    <- c("fov", "cell_ID", "giotto_cell_ID")
   gene_col_idx <- which(!names(expr_data) %in% meta_cols)
-  gene_names <- names(expr_data)[gene_col_idx]
+  gene_names   <- names(expr_data)[gene_col_idx]
   
   cat("Genes:", length(gene_names), "\n")
   cat("Cells:", nrow(expr_data), "\n")
   
   # Create expression matrix (genes x cells)
   expr_matrix_ct <- as.matrix(expr_data[, gene_col_idx])
-  expr_matrix <- t(expr_matrix_ct)
+  expr_matrix    <- t(expr_matrix_ct)
   rownames(expr_matrix) <- gene_names
   colnames(expr_matrix) <- expr_data$giotto_cell_ID
   
@@ -132,7 +254,8 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
     rownames(expr_matrix) <- make.unique(rownames(expr_matrix), sep = "_")
   }
   
-  cat("✓ Expression matrix prepared:", nrow(expr_matrix), "genes x", ncol(expr_matrix), "cells\n\n")
+  cat("✓ Expression matrix prepared:", nrow(expr_matrix), "genes x",
+      ncol(expr_matrix), "cells\n\n")
   
   # Prepare metadata
   metadata <- metadata %>%
@@ -142,7 +265,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
   cat("Creating Giotto object...\n")
   
   cosmx <- createGiottoObject(
-    expression = expr_matrix,
+    expression   = expr_matrix,
     instructions = instructions
   )
   
@@ -152,9 +275,9 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
   cat("Adding metadata...\n")
   
   cosmx <- addCellMetadata(
-    gobject = cosmx,
-    new_metadata = metadata,
-    by_column = TRUE,
+    gobject        = cosmx,
+    new_metadata   = metadata,
+    by_column      = TRUE,
     column_cell_ID = "giotto_cell_ID"
   )
   
@@ -165,21 +288,19 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir) {
   cosmx <- add_polygons_from_csv(cosmx, poly_file)
   cat("✓ Polygons added\n\n")
   
-  # Summary
-  cat("=== Data Loading Summary ===\n")
-  cat("Sample ID:", sample_id, "\n")
-  cat("Cells:", length(cosmx@cell_ID$cell), "\n")
-  cat("Genes:", length(cosmx@feat_ID$rna), "\n")
-  
-  if ("cell" %in% names(cosmx@spatial_info)) {
-    n_poly <- nrow(cosmx@spatial_info$cell)
-    cat("Polygons:", n_poly, "\n")
-  }
+  # ── NEW: Object integrity report ──────────────────────────────────────────────
+  .giotto_object_report(
+    gobj            = cosmx,
+    sample_id       = sample_id,
+    results_folder  = results_folder,
+    min_overlap_pct = min_overlap_pct
+  )
   
   cat("\n✓ Data loading complete\n")
   
   return(cosmx)
 }
+
 
 #' Add polygons from CSV (simplified version using existing cell IDs)
 add_polygons_from_csv <- function(gobj, polygon_file) {
@@ -222,7 +343,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
   
   # Remove invalid
   valid_idx <- !sapply(vects, is.null)
-  vects <- vects[valid_idx]
+  vects     <- vects[valid_idx]
   poly_list <- poly_list[valid_idx, ]
   
   if (length(vects) == 0) {
@@ -237,27 +358,26 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     poly_ID = as.character(poly_list$cell)
   )
   
-  # Create GiottoPolygon - use Giotto's helper function
+  # Create GiottoPolygon
   cat("Adding polygons to Giotto object...\n")
   
-  # Use createGiottoPolygonsFromDfr or direct construction
   gpolygon <- new("giottoPolygon",
-                  spatVector = spat_vect,
+                  spatVector          = spat_vect,
                   spatVectorCentroids = terra::centroids(spat_vect),
-                  overlaps = data.table(),
-                  name = "cell",
-                  unique_ID_cache = as.character(poly_list$cell))
+                  overlaps            = data.table(),
+                  name                = "cell",
+                  unique_ID_cache     = as.character(poly_list$cell))
   
   # Add to Giotto object
   gobj <- addGiottoPolygons(
-    gobject = gobj,
+    gobject   = gobj,
     gpolygons = list(cell = gpolygon)
   )
   
   # Calculate and add centroids as spatial locations
   tryCatch({
     gobj <- addSpatialCentroidLocations(
-      gobject = gobj,
+      gobject   = gobj,
       poly_info = "cell"
     )
   }, error = function(e) {
@@ -267,12 +387,13 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
   return(gobj)
 }
 
+
 # Run if sourced directly
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 3) {
-    sample_id <- args[1]
-    data_dir <- args[2]
+    sample_id  <- args[1]
+    data_dir   <- args[2]
     output_dir <- args[3]
     cosmx <- load_cosmx_sample(sample_id, data_dir, output_dir)
     saveRDS(cosmx, file.path(output_dir, paste0(sample_id, "_cosmx_loaded.rds")))
