@@ -1,133 +1,107 @@
 # ==============================================================================
-# pipeline_config.yaml
-# Complete configuration for CosMx analysis pipeline
+# CosMx pipeline configuration
+# Relative paths are resolved from the location of this file.
 # ==============================================================================
 
-# Project paths
 paths:
-  main_dir: "~/P_lab/CosMx_analysis"
-  raw_data_dir: "~/P_lab/CosMx_analysis/Data/Raw_data"
-  output_dir: "~/P_lab/CosMx_analysis/Output"
-  scripts_dir: "~/P_lab/CosMx_analysis/Scripts"
-  sample_registry: "~/P_lab/CosMx_analysis/Data/sample_registry.csv"
-  reference_profiles: "~/P_lab/CosMx_analysis/Data/Celltype_profiles/Reference_Panels.csv"
+  project_dir: "."
+  scripts_dir: "."
+  raw_data_dir: "Data/Raw_data"
+  output_dir: "Output"
+  sample_sheet: "sample_sheet.csv"
   python_path: "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
 
-# Sample selection
-samples:
-  sample_ids: "all"
-  batch_size: 0
+pipeline:
+  mode: "all"
+  save_intermediates: true
+  overwrite_existing: false
+  skip_on_error: false
 
-# Analysis parameters
+paired:
+  pair_column: "pair_id"
+  group_column: "group_id"
+  treatment_column: "treatment"
+  patient_column: "patient_id"
+
+merged:
+  input_step: "07_annotate"
+  join_method: "shift"
+  x_padding: 1000
+  batch_column: "slide_num"
+  dimensions_to_use: "1:30"
+  umap_n_neighbors: 30
+  umap_min_dist: 0.3
+  k_nn: 15
+  resolution: 0.3
+  auto_prepare_samples: true
+  cohort_column: "leiden_clust"
+  run_label: null
+
+interaction:
+  annotation_column: null
+  bcell_regex: "B|Plasma|Plasmablast"
+  spatial_network_name: "Delaunay_network"
+  number_of_simulations: 250
+
 parameters:
-  
   qc:
     gene_min_cells: 10
     cell_min_genes: 50
     cell_max_genes: null
     min_count: 100
     max_mito_pct: null
-  
+
   normalization:
-    method: "standard"
     scalefactor: 6000
     log_transform: true
-  
+
   dim_reduction:
     n_hvgs: 500
     n_pcs: 30
     umap_n_neighbors: 30
     umap_min_dist: 0.3
-    tsne_perplexity: 30
     spatial_hvg: false
-  
+
   clustering:
     k_nn: 15
     resolution: 0.3
     dimensions_to_use: "1:30"
-    method: "leiden"
-  
+
   markers:
-    cluster_column: null
-    methods: ["scran"]
-    min_feats: 3
+    cluster_column: "leiden_clust"
     top_n: 25
-  
+
   annotation:
-    # Reference profiles to use (can include multiple)
     profiles:
       - name: "HCA_Kidney"
         type: "hca"
         species: "Human"
         age_group: "Adult"
         matrixname: "Kidney_HCA"
-        
+
       - name: "CosMx_1K_Kidney"
         type: "url"
         source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/Kidney_1k/Kidney_1k.profiles.csv"
-        
+
       - name: "CosMx_6K_Kidney_RCC"
         type: "url"
         source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/KidneyRCC_6k/KidneyRCC_6k.profiles.csv"
-    
-    # Default profile to use (creates 'celltype' and 'celltype_score' columns)
+
     default_profile: "HCA_Kidney"
-    
-    # InSituType parameters
     align_genes: true
     n_starts: 10
     n_clusts_semi: 5
-    cohort_column: "leiden_clus"
+    cohort_column: "leiden_clust"
     min_gene_overlap: 100
-    
-    # Visualization
     create_plots: true
-  
+    conf_threshold: null
+
   visualization:
     celltype_columns: null
-    cluster_column: "leiden_clus"
+    cluster_column: "leiden_clust"
     marker_genes:
       b_cells: ["CD19", "MS4A1", "CD79A", "CD79B", "IGHM", "IGHG1"]
       t_cells: ["CD3D", "CD3E", "CD4", "CD8A", "CD8B"]
       myeloid: ["CD14", "CD68", "LYZ", "CSF1R"]
       nk_cells: ["NCAM1", "KLRF1", "GNLY", "NKG7"]
       kidney: ["NPHS1", "NPHS2", "PODXL", "SLC12A1", "UMOD", "CDH1", "KRT8"]
-    create_html_report: true
-
-# Visualization settings
-vis_settings:
-  default_point_size: 0.5
-  default_alpha: 0.8
-  color_palette: "Vivid"
-  save_format: "png"
-  dpi: 300
-  
-  dims:
-    umap: [12, 9]
-    tsne: [12, 9]
-    spatial: [14, 10]
-    heatmap: [14, 12]
-    violin: [16, 20]
-
-# Computational settings
-computational:
-  n_cores: 4
-  memory_limit: "64G"
-  verbose: true
-  seed: 1511
-
-# Pipeline behavior
-pipeline:
-  save_intermediates: true
-  overwrite_existing: false
-  skip_on_error: false
-  
-  steps:
-    step_01_load: true
-    step_02_qc: true
-    step_03_norm: true
-    step_04_dimred: true
-    step_05_cluster: true
-    step_06_markers: true
-    step_07_annotate: true
-    step_08_visualize: true

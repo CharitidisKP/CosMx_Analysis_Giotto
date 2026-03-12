@@ -6,7 +6,23 @@
 
 library(tidyverse)
 
-source("~/P_lab/CosMx_analysis/Scripts/auto_detect_samples.R")
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+source(file.path(current_script_dir(), "Auto_Detect_Samples.R"))
 
 #' Get samples using best available method
 #'
@@ -15,7 +31,7 @@ source("~/P_lab/CosMx_analysis/Scripts/auto_detect_samples.R")
 #' @param filter_ids Optional vector of sample IDs to filter
 #' @return Validated tibble with sample information
 get_samples <- function(method = "auto",
-                        csv_path = "~/P_lab/CosMx_analysis/Data/sample_registry.csv",
+                        csv_path = file.path(default_project_dir(), "Data", "sample_registry.csv"),
                         filter_ids = NULL) {
   
   cat("\n=== Getting Sample Information ===\n\n")
