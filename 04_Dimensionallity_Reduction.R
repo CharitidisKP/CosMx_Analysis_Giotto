@@ -276,7 +276,15 @@ dimensionality_reduction <- function(gobj,
 # Run if sourced directly
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) >= 2) {
+  if (length(args) >= 3) {
+    script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1])
+    script_dir <- dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE))
+    bootstrap_script <- file.path(script_dir, "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
+    }
+    
     sample_id <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
@@ -290,5 +298,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     )
     
     saveGiotto(gobj, dir = output_dir, foldername = "Giotto_Object_DimReduced", overwrite = TRUE)
+  } else {
+    stop("Usage: Rscript 04_Dimensionallity_Reduction.R <sample_id> <input_path> <output_dir> [spatial_hvg]")
   }
 }

@@ -48,37 +48,37 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
                                  primary_network,
                                  sample_id,
                                  prox_folder) {
-
+  
   ann_net <- annotateSpatialNetwork(
     gobject              = gobj,
     spatial_network_name = primary_network,
     cluster_column       = celltype_col
   )
-
+  
   spat_locs <- getSpatialLocations(gobj, output = "data.table")
   meta      <- pDataDT(gobj)
-
+  
   cell_dt <- merge(
     spat_locs[, c("cell_ID", "sdimx", "sdimy")],
     meta[,     c("cell_ID", celltype_col), with = FALSE],
     by = "cell_ID"
   )
   names(cell_dt)[names(cell_dt) == celltype_col] <- "cell_type"
-
+  
   int_edges    <- ann_net[ann_net$unified_int == interaction_name, ]
   ct_pair      <- strsplit(interaction_name, "--")[[1]]
   cell_dt$in_pair <- cell_dt$cell_type %in% ct_pair
-
+  
   edge_dt     <- int_edges[, c("sdimx_begin", "sdimy_begin",
                                "sdimx_end",   "sdimy_end")]
   selected_dt <- cell_dt[cell_dt$in_pair, ]
   other_dt    <- cell_dt[!cell_dt$in_pair, ]
-
+  
   ct_colours <- setNames(
     scales::hue_pal()(length(ct_pair)),
     ct_pair
   )
-
+  
   p <- ggplot2::ggplot() +
     ggplot2::geom_point(
       data    = other_dt,
@@ -107,7 +107,7 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
     ggplot2::theme_classic(base_size = 11) +
     ggplot2::theme(plot.title      = ggplot2::element_text(face = "bold"),
                    legend.position = "right")
-
+  
   safe_name <- gsub("[^A-Za-z0-9]", "_", interaction_name)
   save_path <- file.path(prox_folder,
                          paste0(sample_id, "_proximity_visplot_",
@@ -126,51 +126,51 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
 .plot_proximity_heatmap <- function(prox_csv_path,
                                     sample_id,
                                     prox_folder) {
-
+  
   if (!file.exists(prox_csv_path))
     stop("Proximity enrichment CSV not found: ", prox_csv_path)
-
+  
   enr      <- data.table::fread(prox_csv_path, data.table = FALSE)
   pairs    <- strsplit(enr$unified_int, "--")
   enr$from <- sapply(pairs, `[`, 1)
   enr$to   <- sapply(pairs, `[`, 2)
-
+  
   all_types <- sort(unique(c(enr$from, enr$to)))
   n_types   <- length(all_types)
-
+  
   # Enrichment matrix (symmetrised) — initialise with 0
   mat <- matrix(0, nrow = n_types, ncol = n_types,
                 dimnames = list(all_types, all_types))
-
+  
   # Significance mask
   sig_mat <- matrix(FALSE, nrow = n_types, ncol = n_types,
                     dimnames = list(all_types, all_types))
-
+  
   for (i in seq_len(nrow(enr))) {
     r  <- enr$from[i]
     co <- enr$to[i]
     v  <- enr$enrichm[i]
-
+    
     is_sig <- (!is.na(enr$p.adj_higher[i]) & enr$p.adj_higher[i] < 0.05) |
       (!is.na(enr$p.adj_lower[i])  & enr$p.adj_lower[i]  < 0.05)
-
+    
     mat[r, co]     <- v
     mat[co, r]     <- v       # symmetrise
     sig_mat[r, co] <- is_sig
     sig_mat[co, r] <- is_sig
   }
-
+  
   # Compute colour scale from FULL matrix before masking
   max_abs <- max(abs(mat[is.finite(mat)]), na.rm = TRUE)
   if (!is.finite(max_abs) || max_abs == 0) max_abs <- 1
-
+  
   # Grey out non-significant cells AFTER computing max_abs
   mat_masked           <- mat
   mat_masked[!sig_mat] <- NA
-
+  
   breaks <- seq(-max_abs, max_abs, length.out = 101)
   colors <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100)
-
+  
   # Row/col annotation: immune vs structural compartment
   immune_types <- c("B.cell", "CD4.T.cell", "CD8.T.cell", "NK.cell",
                     "NKT.cell",
@@ -180,7 +180,7 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
                     "MNP.c.dendritic.cell", "MNP.d.Tissue.macrophage",
                     "Plasmacytoid.DC", "Plasmacytoid.dendritic.cell",
                     "Mast.cell", "Neutrophil")
-
+  
   anno_df <- data.frame(
     Compartment = ifelse(all_types %in% immune_types, "Immune", "Structural"),
     row.names   = all_types
@@ -189,10 +189,10 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
     Compartment = c(Immune     = "#E41A1C",
                     Structural = "#377EB8")
   )
-
+  
   save_path <- file.path(prox_folder,
                          paste0(sample_id, "_proximity_heatmap.png"))
-
+  
   grDevices::png(save_path, width = 16, height = 14, units = "in", res = 150)
   pheatmap::pheatmap(
     mat_masked,
@@ -227,7 +227,7 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
     )
   )
   grDevices::dev.off()
-
+  
   cat("\u2713 Proximity heatmap saved:", basename(save_path), "\n")
   invisible(save_path)
 }
@@ -271,14 +271,14 @@ build_spatial_network <- function(gobj,
                                   create_plots      = TRUE,
                                   random_seed       = 42,
                                   min_page_genes    = 5) {
-
+  
   set.seed(random_seed)
-
+  
   cat("\n========================================\n")
   cat("STEP 09: Spatial Network Analysis\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
-
+  
   if (is.character(gobj)) {
     manifest_path <- file.path(gobj, "manifest.json")
     if (file.exists(manifest_path)) {
@@ -289,16 +289,16 @@ build_spatial_network <- function(gobj,
     }
     cat("\u2713 Loaded\n\n")
   }
-
+  
   base_folder   <- file.path(output_dir, "09_Spatial_Network")
   net_folder    <- file.path(base_folder, "networks")
   prox_folder   <- file.path(base_folder, "proximity")
   deconv_folder <- file.path(base_folder, "deconvolution")
   plot_folder   <- file.path(base_folder, "spatial_plots")
-
+  
   for (d in c(net_folder, prox_folder, deconv_folder, plot_folder))
     dir.create(d, recursive = TRUE, showWarnings = FALSE)
-
+  
   meta_cols <- names(pDataDT(gobj))
   if (is.null(celltype_col)) {
     sup_cols     <- grep("celltype_.*_supervised$", meta_cols, value = TRUE)
@@ -308,10 +308,10 @@ build_spatial_network <- function(gobj,
     if (!celltype_col %in% meta_cols)
       stop("celltype_col '", celltype_col, "' not found in cell metadata.")
   }
-
+  
   n_types <- length(unique(pDataDT(gobj)[[celltype_col]]))
   cat("Cell types:", n_types, "\n\n")
-
+  
   if (is.null(marker_list)) {
     cat("No marker_list supplied — using built-in HCA Kidney markers.\n\n")
     marker_list <- list(
@@ -344,11 +344,11 @@ build_spatial_network <- function(gobj,
       Proliferating.PT            = c("MKI67","TOP2A","PCNA","CDK1","CCNB1","CCNB2","CCNA2","BUB1","AURKB","PLK1")
     )
   }
-
+  
   avail_genes <- rownames(
     getExpression(gobj, values = expression_values, output = "matrix")
   )
-
+  
   marker_list_filtered <- lapply(marker_list,
                                  function(genes) intersect(genes, avail_genes))
   marker_list_page <- marker_list_filtered[
@@ -357,28 +357,28 @@ build_spatial_network <- function(gobj,
   marker_list_rank <- marker_list_filtered[
     sapply(marker_list_filtered, length) >= 2
   ]
-
+  
   cat(sprintf(
     "Marker list: %d cell types with >= %d genes (PAGE), %d with >= 2 genes (rank)\n\n",
     length(marker_list_page), min_page_genes, length(marker_list_rank)
   ))
-
+  
   if (length(marker_list_page) == 0 && "PAGE" %in% enrich_methods) {
     cat("\u26A0 No cell types passed the PAGE gene threshold.\n")
     cat("  Supply a custom marker_list with more genes per type.\n\n")
   }
-
-
+  
+  
   # ============================================================================ 
   # SECTION 1 — SPATIAL NETWORK CONSTRUCTION 
   # ============================================================================ 
-
+  
   cat("================================================================================\n")
   cat("SECTION 1: Spatial Network Construction\n")
   cat("================================================================================\n\n")
-
+  
   network_names <- character(0)
-
+  
   if ("Delaunay" %in% network_methods) {
     cat("Building Delaunay spatial network...\n")
     tryCatch({
@@ -397,7 +397,7 @@ build_spatial_network <- function(gobj,
       cat("  \u2713 Saved: Delaunay network edges\n\n")
     }, error = function(e) cat("\u26A0 Delaunay failed:", conditionMessage(e), "\n\n"))
   }
-
+  
   if ("kNN" %in% network_methods) {
     cat(sprintf("Building kNN spatial network (k = %d)...\n", knn_k))
     tryCatch({
@@ -415,30 +415,30 @@ build_spatial_network <- function(gobj,
       cat("  \u2713 Saved: kNN network edges\n\n")
     }, error = function(e) cat("\u26A0 kNN failed:", conditionMessage(e), "\n\n"))
   }
-
+  
   if (length(network_names) == 0)
     stop("No spatial networks were successfully created. Cannot continue.")
-
+  
   primary_network <- if ("Delaunay_network" %in% network_names) {
     "Delaunay_network"
   } else { network_names[1] }
-
+  
   cat("Primary network for downstream steps:", primary_network, "\n\n")
-
-
+  
+  
   # ============================================================================ 
   # SECTION 2 — NEIGHBOURHOOD ENRICHMENT (cellProximityEnrichment) 
   # ============================================================================ 
-
+  
   cat("================================================================================\n")
   cat("SECTION 2: Cell Type Neighbourhood Enrichment\n")
   cat("================================================================================\n\n")
-
+  
   cat(sprintf("Running cellProximityEnrichment (%d permutations)...\n",
               n_simulations))
   cat("  Network:    ", primary_network, "\n")
   cat("  Cell types: ", celltype_col, "\n\n")
-
+  
   prox_results <- tryCatch({
     cellProximityEnrichment(
       gobject               = gobj,
@@ -451,12 +451,12 @@ build_spatial_network <- function(gobj,
     cat("\u26A0 cellProximityEnrichment failed:", conditionMessage(e), "\n")
     NULL
   })
-
+  
   prox_csv_path <- file.path(prox_folder,
                              paste0(sample_id, "_proximity_enrichment.csv"))
-
+  
   if (!is.null(prox_results)) {
-
+    
     # Save enrichment table
     if (!is.null(prox_results$enrichm_res)) {
       enr_out       <- as.data.frame(prox_results$enrichm_res)
@@ -469,16 +469,16 @@ build_spatial_network <- function(gobj,
       write.csv(enr_out[, col_order], prox_csv_path, row.names = FALSE)
       cat("\u2713 Enrichment table saved\n")
     }
-
+    
     if (!is.null(prox_results$result)) {
       write.csv(prox_results$result,
                 file.path(prox_folder,
                           paste0(sample_id, "_proximity_enrichment_full.csv")),
                 row.names = FALSE)
     }
-
+    
     if (create_plots) {
-
+      
       # Proximity heatmap via pheatmap
       tryCatch({
         .plot_proximity_heatmap(
@@ -489,20 +489,20 @@ build_spatial_network <- function(gobj,
       }, error = function(e) {
         cat("\u26A0 Proximity heatmap failed:", conditionMessage(e), "\n")
       })
-
+      
       # Vis plot — direct ggplot2 (bypasses cellProximityVisPlot Giotto bug)
       tryCatch({
         if (!file.exists(prox_csv_path))
           stop("Proximity enrichment CSV not found")
-
+        
         enr_csv <- data.table::fread(prox_csv_path, data.table = FALSE)
         if (!is.character(enr_csv$unified_int))
           enr_csv$unified_int <- as.character(enr_csv$unified_int)
-
+        
         hetero_csv <- enr_csv[!is.na(enr_csv$type_int) &
                                 enr_csv$type_int == "hetero", ]
         if (nrow(hetero_csv) == 0) stop("No hetero interactions in saved CSV")
-
+        
         sig_h   <- hetero_csv[!is.na(hetero_csv$p.adj_higher) &
                                 hetero_csv$p.adj_higher < 0.05, ]
         top_int <- if (nrow(sig_h) > 0) {
@@ -510,7 +510,7 @@ build_spatial_network <- function(gobj,
         } else {
           hetero_csv$unified_int[which.max(hetero_csv$enrichm)]
         }
-
+        
         cat("  Plotting top hetero interaction:", top_int, "\n")
         .plot_cell_proximity(
           gobj             = gobj,
@@ -524,7 +524,7 @@ build_spatial_network <- function(gobj,
         cat("\u26A0 Proximity vis plot failed:", conditionMessage(e), "\n")
       })
     }
-
+    
     # Console summary
     cat("\n=== Neighbourhood Enrichment Summary ===\n")
     enr_s  <- as.data.frame(prox_results$enrichm_res)
@@ -533,12 +533,12 @@ build_spatial_network <- function(gobj,
     cat(sprintf("  Total interactions tested:               %d\n", nrow(enr_s)))
     cat(sprintf("    Homotypic  (self-self):                %d\n", nrow(homo)))
     cat(sprintf("    Heterotypic (cross-type):              %d\n", nrow(hetero)))
-
+    
     if (file.exists(prox_csv_path)) {
       enr_csv    <- data.table::fread(prox_csv_path, data.table = FALSE)
       hetero_csv <- enr_csv[!is.na(enr_csv$type_int) &
                               enr_csv$type_int == "hetero", ]
-
+      
       if ("p.adj_higher" %in% names(hetero_csv)) {
         sig_pos <- sum(hetero_csv$enrichm > 0 &
                          hetero_csv$p.adj_higher < 0.05, na.rm = TRUE)
@@ -548,7 +548,7 @@ build_spatial_network <- function(gobj,
           "  Sig. co-localised hetero pairs (p.adj_higher < 0.05): %d\n", sig_pos))
         cat(sprintf(
           "  Sig. exclusion    hetero pairs (p.adj_lower  < 0.05): %d\n", sig_neg))
-
+        
         top_c <- hetero_csv[hetero_csv$enrichm > 0 &
                               !is.na(hetero_csv$p.adj_higher) &
                               hetero_csv$p.adj_higher < 0.05, ]
@@ -558,7 +558,7 @@ build_spatial_network <- function(gobj,
           cat(sprintf("    %s  enrichm=%.3f  p.adj_higher=%.2e\n",
                       top_c$unified_int[i], top_c$enrichm[i],
                       top_c$p.adj_higher[i]))
-
+        
         top_e <- hetero_csv[hetero_csv$enrichm < 0 &
                               !is.na(hetero_csv$p.adj_lower) &
                               hetero_csv$p.adj_lower < 0.05, ]
@@ -572,16 +572,16 @@ build_spatial_network <- function(gobj,
     }
     cat("\n\u2713 Neighbourhood enrichment complete\n\n")
   }
-
-
+  
+  
   # ============================================================================ 
   # SECTION 3 — NICHE DECONVOLUTION 
   # ============================================================================ 
-
+  
   cat("================================================================================\n")
   cat("SECTION 3: Niche Deconvolution (Spot-level Enrichment Scores)\n")
   cat("================================================================================\n\n")
-
+  
   if ("PAGE" %in% enrich_methods) {
     if (length(marker_list_page) == 0) {
       cat("\u26A0 PAGE skipped: no cell types with >=", min_page_genes,
@@ -602,7 +602,7 @@ build_spatial_network <- function(gobj,
           name              = "PAGE_enrichment"
         )
         cat("\u2713 PAGE enrichment complete\n")
-
+        
         page_scores <- getSpatialEnrichment(gobj, name = "PAGE_enrichment",
                                             output = "data.table")
         score_cols  <- setdiff(names(page_scores), "cell_ID")
@@ -612,7 +612,7 @@ build_spatial_network <- function(gobj,
                   file.path(deconv_folder,
                             paste0(sample_id, "_PAGE_enrichment_scores.csv")),
                   row.names = FALSE);
-
+        
         if (create_plots && length(score_cols) > 0) {
           cat(sprintf("  Saving spatial plots for all %d scored cell types...\n",
                       length(score_cols)))
@@ -643,7 +643,7 @@ build_spatial_network <- function(gobj,
       })
     }
   }
-
+  
   if ("rank" %in% enrich_methods) {
     cat(sprintf("Running rank enrichment (%d cell types)...\n", n_types))
     tryCatch({
@@ -658,7 +658,7 @@ build_spatial_network <- function(gobj,
                             expression_values = expression_values,
                             name = "rank_enrichment")
       cat("\u2713 Rank enrichment complete\n")
-
+      
       rank_scores  <- getSpatialEnrichment(gobj, name = "rank_enrichment",
                                            output = "data.table")
       score_cols_r <- setdiff(names(rank_scores), "cell_ID")
@@ -672,7 +672,7 @@ build_spatial_network <- function(gobj,
       cat("\u26A0 Rank enrichment failed:", conditionMessage(e), "\n\n")
     })
   }
-
+  
   if (create_plots) {
     page_present <- !is.null(
       tryCatch(getSpatialEnrichment(gobj, name = "PAGE_enrichment"),
@@ -706,22 +706,22 @@ build_spatial_network <- function(gobj,
       })
     }
   }
-
-
+  
+  
   # ============================================================================ 
   # SECTION 4 — SAVE & SUMMARISE 
   # ============================================================================ 
-
+  
   cat("================================================================================\n")
   cat("SECTION 4: Save & Summary\n")
   cat("================================================================================\n\n")
-
+  
   tryCatch({
     saveGiotto(gobject = gobj, dir = output_dir,
                foldername = "Giotto_Object_Spatial", overwrite = TRUE)
     cat("\u2713 Saved: Giotto_Object_Spatial\n")
   }, error = function(e) cat("\u26A0 Save failed:", conditionMessage(e), "\n"))
-
+  
   cat("\n=== Step 09 Summary ===\n")
   cat("  Spatial networks built:  ", length(network_names), "\n")
   cat("  Primary network:         ", primary_network, "\n")
@@ -731,7 +731,7 @@ build_spatial_network <- function(gobj,
             collapse = ", "), "\n")
   cat("  Output folder:           ", base_folder, "\n")
   cat("\n\u2713 STEP 09 complete for", sample_id, "\n\n")
-
+  
   invisible(gobj)
 }
 
@@ -740,10 +740,18 @@ build_spatial_network <- function(gobj,
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 3) {
+    bootstrap_script <- file.path(current_script_dir(), "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(current_script_dir(), load_pipeline_utils = TRUE, verbose = FALSE)
+    }
+    
     build_spatial_network(
       gobj       = args[2],
       sample_id  = args[1],
       output_dir = args[3]
     )
+  } else {
+    stop("Usage: Rscript 09_Spatial_Network.R <sample_id> <input_path> <output_dir>")
   }
 }

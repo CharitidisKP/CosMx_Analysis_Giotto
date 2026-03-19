@@ -33,8 +33,10 @@ pretty_step_label <- function(step_id) {
     "06_markers" = "06 Marker analysis",
     "07_annotate" = "07 Annotation",
     "08_visualize" = "08 Visualisation",
-    "09_batch" = "09 Harmony batch correction",
-    "10_bcell" = "10 B-cell microenvironment",
+    "09_spatial" = "09 Spatial network analysis",
+    "10_cci" = "10 CCI analysis",
+    "11_batch" = "11 Harmony batch correction",
+    "12_bcell" = "12 B-cell microenvironment",
     "merge" = "Merge sample objects"
   )
   labels[[step_id]] %||% step_id

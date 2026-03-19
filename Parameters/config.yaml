@@ -4,10 +4,10 @@
 # ==============================================================================
 
 paths:
-  project_dir: "."
-  scripts_dir: "."
-  raw_data_dir: "Data/Raw_data"
-  output_dir: "Output"
+  project_dir: ".."
+  scripts_dir: ".."
+  raw_data_dir: "../Data/Raw_data"
+  output_dir: "../Output"
   sample_sheet: "sample_sheet.csv"
   python_path: "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
 
@@ -42,6 +42,39 @@ interaction:
   bcell_regex: "B|Plasma|Plasmablast"
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
+
+cci:
+  run_sections:
+    insitucor: true
+    liana: true
+    nichenet: false
+    misty: true
+    nnsvg: true
+  sender_celltypes: null
+  receiver_celltype: null
+  nichenet_network_dir: null
+
+spatial_de:
+  sample_backend: "smiDE"
+  annotation_column: null
+  sample_column: "sample_id"
+  treatment_column: "treatment"
+  patient_column: "patient_id"
+  spatial_network_name: "Delaunay_network"
+  n_niches: 6
+  min_cells_per_niche: 30
+  min_cells_per_sample: 10
+  min_samples_per_group: 2
+  sample_replicate_column: "fov"
+  sample_contrast: "one_vs_rest"
+  min_cells_per_replicate: 5
+  min_replicates_per_group: 2
+  n_spatial_patches: 8
+  smide_family: "nbinom2"
+  smide_radius: 0.05
+  smide_ncores: 1
+  smide_overlap_threshold: null
+  smide_save_raw: true
 
 parameters:
   qc:

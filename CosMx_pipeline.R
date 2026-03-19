@@ -16,4 +16,1002 @@ current_script_dir <- function() {
   normalizePath(getwd(), winslash = "/", mustWork = FALSE)
 }
 
-source(file.path(current_script_dir(), "CosMx_pipeline.R"))
+repo_dir <- current_script_dir()
+
+default_config_path <- function(base_dir = repo_dir) {
+  parameters_config <- file.path(base_dir, "Parameters", "config.yaml")
+  legacy_config <- file.path(base_dir, "config.yaml")
+  if (file.exists(parameters_config) || !file.exists(legacy_config)) {
+    return(parameters_config)
+  }
+  legacy_config
+}
+
+pipeline_utils <- file.path(repo_dir, "Helper_Scripts", "Pipeline_Utils.R")
+if (file.exists(pipeline_utils)) {
+  source(pipeline_utils, local = TRUE)
+}
+
+if (!exists("%||%")) {
+  `%||%` <- function(x, y) {
+    if (is.null(x) || length(x) == 0) {
+      return(y)
+    }
+    if (length(x) == 1 && is.atomic(x) && is.na(x)) {
+      return(y)
+    }
+    x
+  }
+}
+
+if (!exists("ensure_dir")) {
+  ensure_dir <- function(path) {
+    dir.create(path, recursive = TRUE, showWarnings = FALSE)
+    normalizePath(path, winslash = "/", mustWork = FALSE)
+  }
+}
+
+if (!exists("resolve_path")) {
+  resolve_path <- function(path, base_dir = getwd(), mustWork = FALSE) {
+    if (is.null(path) || !nzchar(path)) {
+      return(NULL)
+    }
+    expanded <- path.expand(path)
+    if (!grepl("^(/|[A-Za-z]:[/\\\\])", expanded)) {
+      expanded <- file.path(base_dir, expanded)
+    }
+    normalizePath(expanded, winslash = "/", mustWork = mustWork)
+  }
+}
+
+if (!exists("parse_cli_csv")) {
+  parse_cli_csv <- function(value) {
+    if (is.null(value) || !nzchar(value)) {
+      return(NULL)
+    }
+    trimws(unlist(strsplit(value, ",", fixed = TRUE)))
+  }
+}
+
+canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
+  type <- match.arg(type)
+  if (is.null(step_ids) || length(step_ids) == 0) {
+    return(step_ids)
+  }
+  
+  normalize_id <- function(x) {
+    x <- trimws(tolower(x))
+    gsub("[^a-z0-9]+", "_", x)
+  }
+  
+  sample_aliases <- c(
+    "01_load_data" = "01_load",
+    "02_quality_control" = "02_qc",
+    "03_normalize" = "03_norm",
+    "03_normalise" = "03_norm",
+    "03_normalisation" = "03_norm",
+    "03_normalization" = "03_norm",
+    "04_reduce" = "04_dimred",
+    "04_reduction" = "04_dimred",
+    "04_dimensionality_reduction" = "04_dimred",
+    "04_dimensionallity_reduction" = "04_dimred",
+    "06_de" = "06_markers",
+    "06_differential_expression" = "06_markers",
+    "06_marker_analysis" = "06_markers",
+    "07_annotation" = "07_annotate",
+    "08_visualization" = "08_visualize",
+    "08_visualisation" = "08_visualize",
+    "09_spatial_network" = "09_spatial",
+    "10_cci_analysis" = "10_cci",
+    "12_b_cell" = "12_bcell",
+    "12_b_cell_analysis" = "12_bcell",
+    "13_spatial_de" = "13_spatial_de",
+    "13_spatial_differential_expression" = "13_spatial_de"
+  )
+  
+  merged_aliases <- c(
+    "11_batch_correction" = "11_batch",
+    "13_spatial_de" = "13_spatial_de",
+    "13_spatial_differential_expression" = "13_spatial_de"
+  )
+  
+  aliases <- if (type == "sample") sample_aliases else merged_aliases
+  normalized <- vapply(step_ids, normalize_id, character(1))
+  unname(ifelse(normalized %in% names(aliases), aliases[normalized], normalized))
+}
+
+SAMPLE_STEP_ORDER <- c(
+  "01_load",
+  "02_qc",
+  "03_norm",
+  "04_dimred",
+  "05_cluster",
+  "06_markers",
+  "07_annotate",
+  "08_visualize",
+  "09_spatial",
+  "10_cci",
+  "13_spatial_de",
+  "12_bcell"
+)
+
+MERGED_STEP_ORDER <- c("merge", "11_batch", "13_spatial_de")
+
+step_label <- function(step_id) {
+  labels <- c(
+    "01_load" = "01 Load data",
+    "02_qc" = "02 Quality control",
+    "03_norm" = "03 Normalization",
+    "04_dimred" = "04 Dimensionality reduction",
+    "05_cluster" = "05 Clustering",
+    "06_markers" = "06 Marker analysis",
+    "07_annotate" = "07 Annotation",
+    "08_visualize" = "08 Visualisation",
+    "09_spatial" = "09 Spatial network analysis",
+    "10_cci" = "10 CCI analysis",
+    "11_batch" = "11 Harmony batch correction",
+    "13_spatial_de" = "13 Spatial differential expression",
+    "12_bcell" = "12 B-cell microenvironment",
+    "merge" = "Merge sample objects"
+  )
+  labels[[step_id]] %||% step_id
+}
+
+standardize_colnames <- function(x) {
+  x <- gsub("([a-z0-9])([A-Z])", "\\1_\\2", x)
+  x <- gsub("[^A-Za-z0-9]+", "_", x)
+  x <- gsub("^_+|_+$", "", x)
+  tolower(x)
+}
+
+coerce_bool <- function(x, default = TRUE) {
+  if (is.null(x) || length(x) == 0) {
+    return(default)
+  }
+  if (is.logical(x)) {
+    out <- x[1]
+    if (is.na(out)) default else out
+  } else if (is.numeric(x)) {
+    !is.na(x[1]) && x[1] != 0
+  } else {
+    value <- tolower(trimws(as.character(x[1])))
+    if (!nzchar(value)) {
+      default
+    } else {
+      value %in% c("true", "t", "1", "yes", "y")
+    }
+  }
+}
+
+read_tabular_file <- function(path) {
+  ext <- tolower(tools::file_ext(path))
+  if (ext %in% c("xlsx", "xls")) {
+    if (!requireNamespace("readxl", quietly = TRUE)) {
+      stop("readxl is required to read sample sheets in Excel format.")
+    }
+    return(as.data.frame(readxl::read_excel(path), stringsAsFactors = FALSE))
+  }
+  if (ext %in% c("tsv", "txt")) {
+    return(utils::read.delim(path, stringsAsFactors = FALSE, check.names = FALSE))
+  }
+  utils::read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
+}
+
+infer_sample_id <- function(directory_name) {
+  sample_id <- sub("^.*?Slide\\d+_?", "", directory_name)
+  sample_id <- sub("^_+", "", sample_id)
+  if (!nzchar(sample_id) || identical(sample_id, directory_name)) {
+    sample_id <- directory_name
+  }
+  sample_id
+}
+
+load_config <- function(config_path = default_config_path(repo_dir)) {
+  if (!requireNamespace("yaml", quietly = TRUE)) {
+    stop("yaml is required to read the pipeline configuration.")
+  }
+  
+  config_path <- resolve_path(config_path, base_dir = getwd(), mustWork = TRUE)
+  cfg <- yaml::read_yaml(config_path)
+  cfg$config_path <- config_path
+  cfg$config_dir <- dirname(config_path)
+  
+  path_defaults <- list(
+    project_dir = ".",
+    scripts_dir = ".",
+    raw_data_dir = "Data/Raw_data",
+    output_dir = "Output",
+    sample_sheet = "sample_sheet.csv",
+    python_path = Sys.getenv("COSMX_PYTHON_PATH", unset = "")
+  )
+  cfg$paths <- modifyList(path_defaults, cfg$paths %||% list())
+  cfg$paths$project_dir <- resolve_path(cfg$paths$project_dir, base_dir = cfg$config_dir, mustWork = FALSE)
+  cfg$paths$scripts_dir <- resolve_path(cfg$paths$scripts_dir, base_dir = cfg$config_dir, mustWork = FALSE)
+  cfg$paths$raw_data_dir <- resolve_path(cfg$paths$raw_data_dir, base_dir = cfg$config_dir, mustWork = FALSE)
+  cfg$paths$output_dir <- resolve_path(cfg$paths$output_dir, base_dir = cfg$config_dir, mustWork = FALSE)
+  cfg$paths$sample_sheet <- resolve_path(cfg$paths$sample_sheet, base_dir = cfg$config_dir, mustWork = FALSE)
+  cfg$paths$python_path <- path.expand(cfg$paths$python_path %||% "")
+  
+  cfg$pipeline <- modifyList(
+    list(
+      mode = "all",
+      save_intermediates = TRUE,
+      overwrite_existing = FALSE,
+      skip_on_error = FALSE
+    ),
+    cfg$pipeline %||% list()
+  )
+  
+  cfg
+}
+
+normalize_sample_table <- function(sample_df, cfg) {
+  sample_df <- as.data.frame(sample_df, stringsAsFactors = FALSE, check.names = FALSE)
+  names(sample_df) <- standardize_colnames(names(sample_df))
+  
+  if (!"sample_id" %in% names(sample_df)) {
+    if ("sample_id_raw" %in% names(sample_df)) {
+      sample_df$sample_id <- sample_df$sample_id_raw
+    } else if ("filename" %in% names(sample_df)) {
+      sample_df$sample_id <- vapply(sample_df$filename, infer_sample_id, character(1))
+    } else if ("directory_name" %in% names(sample_df)) {
+      sample_df$sample_id <- vapply(sample_df$directory_name, infer_sample_id, character(1))
+    } else {
+      stop("Sample table must contain a sample_id or directory_name column.")
+    }
+  }
+  
+  if (!"directory_name" %in% names(sample_df)) {
+    if ("filename" %in% names(sample_df)) {
+      sample_df$directory_name <- sample_df$filename
+    } else {
+      sample_df$directory_name <- sample_df$sample_id
+    }
+  }
+  
+  if (!"slide_num" %in% names(sample_df)) {
+    sample_df$slide_num <- NA_character_
+  }
+  if (!"include" %in% names(sample_df)) {
+    sample_df$include <- TRUE
+  }
+  if (!"pair_id" %in% names(sample_df)) {
+    sample_df$pair_id <- NA_character_
+  }
+  if (!"group_id" %in% names(sample_df)) {
+    sample_df$group_id <- NA_character_
+  }
+  if (!"patient_id" %in% names(sample_df)) {
+    sample_df$patient_id <- NA_character_
+  }
+  if (!"treatment" %in% names(sample_df)) {
+    sample_df$treatment <- NA_character_
+  }
+  if (!"notes" %in% names(sample_df)) {
+    sample_df$notes <- NA_character_
+  }
+  
+  if (!"data_dir" %in% names(sample_df)) {
+    sample_df$data_dir <- file.path(cfg$paths$raw_data_dir, sample_df$directory_name)
+  }
+  if (!"output_dir" %in% names(sample_df)) {
+    sample_df$output_dir <- file.path(cfg$paths$output_dir, paste0("Sample_", sample_df$sample_id))
+  }
+  
+  sample_df$data_dir <- vapply(sample_df$data_dir, resolve_path, character(1), base_dir = cfg$paths$raw_data_dir, mustWork = FALSE)
+  sample_df$output_dir <- vapply(sample_df$output_dir, resolve_path, character(1), base_dir = cfg$paths$output_dir, mustWork = FALSE)
+  sample_df$include <- vapply(sample_df$include, coerce_bool, logical(1), default = TRUE)
+  
+  sample_df[sample_df$include, , drop = FALSE]
+}
+
+auto_detect_sample_table <- function(cfg) {
+  raw_data_dir <- cfg$paths$raw_data_dir
+  if (!dir.exists(raw_data_dir)) {
+    stop("Raw data directory does not exist: ", raw_data_dir)
+  }
+  
+  dirs <- list.dirs(raw_data_dir, recursive = FALSE, full.names = FALSE)
+  if (length(dirs) == 0) {
+    stop("No sample directories found in ", raw_data_dir)
+  }
+  
+  sample_df <- data.frame(
+    sample_id = vapply(dirs, infer_sample_id, character(1)),
+    directory_name = dirs,
+    slide_num = sub(".*Slide(\\d+).*", "\\1", dirs),
+    stringsAsFactors = FALSE
+  )
+  normalize_sample_table(sample_df, cfg)
+}
+
+load_sample_table <- function(cfg, sample_sheet_override = NULL) {
+  sheet_path <- sample_sheet_override %||% cfg$paths$sample_sheet
+  if (!is.null(sheet_path) && file.exists(sheet_path)) {
+    return(normalize_sample_table(read_tabular_file(sheet_path), cfg))
+  }
+  auto_detect_sample_table(cfg)
+}
+
+select_samples <- function(samples,
+                           sample_ids = NULL,
+                           pair_ids = NULL,
+                           group_ids = NULL) {
+  selected <- samples
+  if (!is.null(sample_ids) && length(sample_ids) > 0) {
+    selected <- selected[selected$sample_id %in% sample_ids, , drop = FALSE]
+  }
+  if (!is.null(pair_ids) && length(pair_ids) > 0 && "pair_id" %in% names(selected)) {
+    selected <- selected[selected$pair_id %in% pair_ids, , drop = FALSE]
+  }
+  if (!is.null(group_ids) && length(group_ids) > 0 && "group_id" %in% names(selected)) {
+    selected <- selected[selected$group_id %in% group_ids, , drop = FALSE]
+  }
+  
+  rownames(selected) <- NULL
+  selected
+}
+
+compute_steps <- function(order, selected_steps = NULL, from_step = NULL) {
+  steps <- if (is.null(selected_steps) || length(selected_steps) == 0) {
+    order
+  } else {
+    order[order %in% selected_steps]
+  }
+  
+  if (!is.null(from_step) && nzchar(from_step)) {
+    idx <- match(from_step, order)
+    if (is.na(idx)) {
+      stop("Unknown step: ", from_step)
+    }
+    steps <- steps[match(steps, order) >= idx]
+  }
+  
+  if (length(steps) == 0) {
+    stop("No steps selected after applying filters.")
+  }
+  
+  steps
+}
+
+checkpoint_dir_for_step <- function(root_dir, step_id) {
+  file.path(root_dir, "pipeline_checkpoints", step_id)
+}
+
+native_sample_artifact <- function(sample_output_dir, sample_id, step_id) {
+  switch(
+    step_id,
+    "01_load" = file.path(sample_output_dir, "Giotto_Object_Loaded"),
+    "02_qc" = file.path(sample_output_dir, "Giotto_Object_Filtered"),
+    "03_norm" = file.path(sample_output_dir, "Giotto_Object_Normalized"),
+    "04_dimred" = file.path(sample_output_dir, "Giotto_Object_DimReduced"),
+    "05_cluster" = file.path(sample_output_dir, "Giotto_Object_Clustered"),
+    "06_markers" = file.path(sample_output_dir, "Giotto_Object_DEG_Markers"),
+    "07_annotate" = file.path(sample_output_dir, "Giotto_Object_Annotated"),
+    "08_visualize" = file.path(sample_output_dir, "Giotto_Object_Annotated"),
+    "09_spatial" = file.path(sample_output_dir, "Giotto_Object_Spatial"),
+    "10_cci" = file.path(sample_output_dir, "Giotto_Object_Spatial"),
+    "12_bcell" = file.path(sample_output_dir, "Giotto_Object_BCell_Analysis"),
+    "13_spatial_de" = file.path(sample_output_dir, "Giotto_Object_Spatial_DE"),
+    NULL
+  )
+}
+
+native_merged_artifact <- function(merged_output_dir, step_id) {
+  switch(
+    step_id,
+    "merge" = file.path(merged_output_dir, "Giotto_Object_Merged"),
+    "11_batch" = file.path(merged_output_dir, "Giotto_Object_BatchCorrected"),
+    "13_spatial_de" = file.path(merged_output_dir, "Giotto_Object_Spatial_DE"),
+    NULL
+  )
+}
+
+load_saved_object <- function(path) {
+  if (is.null(path) || !file.exists(path)) {
+    stop("Saved object path does not exist: ", path)
+  }
+  if (dir.exists(path) && file.exists(file.path(path, "manifest.json"))) {
+    return(load_giotto_checkpoint(path))
+  }
+  if (dir.exists(path)) {
+    return(loadGiotto(path))
+  }
+  if (grepl("\\.rds$", path, ignore.case = TRUE)) {
+    return(readRDS(path))
+  }
+  if (grepl("\\.qs$", path, ignore.case = TRUE) && requireNamespace("qs", quietly = TRUE)) {
+    return(qs::qread(path))
+  }
+  stop("Unsupported saved object path: ", path)
+}
+
+load_sample_checkpoint <- function(sample_row, step_id) {
+  wrapped_path <- checkpoint_dir_for_step(sample_row$output_dir, step_id)
+  if (dir.exists(wrapped_path) && file.exists(file.path(wrapped_path, "manifest.json"))) {
+    return(load_giotto_checkpoint(wrapped_path))
+  }
+  
+  native_path <- native_sample_artifact(sample_row$output_dir, sample_row$sample_id, step_id)
+  if (!is.null(native_path) && file.exists(native_path)) {
+    return(load_saved_object(native_path))
+  }
+  if (identical(step_id, "01_load")) {
+    legacy_rds <- file.path(sample_row$output_dir, paste0(sample_row$sample_id, "_cosmx_loaded.rds"))
+    if (file.exists(legacy_rds)) {
+      return(readRDS(legacy_rds))
+    }
+  }
+  
+  stop(
+    "No checkpoint found for sample '", sample_row$sample_id,
+    "' at step ", step_id, "."
+  )
+}
+
+load_merged_checkpoint <- function(merged_output_dir, step_id) {
+  wrapped_path <- checkpoint_dir_for_step(merged_output_dir, step_id)
+  if (dir.exists(wrapped_path) && file.exists(file.path(wrapped_path, "manifest.json"))) {
+    return(load_giotto_checkpoint(wrapped_path))
+  }
+  
+  native_path <- native_merged_artifact(merged_output_dir, step_id)
+  if (!is.null(native_path) && file.exists(native_path)) {
+    return(load_saved_object(native_path))
+  }
+  
+  stop("No merged checkpoint found for step ", step_id, ".")
+}
+
+save_step_checkpoint <- function(gobj, root_dir, step_id, metadata = list()) {
+  save_giotto_checkpoint(
+    gobj = gobj,
+    checkpoint_dir = checkpoint_dir_for_step(root_dir, step_id),
+    metadata = c(list(step_id = step_id), metadata)
+  )
+}
+
+coerce_dimension_vector <- function(x) {
+  if (is.null(x)) {
+    return(1:30)
+  }
+  if (is.numeric(x)) {
+    return(as.integer(x))
+  }
+  eval(parse(text = as.character(x)))
+}
+
+flatten_marker_genes <- function(marker_cfg) {
+  if (is.null(marker_cfg)) {
+    return(NULL)
+  }
+  unique(unlist(marker_cfg, use.names = FALSE))
+}
+
+runtime_script_paths <- function() {
+  file.path(
+    repo_dir,
+    c(
+      "01_Load_data.R",
+      "02_Quality_Control.R",
+      "03_Normalisation.R",
+      "04_Dimensionallity_Reduction.R",
+      "05_Clustering.R",
+      "06_Differential_Expression.R",
+      "07_Annotation.R",
+      "08_Visualisation.R",
+      "09_Spatial_Network.R",
+      "10_CCI_Analysis.R",
+      "11_Batch_Correction.R",
+      "12_B_Cell_Analysis.R",
+      "13_Spatial_Differential_Expression.R"
+    )
+  )
+}
+
+ensure_runtime <- function(cfg) {
+  runtime_env <- new.env(parent = globalenv())
+  
+  Sys.setenv(
+    COSMX_PROJECT_DIR = cfg$paths$project_dir,
+    COSMX_PYTHON_PATH = cfg$paths$python_path,
+    COSMX_HELPER_DIR = file.path(cfg$paths$scripts_dir, "Helper_Scripts")
+  )
+  
+  old_disable_cli <- getOption("cosmx.disable_cli")
+  options(cosmx.disable_cli = TRUE)
+  on.exit(options(cosmx.disable_cli = old_disable_cli), add = TRUE)
+  
+  source(file.path(repo_dir, "00_Setup.R"), local = runtime_env)
+  for (script_path in runtime_script_paths()) {
+    source(script_path, local = runtime_env)
+  }
+  
+  runtime_env
+}
+
+invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
+  sample_id <- sample_row$sample_id
+  output_dir <- sample_row$output_dir
+  
+  switch(
+    step_id,
+    "01_load" = runtime_env$load_cosmx_sample(
+      sample_id = sample_id,
+      data_dir = sample_row$data_dir,
+      output_dir = output_dir
+    ),
+    "02_qc" = runtime_env$quality_control(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      gene_min_cells = cfg$parameters$qc$gene_min_cells %||% 10,
+      cell_min_genes = cfg$parameters$qc$cell_min_genes %||% 50,
+      cell_max_genes = cfg$parameters$qc$cell_max_genes %||% NULL,
+      min_count = cfg$parameters$qc$min_count %||% 100,
+      max_mito_pct = cfg$parameters$qc$max_mito_pct %||% NULL
+    ),
+    "03_norm" = runtime_env$normalize_expression(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      scalefactor = cfg$parameters$normalization$scalefactor %||% 6000,
+      log_transform = cfg$parameters$normalization$log_transform %||% TRUE
+    ),
+    "04_dimred" = runtime_env$dimensionality_reduction(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      n_hvgs = cfg$parameters$dim_reduction$n_hvgs %||% 500,
+      n_pcs = cfg$parameters$dim_reduction$n_pcs %||% 30,
+      umap_n_neighbors = cfg$parameters$dim_reduction$umap_n_neighbors %||% 30,
+      umap_min_dist = cfg$parameters$dim_reduction$umap_min_dist %||% 0.3,
+      spatial_hvg = cfg$parameters$dim_reduction$spatial_hvg %||% FALSE
+    ),
+    "05_cluster" = runtime_env$perform_clustering(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      k_nn = cfg$parameters$clustering$k_nn %||% 15,
+      resolution = cfg$parameters$clustering$resolution %||% 0.3,
+      dimensions_to_use = coerce_dimension_vector(cfg$parameters$clustering$dimensions_to_use %||% "1:30"),
+      scripts_dir = cfg$paths$scripts_dir
+    ),
+    "06_markers" = runtime_env$marker_analysis(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      cluster_column = cfg$parameters$markers$cluster_column %||% "leiden_clust",
+      top_n = cfg$parameters$markers$top_n %||% 25
+    ),
+    "07_annotate" = runtime_env$annotate_cells(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      profiles = cfg$parameters$annotation$profiles,
+      default_profile = cfg$parameters$annotation$default_profile %||% NULL,
+      align_genes = cfg$parameters$annotation$align_genes %||% TRUE,
+      n_starts = cfg$parameters$annotation$n_starts %||% 10,
+      n_clusts_semi = cfg$parameters$annotation$n_clusts_semi %||% 3,
+      cohort_column = cfg$parameters$annotation$cohort_column %||% "leiden_clust",
+      min_gene_overlap = cfg$parameters$annotation$min_gene_overlap %||% 100,
+      create_plots = cfg$parameters$annotation$create_plots %||% TRUE,
+      conf_threshold = cfg$parameters$annotation$conf_threshold %||% NULL,
+      save_object = TRUE
+    ),
+    "08_visualize" = runtime_env$create_visualizations(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      celltype_columns = cfg$parameters$visualization$celltype_columns %||% NULL,
+      cluster_column = cfg$parameters$visualization$cluster_column %||% "leiden_clust",
+      marker_genes = flatten_marker_genes(cfg$parameters$visualization$marker_genes)
+    ),
+    "09_spatial" = runtime_env$build_spatial_network(
+      gobj = gobj,
+      sample_id = sample_id,
+      output_dir = output_dir,
+      celltype_col = cfg$interaction$annotation_column %||% NULL,
+      n_simulations = cfg$interaction$number_of_simulations %||% 250
+    ),
+    "10_cci" = {
+      cci_cfg <- cfg$cci %||% list()
+      runtime_env$run_cci_analysis(
+        gobj = gobj,
+        sample_id = sample_id,
+        output_dir = output_dir,
+        celltype_col = cfg$interaction$annotation_column %||% NULL,
+        sender_celltypes = cci_cfg$sender_celltypes %||% NULL,
+        receiver_celltype = cci_cfg$receiver_celltype %||% NULL,
+        nichenet_network_dir = cci_cfg$nichenet_network_dir %||% NULL,
+        run_sections = unlist(cci_cfg$run_sections %||% c(
+          insitucor = TRUE,
+          liana = TRUE,
+          nichenet = TRUE,
+          misty = TRUE,
+          nnsvg = TRUE
+        ))
+      )
+      gobj
+    },
+    "12_bcell" = {
+      runtime_env$run_bcell_microenvironment_analysis(
+        gobj = gobj,
+        sample_id = sample_id,
+        output_dir = output_dir,
+        annotation_column = cfg$interaction$annotation_column %||% NULL,
+        bcell_regex = cfg$interaction$bcell_regex %||% "B|Plasma|Plasmablast",
+        spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
+        number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
+        save_object = TRUE
+      )
+      gobj
+    },
+    "13_spatial_de" = {
+      spatial_de_cfg <- cfg$spatial_de %||% list()
+      runtime_env$run_spatial_differential_expression(
+        gobj = gobj,
+        run_label = sample_id,
+        output_dir = output_dir,
+        analysis_scope = "sample",
+        backend = spatial_de_cfg$sample_backend %||% "smiDE",
+        annotation_column = spatial_de_cfg$annotation_column %||% NULL,
+        sample_column = spatial_de_cfg$sample_column %||% "sample_id",
+        treatment_column = spatial_de_cfg$treatment_column %||% "treatment",
+        patient_column = spatial_de_cfg$patient_column %||% "patient_id",
+        spatial_network_name = spatial_de_cfg$spatial_network_name %||% "Delaunay_network",
+        n_niches = spatial_de_cfg$n_niches %||% 6,
+        min_cells_per_niche = spatial_de_cfg$min_cells_per_niche %||% 30,
+        min_cells_per_sample = spatial_de_cfg$min_cells_per_sample %||% 10,
+        min_samples_per_group = spatial_de_cfg$min_samples_per_group %||% 2,
+        sample_replicate_column = spatial_de_cfg$sample_replicate_column %||% "fov",
+        sample_contrast = spatial_de_cfg$sample_contrast %||% "one_vs_rest",
+        min_cells_per_replicate = spatial_de_cfg$min_cells_per_replicate %||% 5,
+        min_replicates_per_group = spatial_de_cfg$min_replicates_per_group %||% 2,
+        n_spatial_patches = spatial_de_cfg$n_spatial_patches %||% 8,
+        smide_family = spatial_de_cfg$smide_family %||% "nbinom2",
+        smide_radius = spatial_de_cfg$smide_radius %||% 0.05,
+        smide_ncores = spatial_de_cfg$smide_ncores %||% 1,
+        smide_overlap_threshold = spatial_de_cfg$smide_overlap_threshold %||% NULL,
+        smide_save_raw = spatial_de_cfg$smide_save_raw %||% TRUE,
+        save_object = TRUE
+      )
+    },
+    stop("Unsupported sample step: ", step_id)
+  )
+}
+
+run_sample_pipeline <- function(runtime_env,
+                                samples,
+                                cfg,
+                                selected_steps = NULL,
+                                from_step = NULL) {
+  steps_to_run <- compute_steps(SAMPLE_STEP_ORDER, selected_steps, from_step)
+  results <- vector("list", length = nrow(samples))
+  
+  for (idx in seq_len(nrow(samples))) {
+    sample_row <- samples[idx, , drop = FALSE]
+    sample_name <- sample_row$sample_id[[1]]
+    sample_output_dir <- ensure_dir(sample_row$output_dir[[1]])
+    sample_row$output_dir <- sample_output_dir
+    
+    message("\n=== Sample: ", sample_name, " ===")
+    message("Steps: ", paste(vapply(steps_to_run, step_label, character(1)), collapse = " -> "))
+    
+    start_time <- Sys.time()
+    status <- "SUCCESS"
+    last_step <- NA_character_
+    error_message <- NA_character_
+    
+    tryCatch({
+      current_gobj <- NULL
+      if (steps_to_run[1] != SAMPLE_STEP_ORDER[1]) {
+        previous_step <- SAMPLE_STEP_ORDER[match(steps_to_run[1], SAMPLE_STEP_ORDER) - 1]
+        current_gobj <- load_sample_checkpoint(sample_row, previous_step)
+      }
+      
+      for (step_id in steps_to_run) {
+        message("Running ", step_label(step_id), " for ", sample_name)
+        current_gobj <- invoke_sample_step(runtime_env, step_id, current_gobj, sample_row, cfg)
+        if (isTRUE(cfg$pipeline$save_intermediates)) {
+          save_step_checkpoint(
+            current_gobj,
+            root_dir = sample_output_dir,
+            step_id = step_id,
+            metadata = list(sample_id = sample_name)
+          )
+        }
+        last_step <- step_id
+      }
+    }, error = function(e) {
+      status <<- "FAILED"
+      error_message <<- conditionMessage(e)
+      if (!isTRUE(cfg$pipeline$skip_on_error)) {
+        stop(e)
+      }
+    })
+    
+    elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    results[[idx]] <- data.frame(
+      sample_id = sample_name,
+      status = status,
+      last_step = last_step,
+      output_dir = sample_output_dir,
+      time_seconds = elapsed,
+      error_message = error_message,
+      stringsAsFactors = FALSE
+    )
+  }
+  
+  do.call(rbind, results)
+}
+
+merged_output_dir <- function(cfg, run_label = NULL) {
+  label <- run_label %||% cfg$merged$run_label %||% format(Sys.time(), "%Y%m%d_%H%M%S")
+  label <- gsub("[^A-Za-z0-9._-]+", "_", label)
+  ensure_dir(file.path(cfg$paths$output_dir, "Merged", label))
+}
+
+load_merge_inputs <- function(samples, cfg) {
+  input_step <- cfg$merged$input_step %||% "07_annotate"
+  objs <- vector("list", length = nrow(samples))
+  for (idx in seq_len(nrow(samples))) {
+    objs[[idx]] <- load_sample_checkpoint(samples[idx, , drop = FALSE], input_step)
+  }
+  objs
+}
+
+run_merged_pipeline <- function(runtime_env,
+                                samples,
+                                cfg,
+                                selected_steps = NULL,
+                                from_step = NULL,
+                                run_label = NULL) {
+  steps_to_run <- compute_steps(MERGED_STEP_ORDER, selected_steps, from_step)
+  output_dir <- merged_output_dir(cfg, run_label = run_label)
+  merged_name <- basename(output_dir)
+  
+  status <- "SUCCESS"
+  last_step <- NA_character_
+  error_message <- NA_character_
+  start_time <- Sys.time()
+  
+  tryCatch({
+    current_gobj <- NULL
+    if (steps_to_run[1] != MERGED_STEP_ORDER[1]) {
+      previous_step <- MERGED_STEP_ORDER[match(steps_to_run[1], MERGED_STEP_ORDER) - 1]
+      current_gobj <- load_merged_checkpoint(output_dir, previous_step)
+    }
+    
+    for (step_id in steps_to_run) {
+      message("Running ", step_label(step_id), " for merged run ", merged_name)
+      if (step_id == "merge") {
+        current_gobj <- runtime_env$merge_giotto_samples(
+          gobject_list = load_merge_inputs(samples, cfg),
+          sample_table = samples,
+          output_dir = output_dir,
+          join_method = cfg$merged$join_method %||% "shift",
+          x_padding = cfg$merged$x_padding %||% 1000,
+          save_object = TRUE
+        )
+      } else if (step_id == "11_batch") {
+        current_gobj <- runtime_env$batch_correct_merged_object(
+          gobj = current_gobj,
+          sample_id = merged_name,
+          output_dir = output_dir,
+          batch_column = cfg$merged$batch_column %||% "slide_num",
+          dimensions_to_use = cfg$merged$dimensions_to_use %||% "1:30",
+          umap_n_neighbors = cfg$merged$umap_n_neighbors %||% 30,
+          umap_min_dist = cfg$merged$umap_min_dist %||% 0.3,
+          k_nn = cfg$merged$k_nn %||% 15,
+          resolution = cfg$merged$resolution %||% 0.3,
+          create_plots = TRUE,
+          save_object = TRUE
+        )
+      } else if (step_id == "13_spatial_de") {
+        spatial_de_cfg <- cfg$spatial_de %||% list()
+        current_gobj <- runtime_env$run_spatial_differential_expression(
+          gobj = current_gobj,
+          run_label = merged_name,
+          output_dir = output_dir,
+          analysis_scope = "merged",
+          backend = "edgeR",
+          annotation_column = spatial_de_cfg$annotation_column %||% NULL,
+          sample_column = spatial_de_cfg$sample_column %||% "sample_id",
+          treatment_column = spatial_de_cfg$treatment_column %||% "treatment",
+          patient_column = spatial_de_cfg$patient_column %||% "patient_id",
+          spatial_network_name = spatial_de_cfg$spatial_network_name %||% "Delaunay_network",
+          n_niches = spatial_de_cfg$n_niches %||% 6,
+          min_cells_per_niche = spatial_de_cfg$min_cells_per_niche %||% 30,
+          min_cells_per_sample = spatial_de_cfg$min_cells_per_sample %||% 10,
+          min_samples_per_group = spatial_de_cfg$min_samples_per_group %||% 2,
+          save_object = TRUE
+        )
+      } else {
+        stop("Unsupported merged step: ", step_id)
+      }
+      
+      if (isTRUE(cfg$pipeline$save_intermediates)) {
+        save_step_checkpoint(
+          current_gobj,
+          root_dir = output_dir,
+          step_id = step_id,
+          metadata = list(run_label = merged_name)
+        )
+      }
+      last_step <- step_id
+    }
+  }, error = function(e) {
+    status <<- "FAILED"
+    error_message <<- conditionMessage(e)
+    if (!isTRUE(cfg$pipeline$skip_on_error)) {
+      stop(e)
+    }
+  })
+  
+  data.frame(
+    run_label = merged_name,
+    status = status,
+    last_step = last_step,
+    output_dir = output_dir,
+    time_seconds = as.numeric(difftime(Sys.time(), start_time, units = "secs")),
+    error_message = error_message,
+    stringsAsFactors = FALSE
+  )
+}
+
+write_results_csv <- function(df, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  utils::write.csv(df, path, row.names = FALSE)
+}
+
+parse_cli_args <- function(args) {
+  opts <- list(
+    config = default_config_path(repo_dir),
+    sample_sheet = NULL,
+    mode = NULL,
+    samples = NULL,
+    pairs = NULL,
+    groups = NULL,
+    sample_steps = NULL,
+    merged_steps = NULL,
+    from_step = NULL,
+    merged_from_step = NULL,
+    run_label = NULL,
+    dry_run = FALSE
+  )
+  
+  i <- 1L
+  while (i <= length(args)) {
+    arg <- args[[i]]
+    if (!startsWith(arg, "--")) {
+      stop("Unexpected positional argument: ", arg)
+    }
+    key <- sub("^--", "", arg)
+    if (key == "dry-run") {
+      opts$dry_run <- TRUE
+      i <- i + 1L
+      next
+    }
+    if (i == length(args)) {
+      stop("Missing value for argument ", arg)
+    }
+    value <- args[[i + 1L]]
+    i <- i + 2L
+    
+    if (key %in% c("samples", "pairs", "groups", "sample-steps", "merged-steps")) {
+      target_name <- switch(
+        key,
+        "sample-steps" = "sample_steps",
+        "merged-steps" = "merged_steps",
+        key
+      )
+      opts[[target_name]] <- parse_cli_csv(value)
+    } else if (key %in% c("sample-sheet", "from-step", "merged-from-step", "run-label")) {
+      target_name <- switch(
+        key,
+        "sample-sheet" = "sample_sheet",
+        "from-step" = "from_step",
+        "merged-from-step" = "merged_from_step",
+        "run-label" = "run_label"
+      )
+      opts[[target_name]] <- value
+    } else if (key %in% c("config", "mode")) {
+      opts[[key]] <- value
+    } else {
+      stop("Unknown argument: ", arg)
+    }
+  }
+  
+  opts
+}
+
+run_pipeline <- function(cli_opts) {
+  cfg <- load_config(cli_opts$config)
+  if (is.null(cli_opts$mode) || !nzchar(cli_opts$mode)) {
+    cli_opts$mode <- cfg$pipeline$mode %||% "all"
+  }
+  
+  sample_table <- load_sample_table(cfg, sample_sheet_override = cli_opts$sample_sheet)
+  selected_samples <- select_samples(
+    sample_table,
+    sample_ids = cli_opts$samples,
+    pair_ids = cli_opts$pairs,
+    group_ids = cli_opts$groups
+  )
+  
+  if (nrow(selected_samples) == 0) {
+    stop("No samples matched the selected filters.")
+  }
+  
+  sample_steps <- compute_steps(
+    SAMPLE_STEP_ORDER,
+    canonical_step_ids(cli_opts$sample_steps, type = "sample"),
+    canonical_step_ids(cli_opts$from_step, type = "sample")
+  )
+  merged_steps <- compute_steps(
+    MERGED_STEP_ORDER,
+    canonical_step_ids(cli_opts$merged_steps, type = "merged"),
+    canonical_step_ids(cli_opts$merged_from_step, type = "merged")
+  )
+  
+  if (isTRUE(cli_opts$dry_run)) {
+    return(list(
+      config = cfg$config_path,
+      mode = cli_opts$mode,
+      sample_count = nrow(selected_samples),
+      sample_ids = selected_samples$sample_id,
+      sample_steps = sample_steps,
+      merged_steps = merged_steps,
+      run_label = cli_opts$run_label %||% cfg$merged$run_label %||% NULL
+    ))
+  }
+  
+  runtime_env <- ensure_runtime(cfg)
+  
+  run_dir <- ensure_dir(file.path(
+    cfg$paths$output_dir,
+    "pipeline_runs",
+    format(Sys.time(), "%Y%m%d_%H%M%S")
+  ))
+  
+  sample_results <- NULL
+  merged_results <- NULL
+  
+  if (cli_opts$mode %in% c("all", "separate", "paired")) {
+    sample_results <- run_sample_pipeline(
+      runtime_env = runtime_env,
+      samples = selected_samples,
+      cfg = cfg,
+      selected_steps = sample_steps,
+      from_step = cli_opts$from_step
+    )
+    write_results_csv(sample_results, file.path(run_dir, "sample_pipeline_results.csv"))
+  }
+  
+  if (cli_opts$mode %in% c("all", "merged")) {
+    merged_results <- run_merged_pipeline(
+      runtime_env = runtime_env,
+      samples = selected_samples,
+      cfg = cfg,
+      selected_steps = merged_steps,
+      from_step = cli_opts$merged_from_step,
+      run_label = cli_opts$run_label
+    )
+    write_results_csv(merged_results, file.path(run_dir, "merged_pipeline_results.csv"))
+  }
+  
+  invisible(list(
+    run_dir = run_dir,
+    sample_results = sample_results,
+    merged_results = merged_results
+  ))
+}
+
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
+  cli_opts <- parse_cli_args(commandArgs(trailingOnly = TRUE))
+  result <- run_pipeline(cli_opts)
+  if (isTRUE(cli_opts$dry_run)) {
+    print(result)
+  }
+}

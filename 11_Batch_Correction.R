@@ -128,7 +128,7 @@ batch_correct_merged_object <- function(gobj,
                                         create_plots = TRUE,
                                         save_object = FALSE) {
   cat("\n========================================\n")
-  cat("STEP 10: Merged Batch Correction\n")
+  cat("STEP 11: Merged Batch Correction\n")
   cat("Run:", sample_id, "\n")
   cat("========================================\n\n")
   

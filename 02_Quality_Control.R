@@ -82,7 +82,9 @@ quality_control <- function(gobj,
   }
   
   # Get cell metadata for QC plots
-  metadata <- pDataDT(gobj) %>% as_tibble()
+  metadata <- pDataDT(gobj) %>%
+    as_tibble() %>%
+    mutate(total_expr_plot = pmax(total_expr, 1))
   
   cat("=== QC Metrics Summary ===\n")
   cat("Total counts per cell:\n")
@@ -118,7 +120,7 @@ quality_control <- function(gobj,
     p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
   }
   
-  p2 <- ggplot(metadata, aes(x = total_expr)) +
+  p2 <- ggplot(metadata, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
     geom_vline(xintercept = min_count, color = "red", linetype = "dashed", linewidth = 1) +
     scale_x_log10() +
@@ -273,6 +275,10 @@ quality_control <- function(gobj,
     )
   }
   
+  if (length(cells_to_keep) == 0) {
+    stop("All cells were removed by QC thresholds. Relax the QC parameters for this sample.")
+  }
+  
   # Apply cell filter
   gobj <- subsetGiotto(
     gobject = gobj,
@@ -286,7 +292,9 @@ quality_control <- function(gobj,
   # Post-filtering plots
   cat("Creating post-filtering QC plots...\n")
   
-  metadata_post <- pDataDT(gobj) %>% as_tibble()
+  metadata_post <- pDataDT(gobj) %>%
+    as_tibble() %>%
+    mutate(total_expr_plot = pmax(total_expr, 1))
   
   p1_post <- ggplot(metadata_post, aes(x = nr_feats)) +
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
@@ -296,7 +304,7 @@ quality_control <- function(gobj,
     theme_classic() +
     theme(plot.title = element_text(hjust = 0.5, face = "bold"))
   
-  p2_post <- ggplot(metadata_post, aes(x = total_expr)) +
+  p2_post <- ggplot(metadata_post, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
     scale_x_log10() +
     labs(title = "Total Counts per Cell (Post-filtering)",
@@ -329,8 +337,8 @@ quality_control <- function(gobj,
                "Median genes/cell", "Median counts/cell"),
     value = c(n_cells_initial, n_cells_after, n_cells_initial - n_cells_after,
               n_genes_initial, n_genes_after, n_genes_initial - n_genes_after,
-              median(metadata_post$nr_feats),
-              median(metadata_post$total_expr))
+              median(metadata_post$nr_feats, na.rm = TRUE),
+              median(metadata_post$total_expr, na.rm = TRUE))
   )
   
   write_csv(qc_summary, file.path(results_folder, paste0(sample_id, "_qc_summary.csv")))
@@ -347,7 +355,15 @@ quality_control <- function(gobj,
 # Run if sourced directly
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) >= 2) {
+  if (length(args) >= 3) {
+    script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1])
+    script_dir <- dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE))
+    bootstrap_script <- file.path(script_dir, "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
+    }
+    
     sample_id <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
@@ -365,5 +381,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       foldername = "Giotto_Object_Filtered",
       overwrite = TRUE
     )
+  } else {
+    stop("Usage: Rscript 02_Quality_Control.R <sample_id> <input_path> <output_dir>")
   }
 }

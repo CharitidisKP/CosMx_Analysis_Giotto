@@ -75,7 +75,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 number_of_simulations = 250,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
-  cat("STEP 11: B-Cell Microenvironment\n")
+  cat("STEP 12: B-Cell Microenvironment\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
   

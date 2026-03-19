@@ -3,81 +3,23 @@
 # 10_CCI_Analysis.R
 # Cell-cell interaction (Layer 2) and spatially-resolved DE (Layer 3)
 #
-# DEPENDENCIES — install before running:
-#
-#   Layer 2 — Ligand-receptor & cell-cell communication
-#     install.packages("liana")                          # LIANA consensus LR
-#     BiocManager::install("ComplexHeatmap")             # required by LIANA
-#     devtools::install_github("jinworks/CellChat")      # CellChat v2
-#     devtools::install_github("saeyslab/nichenetr")     # NicheNet
-#
-#   Layer 2 (NanoString-native)
-#     devtools::install_github("Nanostring-Biostats/InSituCor")  # spatially
-#                                                                 # co-expressed
-#                                                                 # gene modules
-#
-#   Layer 3 — Spatially variable genes & intercellular modelling
-#     BiocManager::install("nnSVG")                      # spatially variable genes
-#     install.packages("SPARK")                          # faster alt. (SPARK-X)
-#     devtools::install_github("saezlab/mistyR")         # MISTy intercellular
-#                                                        # spatial modelling
+# Optional dependencies for this script should be installed separately via
+# Parameters/Install_CCI_Dependencies.R. This analysis script does not mutate the R
+# environment while running.
 #
 # INPUT:  Giotto object saved by 09_Spatial_Network.R
 #         (contains annotation + spatial networks + PAGE/rank enrichment)
 # OUTPUT: output_dir/10_CCI_Analysis/
 #           ├── insitucor/    Spatially co-expressed gene modules (NanoString)
 #           ├── liana/        Consensus L-R scores (all methods)
-#           ├── cellchat/     Signalling pathway visualisations
 #           ├── nichenet/     Ligand activity scores
 #           ├── misty/        Intercellular spatial modelling
-#           └── svg/          Spatially variable genes (nnSVG / SPARK-X)
+#           └── svg/          Spatially variable genes (nnSVG)
 # ==============================================================================
-
-# ==============================================================================
-# SECTION 0 — SETUP CHECKS
-# ==============================================================================
-
-#' Check which Layer 2/3 packages are installed
-.check_cci_deps <- function(verbose = TRUE) {
-  
-  pkgs <- list(
-    InSituCor  = list(type = "github", pkg = "InSituCor",
-                      install = 'devtools::install_github("Nanostring-Biostats/InSituCor")'),
-    liana      = list(type = "cran",   pkg = "liana",
-                      install = 'install.packages("liana")'),
-    CellChat   = list(type = "github", pkg = "CellChat",
-                      install = 'devtools::install_github("jinworks/CellChat")'),
-    nichenetr  = list(type = "github", pkg = "nichenetr",
-                      install = 'devtools::install_github("saeyslab/nichenetr")'),
-    mistyR     = list(type = "github", pkg = "mistyR",
-                      install = 'devtools::install_github("saezlab/mistyR")'),
-    nnSVG      = list(type = "bioc",   pkg = "nnSVG",
-                      install = 'BiocManager::install("nnSVG")'),
-    SPARK      = list(type = "cran",   pkg = "SPARK",
-                      install = 'install.packages("SPARK")')
-  )
-  
-  status <- vapply(pkgs, function(p)
-    requireNamespace(p$pkg, quietly = TRUE), logical(1))
-  
-  if (verbose) {
-    cat("\n=== Layer 2/3 package availability ===\n")
-    for (nm in names(status)) {
-      icon <- if (status[nm]) "\u2713" else "\u2717"
-      cat(sprintf("  %s %-12s", icon, nm))
-      if (!status[nm])
-        cat("  ->  ", pkgs[[nm]]$install)
-      cat("\n")
-    }
-    cat("\n")
-  }
-  
-  invisible(status)
-}
 
 
 # ==============================================================================
-# SECTION 1 — InSituCor (NanoString-native spatially co-expressed modules)
+# SECTION 0 — InSituCor (NanoString-native spatially co-expressed modules)
 # ==============================================================================
 
 #' Run InSituCor: spatially co-expressed gene modules
@@ -165,7 +107,7 @@ run_insitucor <- function(gobj,
 
 
 # ==============================================================================
-# SECTION 2 — LIANA: consensus ligand-receptor scoring
+# SECTION 1 — LIANA: consensus ligand-receptor scoring
 # ==============================================================================
 
 #' Run LIANA consensus ligand-receptor analysis
@@ -271,7 +213,7 @@ run_liana <- function(gobj,
 
 
 # ==============================================================================
-# SECTION 3 — NicheNet: targeted ligand activity scoring
+# SECTION 2 — NicheNet: targeted ligand activity scoring
 # ==============================================================================
 
 #' Run NicheNet: ligand activity prediction for a sender-receiver pair
@@ -295,7 +237,8 @@ run_nichenet <- function(gobj,
                          celltype_col       = NULL,
                          sender_celltypes   = NULL,
                          receiver_celltype  = NULL,
-                         top_n_ligands      = 20) {
+                         top_n_ligands      = 20,
+                         network_dir        = NULL) {
   
   if (!requireNamespace("nichenetr", quietly = TRUE))
     stop("nichenetr not installed.\n",
@@ -328,10 +271,15 @@ run_nichenet <- function(gobj,
   cat("    Download from: https://zenodo.org/record/7074291\n")
   cat("    Then set network_dir in run_nichenet() or load them manually.\n\n")
   
-  # Placeholder — replace paths once networks are downloaded
-  network_dir <- file.path(Sys.getenv("HOME"),
-                           "P_lab", "CosMx_analysis",
-                           "Reference", "NicheNet_networks")
+  network_dir <- network_dir %||%
+    Sys.getenv("COSMX_NICHENET_DIR", unset = "")
+  if (!nzchar(network_dir)) {
+    network_dir <- file.path(
+      Sys.getenv("HOME"),
+      "P_lab", "CosMx_analysis",
+      "Reference", "NicheNet_networks"
+    )
+  }
   
   if (!dir.exists(network_dir)) {
     cat("\u26A0 NicheNet network directory not found:", network_dir, "\n")
@@ -352,6 +300,9 @@ run_nichenet <- function(gobj,
   # Sender / receiver cell IDs
   sender_ids   <- meta$cell_ID[meta[[celltype_col]] %in% sender_celltypes]
   receiver_ids <- meta$cell_ID[meta[[celltype_col]] == receiver_celltype]
+  if (length(sender_ids) == 0 || length(receiver_ids) == 0) {
+    stop("No cells matched the requested sender/receiver cell types for NicheNet.")
+  }
   
   sender_expr   <- rowMeans(expr_mat[, sender_ids,   drop = FALSE])
   receiver_expr <- rowMeans(expr_mat[, receiver_ids, drop = FALSE])
@@ -421,7 +372,7 @@ run_nichenet <- function(gobj,
 
 
 # ==============================================================================
-# SECTION 4 — MISTy: intercellular spatial modelling
+# SECTION 3 — MISTy: intercellular spatial modelling
 # ==============================================================================
 
 #' Run MISTy: multi-view intercellular spatial modelling
@@ -530,7 +481,7 @@ run_misty <- function(gobj,
 
 
 # ==============================================================================
-# SECTION 5 — nnSVG: spatially variable gene detection
+# SECTION 4 — nnSVG: spatially variable gene detection
 # ==============================================================================
 
 #' Run nnSVG: spatially variable gene detection
@@ -647,6 +598,7 @@ run_cci_analysis <- function(gobj,
                              celltype_col       = NULL,
                              sender_celltypes   = NULL,
                              receiver_celltype  = NULL,
+                             nichenet_network_dir = NULL,
                              run_sections       = c(insitucor = TRUE,
                                                     liana     = TRUE,
                                                     nichenet  = TRUE,
@@ -657,9 +609,6 @@ run_cci_analysis <- function(gobj,
   cat("STEP 10: CCI Analysis (Layer 2 & 3)\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
-  
-  # Check dependencies upfront
-  .check_cci_deps()
   
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
@@ -686,7 +635,8 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nichenet"])) {
     results$nichenet <- tryCatch(
       run_nichenet(gobj, sample_id, output_dir, celltype_col,
-                   sender_celltypes, receiver_celltype),
+                   sender_celltypes, receiver_celltype,
+                   network_dir = nichenet_network_dir),
       error = function(e) { cat("\u26A0 NicheNet error:", conditionMessage(e), "\n"); NULL }
     )
   }
@@ -711,13 +661,23 @@ run_cci_analysis <- function(gobj,
 
 
 # Run if sourced directly ---------------------------------------------------
-if (!interactive()) {
+if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 3) {
+    script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1])
+    script_dir <- dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE))
+    bootstrap_script <- file.path(script_dir, "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
+    }
+    
     run_cci_analysis(
       gobj       = args[2],
       sample_id  = args[1],
       output_dir = args[3]
     )
+  } else {
+    stop("Usage: Rscript 10_CCI_Analysis.R <sample_id> <input_path> <output_dir>")
   }
 }

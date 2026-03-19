@@ -6,6 +6,172 @@
 # Load CosMx data and create Giotto object with provided polygons
 # ==============================================================================
 
+.find_single_cosmx_file <- function(data_dir, pattern, label) {
+  matches <- list.files(
+    data_dir,
+    pattern = pattern,
+    full.names = TRUE,
+    ignore.case = TRUE
+  )
+  
+  if (length(matches) == 0) {
+    stop(label, " file not found in ", data_dir)
+  }
+  
+  if (length(matches) > 1) {
+    stop(
+      "Expected one ", label, " file in ", data_dir,
+      ", found ", length(matches), ": ",
+      paste(basename(matches), collapse = ", ")
+    )
+  }
+  
+  matches[[1]]
+}
+
+.read_cosmx_csv <- function(path, ...) {
+  if (grepl("\\.gz$", path, ignore.case = TRUE)) {
+    read_csv(gzfile(path), show_col_types = FALSE, ...)
+  } else {
+    read_csv(path, show_col_types = FALSE, ...)
+  }
+}
+
+.require_columns <- function(df, required, label) {
+  missing <- setdiff(required, names(df))
+  if (length(missing) > 0) {
+    stop(
+      label, " is missing required columns: ",
+      paste(missing, collapse = ", ")
+    )
+  }
+}
+
+.infer_sample_number <- function(cell_ids) {
+  cell_ids <- cell_ids[!is.na(cell_ids) & nzchar(cell_ids)]
+  if (length(cell_ids) == 0) {
+    return(1L)
+  }
+  
+  parsed <- suppressWarnings(as.integer(sub("^c_(\\d+)_.*$", "\\1", cell_ids)))
+  parsed <- parsed[!is.na(parsed)]
+  
+  if (length(parsed) == 0) {
+    return(1L)
+  }
+  
+  modal_idx <- which.max(tabulate(match(parsed, unique(parsed))))
+  unique(parsed)[modal_idx]
+}
+
+.align_expression_and_metadata <- function(expr_data, metadata, sample_number) {
+  expr_data <- expr_data %>%
+    mutate(giotto_cell_ID = paste0("c_", sample_number, "_", fov, "_", cell_ID))
+  
+  common_ids <- intersect(expr_data$giotto_cell_ID, metadata$cell_id)
+  cat("Matching cell IDs:", length(common_ids), "expression/metadata overlaps\n")
+  
+  if (length(common_ids) == 0) {
+    stop("No overlapping cell IDs between expression matrix and metadata.")
+  }
+  
+  if (length(common_ids) < nrow(expr_data) || length(common_ids) < nrow(metadata)) {
+    cat(
+      "⚠ Retaining the shared cells only:",
+      length(common_ids), "of", nrow(expr_data), "expression rows and",
+      nrow(metadata), "metadata rows\n"
+    )
+  } else {
+    cat("✓ 100% cell ID match\n")
+  }
+  
+  expr_data <- expr_data %>%
+    filter(giotto_cell_ID %in% common_ids) %>%
+    arrange(match(giotto_cell_ID, common_ids))
+  
+  metadata <- metadata %>%
+    filter(cell_id %in% common_ids) %>%
+    arrange(match(cell_id, common_ids)) %>%
+    mutate(giotto_cell_ID = cell_id)
+  
+  list(expr_data = expr_data, metadata = metadata)
+}
+
+.write_fov_report <- function(metadata, fov_positions, results_folder, sample_id) {
+  if (!all(c("fov", "CenterX_global_px", "CenterY_global_px") %in% names(metadata))) {
+    return(invisible(NULL))
+  }
+  
+  if (!all(c("FOV", "x_global_px", "y_global_px") %in% names(fov_positions))) {
+    return(invisible(NULL))
+  }
+  
+  fov_summary <- metadata %>%
+    mutate(fov = suppressWarnings(as.integer(fov))) %>%
+    group_by(fov) %>%
+    summarise(
+      n_cells = n(),
+      median_center_x_px = stats::median(CenterX_global_px, na.rm = TRUE),
+      median_center_y_px = stats::median(CenterY_global_px, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    left_join(
+      fov_positions %>%
+        transmute(
+          fov = suppressWarnings(as.integer(FOV)),
+          fov_origin_x_px = suppressWarnings(as.numeric(x_global_px)),
+          fov_origin_y_px = suppressWarnings(as.numeric(y_global_px)),
+          fov_origin_x_mm = suppressWarnings(as.numeric(x_global_mm)),
+          fov_origin_y_mm = suppressWarnings(as.numeric(y_global_mm))
+        ),
+      by = "fov"
+    ) %>%
+    mutate(
+      delta_center_x_px = median_center_x_px - fov_origin_x_px,
+      delta_center_y_px = median_center_y_px - fov_origin_y_px
+    ) %>%
+    arrange(fov)
+  
+  write_csv(
+    fov_summary,
+    file.path(results_folder, paste0(sample_id, "_fov_summary.csv"))
+  )
+  
+  invisible(fov_summary)
+}
+
+.add_spatial_locations_from_metadata <- function(gobj, metadata) {
+  x_col <- c("CenterX_global_px", "x_global_px", "CenterX_local_px")[c("CenterX_global_px", "x_global_px", "CenterX_local_px") %in% names(metadata)][1]
+  y_col <- c("CenterY_global_px", "y_global_px", "CenterY_local_px")[c("CenterY_global_px", "y_global_px", "CenterY_local_px") %in% names(metadata)][1]
+  
+  if (is.na(x_col) || is.na(y_col)) {
+    cat("⚠ No coordinate columns found in metadata; skipping spatial location registration\n\n")
+    return(gobj)
+  }
+  
+  spatlocs <- metadata %>%
+    transmute(
+      cell_ID = giotto_cell_ID,
+      sdimx = suppressWarnings(as.numeric(.data[[x_col]])),
+      sdimy = suppressWarnings(as.numeric(.data[[y_col]]))
+    ) %>%
+    filter(!is.na(sdimx) & !is.na(sdimy))
+  
+  if (nrow(spatlocs) == 0) {
+    cat("⚠ Metadata coordinates were empty after numeric conversion; skipping spatial locations\n\n")
+    return(gobj)
+  }
+  
+  gobj <- setSpatialLocations(
+    gobject = gobj,
+    spatlocs = spatlocs,
+    spat_unit = "cell"
+  )
+  
+  cat("✓ Spatial locations registered from metadata\n\n")
+  gobj
+}
+
 #' Internal: Giotto object integrity report
 #'
 #' Checks polygon <-> cell ID consistency and per-FOV cell counts.
@@ -159,79 +325,53 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   # Find required files
   cat("Searching for data files...\n")
   
-  expr_file <- list.files(data_dir, pattern = "_exprMat_file\\.csv",
-                          full.names = TRUE)[1]
-  meta_file <- list.files(data_dir, pattern = "_metadata_file\\.csv",
-                          full.names = TRUE)[1]
-  fov_file  <- list.files(data_dir, pattern = "_fov_positions_file\\.csv",
-                          full.names = TRUE)[1]
-  poly_file <- list.files(data_dir, pattern = "-polygons\\.csv",
-                          full.names = TRUE)[1]
+  expr_file <- .find_single_cosmx_file(data_dir, "_exprMat_file\\.csv(\\.gz)?$", "Expression matrix")
+  meta_file <- .find_single_cosmx_file(data_dir, "_metadata_file\\.csv(\\.gz)?$", "Metadata")
+  fov_file  <- .find_single_cosmx_file(data_dir, "_fov_positions_file\\.csv(\\.gz)?$", "FOV positions")
+  poly_file <- .find_single_cosmx_file(data_dir, "-polygons\\.csv(\\.gz)?$", "Polygons")
   
-  # Validate files exist
-  required_files <- list(
-    "Expression matrix" = expr_file,
-    "Metadata"          = meta_file,
-    "FOV positions"     = fov_file,
-    "Polygons"          = poly_file
-  )
-  
-  for (file_type in names(required_files)) {
-    file_path <- required_files[[file_type]]
-    if (is.na(file_path) || !file.exists(file_path)) {
-      stop(file_type, " file not found in ", data_dir)
-    }
-    cat("✓", file_type, ":", basename(file_path), "\n")
+  required_files <- c(expr_file, meta_file, fov_file, poly_file)
+  for (file_path in required_files) {
+    cat("✓", basename(file_path), "\n")
   }
-  
   cat("\n")
   
   # Load expression matrix
   cat("Loading expression matrix...\n")
-  if (grepl("\\.gz$", expr_file)) {
-    expr_data <- read_csv(gzfile(expr_file), show_col_types = FALSE)
-  } else {
-    expr_data <- read_csv(expr_file, show_col_types = FALSE)
-  }
+  expr_data <- .read_cosmx_csv(expr_file)
+  .require_columns(expr_data, c("fov", "cell_ID"), "Expression matrix")
   
   cat("Initial dimensions:", nrow(expr_data), "rows x", ncol(expr_data), "columns\n")
   
   # Load metadata
   cat("\nLoading metadata...\n")
-  if (grepl("\\.gz$", meta_file)) {
-    metadata <- read_csv(gzfile(meta_file), show_col_types = FALSE)
-  } else {
-    metadata <- read_csv(meta_file, show_col_types = FALSE)
-  }
+  metadata <- .read_cosmx_csv(meta_file)
+  .require_columns(
+    metadata,
+    c("cell_id", "fov", "cell_ID"),
+    "Metadata"
+  )
   
   cat("Metadata dimensions:", nrow(metadata), "rows x", ncol(metadata), "columns\n")
   
-  # Get sample number from metadata cell_id
-  example_id <- metadata$cell_id[1]
-  id_parts <- str_split(example_id, "_")[[1]]
-  sample_number <- if (length(id_parts) >= 4 && id_parts[1] == "c") {
-    as.integer(id_parts[2])
-  } else {
-    1
-  }
+  cat("\nLoading FOV positions...\n")
+  fov_positions <- .read_cosmx_csv(fov_file)
+  .require_columns(fov_positions, c("FOV", "x_global_px", "y_global_px"), "FOV positions")
+  cat("FOV positions:", nrow(fov_positions), "rows\n")
   
+  # Get sample number from metadata cell_id
+  sample_number <- .infer_sample_number(metadata$cell_id)
   cat("Sample number:", sample_number, "\n\n")
   
-  # Create matching cell IDs in expression data
-  cat("Creating cell IDs in expression data...\n")
-  
-  expr_data <- expr_data %>%
-    mutate(
-      giotto_cell_ID = paste0("c_", sample_number, "_", fov, "_", cell_ID)
-    )
-  
-  # Verify matching
-  common_ids <- intersect(expr_data$giotto_cell_ID, metadata$cell_id)
-  cat("Matching cell IDs:", length(common_ids), "out of", nrow(expr_data), "\n")
-  
-  if (length(common_ids) == nrow(expr_data)) {
-    cat("✓ 100% cell ID match\n\n")
-  }
+  cat("Aligning expression and metadata on CosMx cell IDs...\n")
+  aligned <- .align_expression_and_metadata(
+    expr_data = expr_data,
+    metadata = metadata,
+    sample_number = sample_number
+  )
+  expr_data <- aligned$expr_data
+  metadata <- aligned$metadata
+  cat("\n")
   
   # Extract gene columns
   meta_cols    <- c("fov", "cell_ID", "giotto_cell_ID")
@@ -241,9 +381,17 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   cat("Genes:", length(gene_names), "\n")
   cat("Cells:", nrow(expr_data), "\n")
   
+  non_numeric_genes <- gene_names[!vapply(expr_data[gene_col_idx], is.numeric, logical(1))]
+  if (length(non_numeric_genes) > 0) {
+    stop(
+      "Expression matrix contains non-numeric gene columns: ",
+      paste(head(non_numeric_genes, 10), collapse = ", ")
+    )
+  }
+  
   # Create expression matrix (genes x cells)
   expr_matrix_ct <- as.matrix(expr_data[, gene_col_idx])
-  expr_matrix    <- t(expr_matrix_ct)
+  expr_matrix    <- Matrix::Matrix(t(expr_matrix_ct), sparse = TRUE)
   rownames(expr_matrix) <- gene_names
   colnames(expr_matrix) <- expr_data$giotto_cell_ID
   
@@ -283,6 +431,16 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   
   cat("✓ Metadata added\n\n")
   
+  cat("Registering spatial coordinates from metadata...\n")
+  cosmx <- .add_spatial_locations_from_metadata(cosmx, metadata)
+  
+  .write_fov_report(
+    metadata = metadata,
+    fov_positions = fov_positions,
+    results_folder = results_folder,
+    sample_id = sample_id
+  )
+  
   # Add polygons
   cat("Loading polygons...\n")
   cosmx <- add_polygons_from_csv(cosmx, poly_file)
@@ -306,11 +464,12 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
 add_polygons_from_csv <- function(gobj, polygon_file) {
   
   # Read polygon data
-  if (grepl("\\.gz$", polygon_file)) {
-    poly_data <- read_csv(gzfile(polygon_file), show_col_types = FALSE)
-  } else {
-    poly_data <- read_csv(polygon_file, show_col_types = FALSE)
-  }
+  poly_data <- .read_cosmx_csv(polygon_file)
+  .require_columns(
+    poly_data,
+    c("cell", "x_global_px", "y_global_px"),
+    "Polygon file"
+  )
   
   cat("✓ Polygon data loaded:", nrow(poly_data), "vertices\n")
   
@@ -368,21 +527,27 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
                   name                = "cell",
                   unique_ID_cache     = as.character(poly_list$cell))
   
-  # Add to Giotto object
-  gobj <- addGiottoPolygons(
-    gobject   = gobj,
-    gpolygons = list(cell = gpolygon)
-  )
-  
-  # Calculate and add centroids as spatial locations
-  tryCatch({
-    gobj <- addSpatialCentroidLocations(
-      gobject   = gobj,
-      poly_info = "cell"
+  if (exists("setPolygonInfo", mode = "function")) {
+    gobj <- setPolygonInfo(
+      gobject = gobj,
+      x = list(cell = gpolygon),
+      centroids_to_spatlocs = TRUE
     )
-  }, error = function(e) {
-    cat("⚠ Could not add centroid locations (non-critical)\n")
-  })
+  } else {
+    gobj <- addGiottoPolygons(
+      gobject   = gobj,
+      gpolygons = list(cell = gpolygon)
+    )
+    
+    tryCatch({
+      gobj <- addSpatialCentroidLocations(
+        gobject   = gobj,
+        poly_info = "cell"
+      )
+    }, error = function(e) {
+      cat("⚠ Could not add centroid locations (non-critical)\n")
+    })
+  }
   
   return(gobj)
 }
@@ -392,10 +557,27 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) >= 3) {
+    script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1])
+    script_dir <- dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE))
+    bootstrap_script <- file.path(script_dir, "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(script_dir, load_pipeline_utils = TRUE, verbose = FALSE)
+    }
+    
     sample_id  <- args[1]
     data_dir   <- args[2]
     output_dir <- args[3]
     cosmx <- load_cosmx_sample(sample_id, data_dir, output_dir)
+    if (exists("save_giotto_checkpoint")) {
+      save_giotto_checkpoint(
+        gobj = cosmx,
+        checkpoint_dir = file.path(output_dir, "Giotto_Object_Loaded"),
+        metadata = list(stage = "load", sample_id = sample_id)
+      )
+    }
     saveRDS(cosmx, file.path(output_dir, paste0(sample_id, "_cosmx_loaded.rds")))
+  } else {
+    stop("Usage: Rscript 01_Load_data.R <sample_id> <data_dir> <output_dir>")
   }
 }

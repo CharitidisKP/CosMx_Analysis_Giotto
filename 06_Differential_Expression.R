@@ -1,9 +1,9 @@
-# Find cluster-specific and DEG marker genes -----------------------------------
+# Cluster marker analysis retained for backward compatibility -------------------
 
 #!/usr/bin/env Rscript
 # ==============================================================================
 # 06_marker_analysis.R
-# Find cluster marker genes
+# Cluster marker analysis
 # ==============================================================================
 
 #' Marker Gene Analysis
@@ -22,7 +22,7 @@ marker_analysis <- function(gobj,
                             top_n = 25) {
   
   cat("\n========================================\n")
-  cat("STEP 06: Marker Analysis\n")
+  cat("STEP 06: Cluster Marker Analysis\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
   
@@ -130,7 +130,15 @@ marker_analysis <- function(gobj,
 # Run if sourced directly
 if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
   args <- commandArgs(trailingOnly = TRUE)
-  if (length(args) >= 2) {
+  if (length(args) >= 3) {
+    script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)[1])
+    script_dir <- dirname(normalizePath(script_file, winslash = "/", mustWork = FALSE))
+    bootstrap_script <- file.path(script_dir, "Helper_Scripts", "Script_Bootstrap.R")
+    if (file.exists(bootstrap_script)) {
+      source(bootstrap_script, local = .GlobalEnv)
+      bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
+    }
+    
     sample_id <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
@@ -142,5 +150,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     )
     
     saveGiotto(gobj, dir = output_dir, foldername = "Giotto_Object_DEG_Markers", overwrite = TRUE)
+  } else {
+    stop("Usage: Rscript 06_Differential_Expression.R <sample_id> <input_path> <output_dir>")
   }
 }
