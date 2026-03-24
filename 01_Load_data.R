@@ -31,9 +31,9 @@
 
 .read_cosmx_csv <- function(path, ...) {
   if (grepl("\\.gz$", path, ignore.case = TRUE)) {
-    read_csv(gzfile(path), show_col_types = FALSE, ...)
+    readr::read_csv(gzfile(path), show_col_types = FALSE, ...)
   } else {
-    read_csv(path, show_col_types = FALSE, ...)
+    readr::read_csv(path, show_col_types = FALSE, ...)
   }
 }
 
@@ -66,7 +66,7 @@
 
 .align_expression_and_metadata <- function(expr_data, metadata, sample_number) {
   expr_data <- expr_data %>%
-    mutate(giotto_cell_ID = paste0("c_", sample_number, "_", fov, "_", cell_ID))
+    dplyr::mutate(giotto_cell_ID = paste0("c_", sample_number, "_", fov, "_", cell_ID))
   
   common_ids <- intersect(expr_data$giotto_cell_ID, metadata$cell_id)
   cat("Matching cell IDs:", length(common_ids), "expression/metadata overlaps\n")
@@ -86,13 +86,13 @@
   }
   
   expr_data <- expr_data %>%
-    filter(giotto_cell_ID %in% common_ids) %>%
-    arrange(match(giotto_cell_ID, common_ids))
+    dplyr::filter(giotto_cell_ID %in% common_ids) %>%
+    dplyr::arrange(match(giotto_cell_ID, common_ids))
   
   metadata <- metadata %>%
-    filter(cell_id %in% common_ids) %>%
-    arrange(match(cell_id, common_ids)) %>%
-    mutate(giotto_cell_ID = cell_id)
+    dplyr::filter(cell_id %in% common_ids) %>%
+    dplyr::arrange(match(cell_id, common_ids)) %>%
+    dplyr::mutate(giotto_cell_ID = cell_id)
   
   list(expr_data = expr_data, metadata = metadata)
 }
@@ -107,17 +107,17 @@
   }
   
   fov_summary <- metadata %>%
-    mutate(fov = suppressWarnings(as.integer(fov))) %>%
-    group_by(fov) %>%
-    summarise(
-      n_cells = n(),
+    dplyr::mutate(fov = suppressWarnings(as.integer(fov))) %>%
+    dplyr::group_by(fov) %>%
+    dplyr::summarise(
+      n_cells = dplyr::n(),
       median_center_x_px = stats::median(CenterX_global_px, na.rm = TRUE),
       median_center_y_px = stats::median(CenterY_global_px, na.rm = TRUE),
       .groups = "drop"
     ) %>%
-    left_join(
+    dplyr::left_join(
       fov_positions %>%
-        transmute(
+        dplyr::transmute(
           fov = suppressWarnings(as.integer(FOV)),
           fov_origin_x_px = suppressWarnings(as.numeric(x_global_px)),
           fov_origin_y_px = suppressWarnings(as.numeric(y_global_px)),
@@ -126,13 +126,13 @@
         ),
       by = "fov"
     ) %>%
-    mutate(
+    dplyr::mutate(
       delta_center_x_px = median_center_x_px - fov_origin_x_px,
       delta_center_y_px = median_center_y_px - fov_origin_y_px
     ) %>%
-    arrange(fov)
+    dplyr::arrange(fov)
   
-  write_csv(
+  readr::write_csv(
     fov_summary,
     file.path(results_folder, paste0(sample_id, "_fov_summary.csv"))
   )
@@ -140,36 +140,29 @@
   invisible(fov_summary)
 }
 
-.add_spatial_locations_from_metadata <- function(gobj, metadata) {
+.extract_spatial_locations_from_metadata <- function(metadata) {
   x_col <- c("CenterX_global_px", "x_global_px", "CenterX_local_px")[c("CenterX_global_px", "x_global_px", "CenterX_local_px") %in% names(metadata)][1]
   y_col <- c("CenterY_global_px", "y_global_px", "CenterY_local_px")[c("CenterY_global_px", "y_global_px", "CenterY_local_px") %in% names(metadata)][1]
   
   if (is.na(x_col) || is.na(y_col)) {
-    cat("⚠ No coordinate columns found in metadata; skipping spatial location registration\n\n")
-    return(gobj)
+    cat("⚠ No coordinate columns found in metadata; Giotto object will be created without explicit spatial_locs\n\n")
+    return(NULL)
   }
   
   spatlocs <- metadata %>%
-    transmute(
+    dplyr::transmute(
       cell_ID = giotto_cell_ID,
       sdimx = suppressWarnings(as.numeric(.data[[x_col]])),
       sdimy = suppressWarnings(as.numeric(.data[[y_col]]))
     ) %>%
-    filter(!is.na(sdimx) & !is.na(sdimy))
+    dplyr::filter(!is.na(sdimx) & !is.na(sdimy))
   
   if (nrow(spatlocs) == 0) {
-    cat("⚠ Metadata coordinates were empty after numeric conversion; skipping spatial locations\n\n")
-    return(gobj)
+    cat("⚠ Metadata coordinates were empty after numeric conversion; Giotto object will be created without explicit spatial_locs\n\n")
+    return(NULL)
   }
   
-  gobj <- setSpatialLocations(
-    gobject = gobj,
-    spatlocs = spatlocs,
-    spat_unit = "cell"
-  )
-  
-  cat("✓ Spatial locations registered from metadata\n\n")
-  gobj
+  as.data.frame(spatlocs, stringsAsFactors = FALSE)
 }
 
 #' Internal: Giotto object integrity report
@@ -407,13 +400,16 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   
   # Prepare metadata
   metadata <- metadata %>%
-    mutate(giotto_cell_ID = cell_id)
+    dplyr::mutate(giotto_cell_ID = cell_id)
+  
+  spatial_locs <- .extract_spatial_locations_from_metadata(metadata)
   
   # Create Giotto object
   cat("Creating Giotto object...\n")
   
   cosmx <- createGiottoObject(
     expression   = expr_matrix,
+    spatial_locs = spatial_locs,
     instructions = instructions
   )
   
@@ -431,8 +427,9 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   
   cat("✓ Metadata added\n\n")
   
-  cat("Registering spatial coordinates from metadata...\n")
-  cosmx <- .add_spatial_locations_from_metadata(cosmx, metadata)
+  if (!is.null(spatial_locs)) {
+    cat("✓ Spatial locations registered during object creation\n\n")
+  }
   
   .write_fov_report(
     metadata = metadata,
@@ -478,8 +475,8 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
   
   # Group by cell and create polygons
   poly_list <- poly_data %>%
-    group_by(cell) %>%
-    summarise(
+    dplyr::group_by(cell) %>%
+    dplyr::summarise(
       coords = list(cbind(x_global_px, y_global_px)),
       .groups = "drop"
     )
@@ -523,7 +520,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
   gpolygon <- new("giottoPolygon",
                   spatVector          = spat_vect,
                   spatVectorCentroids = terra::centroids(spat_vect),
-                  overlaps            = data.table(),
+                  overlaps            = data.table::data.table(),
                   name                = "cell",
                   unique_ID_cache     = as.character(poly_list$cell))
   

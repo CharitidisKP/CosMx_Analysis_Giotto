@@ -18,6 +18,17 @@
 #' @param max_mito_pct Maximum mitochondrial percentage (NULL = no filter)
 #' @return Filtered Giotto object
 
+.run_spatial_qc_plot <- function(...) {
+  withCallingHandlers(
+    spatPlot2D(...),
+    warning = function(w) {
+      if (grepl("aes_string\\(\\)", conditionMessage(w))) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+}
+
 quality_control <- function(gobj, 
                             sample_id, 
                             output_dir,
@@ -106,15 +117,26 @@ quality_control <- function(gobj,
   # Create QC plots before filtering
   cat("Creating pre-filtering QC plots...\n")
   
+  gene_median_pre <- stats::median(metadata$nr_feats, na.rm = TRUE)
+  gene_mean_pre <- mean(metadata$nr_feats, na.rm = TRUE)
+  count_median_pre <- stats::median(metadata$total_expr_plot, na.rm = TRUE)
+  count_mean_pre <- mean(metadata$total_expr_plot, na.rm = TRUE)
+  
   # Distribution plots
   p1 <- ggplot(metadata, aes(x = nr_feats)) +
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
     geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
-    labs(title = "Genes per Cell (Pre-filtering)",
-         x = "Number of Genes",
-         y = "Cell Count") +
+    geom_vline(xintercept = gene_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = gene_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    labs(title = "Genes per cell (pre-filtering)",
+         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
+         x = "Number of genes",
+         y = "Cell count") +
     theme_classic() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
   
   if (!is.null(cell_max_genes)) {
     p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
@@ -123,32 +145,47 @@ quality_control <- function(gobj,
   p2 <- ggplot(metadata, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
     geom_vline(xintercept = min_count, color = "red", linetype = "dashed", linewidth = 1) +
+    geom_vline(xintercept = count_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = count_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
     scale_x_log10() +
-    labs(title = "Total Counts per Cell (Pre-filtering)",
-         x = "Total Counts (log10)",
-         y = "Cell Count") +
+    labs(title = "Total counts per cell (pre-filtering)",
+         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
+         x = "Total counts (log10)",
+         y = "Cell count") +
     theme_classic() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
   
   if ("mito_pct" %in% names(metadata) && !is.null(max_mito_pct)) {
+    mito_median_pre <- stats::median(metadata$mito_pct, na.rm = TRUE)
+    mito_mean_pre <- mean(metadata$mito_pct, na.rm = TRUE)
+    
     p3 <- ggplot(metadata, aes(x = mito_pct)) +
       geom_histogram(bins = 50, fill = "coral", color = "white") +
       geom_vline(xintercept = max_mito_pct, color = "red", linetype = "dashed", linewidth = 1) +
-      labs(title = "Mitochondrial % (Pre-filtering)",
+      geom_vline(xintercept = mito_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
+      geom_vline(xintercept = mito_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+      labs(title = "Mitochondrial % (pre-filtering)",
+           subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
            x = "Mitochondrial %",
-           y = "Cell Count") +
+           y = "Cell count") +
       theme_classic() +
-      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+      theme(
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5, size = 10)
+      )
     
     combined <- (p1 | p2 | p3) +
       plot_annotation(
-        title = paste(sample_id, "- QC Metrics Before Filtering"),
+        title = paste(sample_id, "- QC metrics before filtering"),
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
       )
   } else {
     combined <- (p1 | p2) +
       plot_annotation(
-        title = paste(sample_id, "- QC Metrics Before Filtering"),
+        title = paste(sample_id, "- QC metrics before filtering"),
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
       )
   }
@@ -168,7 +205,7 @@ quality_control <- function(gobj,
   cat("Creating spatial QC plots...\n")
   
   tryCatch({
-    spatPlot2D(
+    .run_spatial_qc_plot(
       gobject = gobj,
       show_image = FALSE,
       point_alpha = 0.7,
@@ -185,7 +222,7 @@ quality_control <- function(gobj,
       )
     )
     
-    spatPlot2D(
+    .run_spatial_qc_plot(
       gobject = gobj,
       show_image = FALSE,
       point_alpha = 0.7,
@@ -203,7 +240,7 @@ quality_control <- function(gobj,
     )
     
     if ("mito_pct" %in% names(metadata)) {
-      spatPlot2D(
+      .run_spatial_qc_plot(
         gobject = gobj,
         show_image = FALSE,
         point_alpha = 0.7,
@@ -296,26 +333,49 @@ quality_control <- function(gobj,
     as_tibble() %>%
     mutate(total_expr_plot = pmax(total_expr, 1))
   
+  gene_median_post <- stats::median(metadata_post$nr_feats, na.rm = TRUE)
+  gene_mean_post <- mean(metadata_post$nr_feats, na.rm = TRUE)
+  count_median_post <- stats::median(metadata_post$total_expr_plot, na.rm = TRUE)
+  count_mean_post <- mean(metadata_post$total_expr_plot, na.rm = TRUE)
+  
   p1_post <- ggplot(metadata_post, aes(x = nr_feats)) +
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
-    labs(title = "Genes per Cell (Post-filtering)",
-         x = "Number of Genes",
-         y = "Cell Count") +
+    geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
+    geom_vline(xintercept = gene_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = gene_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    labs(title = "Genes per cell (post-filtering)",
+         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
+         x = "Number of genes",
+         y = "Cell count") +
     theme_classic() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
+  
+  if (!is.null(cell_max_genes)) {
+    p1_post <- p1_post + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
+  }
   
   p2_post <- ggplot(metadata_post, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
+    geom_vline(xintercept = min_count, color = "red", linetype = "dashed", linewidth = 1) +
+    geom_vline(xintercept = count_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = count_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
     scale_x_log10() +
-    labs(title = "Total Counts per Cell (Post-filtering)",
-         x = "Total Counts (log10)",
-         y = "Cell Count") +
+    labs(title = "Total counts per cell (post-filtering)",
+         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
+         x = "Total counts (log10)",
+         y = "Cell count") +
     theme_classic() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5, size = 10)
+    )
   
   combined_post <- (p1_post | p2_post) +
     plot_annotation(
-      title = paste(sample_id, "- QC Metrics After Filtering"),
+      title = paste(sample_id, "- QC metrics after filtering"),
       theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
     )
   

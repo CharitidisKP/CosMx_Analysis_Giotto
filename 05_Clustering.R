@@ -84,10 +84,16 @@ perform_clustering <- function(gobj,
       )
     }
     
-    inspect_script <- file.path(scripts_dir,
-                                "Helper_Scripts", "Inspect_sNN_network.R")
+    scripts_dir <- normalizePath(scripts_dir, winslash = "/", mustWork = FALSE)
+    inspect_candidates <- c(
+      file.path(scripts_dir, "Helper_Scripts", "Inspect_sNN_network.R"),
+      file.path(scripts_dir, "Scripts", "Helper_Scripts", "Inspect_sNN_network.R"),
+      file.path(dirname(scripts_dir), "Helper_Scripts", "Inspect_sNN_network.R")
+    )
+    inspect_candidates <- unique(inspect_candidates)
+    inspect_script <- inspect_candidates[file.exists(inspect_candidates)][1]
     
-    if (file.exists(inspect_script)) {
+    if (!is.na(inspect_script) && nzchar(inspect_script) && file.exists(inspect_script)) {
       source(inspect_script)
       
       cat("Running sNN network inspection...\n")
@@ -116,7 +122,8 @@ perform_clustering <- function(gobj,
       })
       
     } else {
-      cat("\u26A0 inspect_nn_network.R not found at:\n  ", inspect_script,
+      cat("\u26A0 inspect_nn_network.R not found. Tried:\n  ",
+          paste(inspect_candidates, collapse = "\n  "),
           "\n  Skipping sNN inspection.\n\n")
     }
   }
@@ -190,18 +197,19 @@ perform_clustering <- function(gobj,
   # ── Cluster statistics ───────────────────────────────────────────────────────
   cluster_stats <- pDataDT(gobj) %>%
     as_tibble() %>%
-    group_by(leiden_clust) %>%
-    summarise(
-      n_cells     = n(),
+    dplyr::group_by(leiden_clust) %>%
+    dplyr::summarise(
+      n_cells     = dplyr::n(),
       mean_genes  = mean(nr_feats),
       mean_counts = mean(total_expr),
       .groups     = "drop"
     ) %>%
-    arrange(leiden_clust)
+    dplyr::arrange(leiden_clust)
   
-  write_csv(cluster_stats,
-            file.path(results_folder,
-                      paste0(sample_id, "_cluster_stats.csv")))
+  readr::write_csv(
+    cluster_stats,
+    file.path(results_folder, paste0(sample_id, "_cluster_stats.csv"))
+  )
   
   cat("=== Clustering Summary ===\n")
   cat("Number of clusters:", n_clusters, "\n")

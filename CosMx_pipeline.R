@@ -232,6 +232,29 @@ load_config <- function(config_path = default_config_path(repo_dir)) {
   cfg$paths$sample_sheet <- resolve_path(cfg$paths$sample_sheet, base_dir = cfg$config_dir, mustWork = FALSE)
   cfg$paths$python_path <- path.expand(cfg$paths$python_path %||% "")
   
+  # Recover the real Scripts directory for older server layouts where the
+  # config file lives in Scripts/Parameters and a relative "." would otherwise
+  # resolve to the Parameters directory.
+  scripts_dir_candidates <- unique(c(
+    cfg$paths$scripts_dir,
+    file.path(cfg$config_dir, ".."),
+    file.path(cfg$paths$project_dir, "Scripts"),
+    cfg$paths$project_dir
+  ))
+  scripts_dir_candidates <- vapply(
+    scripts_dir_candidates,
+    resolve_path,
+    character(1),
+    base_dir = cfg$config_dir,
+    mustWork = FALSE
+  )
+  valid_scripts_dir <- scripts_dir_candidates[
+    file.exists(file.path(scripts_dir_candidates, "00_Setup.R"))
+  ][1]
+  if (!is.na(valid_scripts_dir) && nzchar(valid_scripts_dir)) {
+    cfg$paths$scripts_dir <- valid_scripts_dir
+  }
+  
   cfg$pipeline <- modifyList(
     list(
       mode = "all",

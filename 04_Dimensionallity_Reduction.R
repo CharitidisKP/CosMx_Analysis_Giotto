@@ -12,11 +12,144 @@
 #' @return Vector of row variances
 
 sparse_row_var <- function(x) {
-  row_means <- Matrix::rowMeans(x)
+  if (!inherits(x, "sparseMatrix")) {
+    return(apply(x, 1, stats::var))
+  }
+  
+  x <- methods::as(x, "dgCMatrix")
   n <- ncol(x)
-  row_sq_diffs <- Matrix::rowSums((x - row_means)^2)
-  row_vars <- row_sq_diffs / (n - 1)
-  return(row_vars)
+  if (n < 2) {
+    return(rep(0, nrow(x)))
+  }
+  
+  row_means <- Matrix::rowMeans(x)
+  x_sq <- x
+  x_sq@x <- x_sq@x^2
+  row_sq_means <- Matrix::rowSums(x_sq) / n
+  pmax(0, (n / (n - 1)) * (row_sq_means - (row_means^2)))
+}
+
+.run_known_giotto_warning_safe <- function(expr) {
+  withCallingHandlers(
+    expr,
+    warning = function(w) {
+      if (grepl("Not all expression matrices share the same cell_IDs", conditionMessage(w), fixed = TRUE)) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+}
+
+.select_sparse_hvgs <- function(gobj, n_hvgs, sample_id, results_folder) {
+  expr_mat <- getExpression(gobj, values = "normalized", output = "matrix")
+  gene_means <- Matrix::rowMeans(expr_mat)
+  gene_vars <- sparse_row_var(expr_mat)
+  names(gene_means) <- rownames(expr_mat)
+  names(gene_vars) <- rownames(expr_mat)
+  
+  if (length(gene_vars) == 0) {
+    stop("No genes were available for HVG selection")
+  }
+  
+  gene_vars[is.na(gene_vars)] <- 0
+  gene_means[is.na(gene_means)] <- 0
+  ranked_genes <- names(sort(gene_vars, decreasing = TRUE))
+  hvg_genes <- head(ranked_genes, min(n_hvgs, length(ranked_genes)))
+  
+  hvg_table <- tibble::tibble(
+    feat_ID = names(gene_means),
+    mean_expr = as.numeric(gene_means),
+    variance = as.numeric(gene_vars)
+  ) %>%
+    dplyr::mutate(selected_hvg = feat_ID %in% hvg_genes) %>%
+    dplyr::arrange(dplyr::desc(variance))
+  
+  readr::write_csv(
+    hvg_table,
+    file.path(results_folder, paste0(sample_id, "_hvg_summary.csv"))
+  )
+  
+  hvg_plot <- ggplot(
+    hvg_table,
+    aes(
+      x = log10(pmax(mean_expr, 1e-8)),
+      y = log10(pmax(variance, 1e-8)),
+      color = selected_hvg
+    )
+  ) +
+    geom_point(alpha = 0.5, size = 0.7) +
+    scale_color_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick")) +
+    labs(
+      title = paste(sample_id, "- Highly variable genes"),
+      subtitle = "Top genes selected by sparse variance on normalized expression",
+      x = "Log10 mean expression",
+      y = "Log10 variance",
+      color = "Selected"
+    ) +
+    theme_classic() +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  
+  ggsave(
+    filename = file.path(results_folder, paste0(sample_id, "_hvg_plot.png")),
+    plot = hvg_plot,
+    width = 10,
+    height = 8,
+    dpi = 300,
+    bg = "white"
+  )
+  
+  hvg_genes
+}
+
+.prepare_dim_plot_data <- function(gobj, dim_reduction_name, color_column) {
+  dims <- as.data.frame(getDimReduction(gobj, dim_reduction_name))
+  if (ncol(dims) < 2) {
+    stop("Dimensionality reduction ", dim_reduction_name, " does not contain at least two components")
+  }
+  
+  colnames(dims)[1:2] <- c("dim1", "dim2")
+  dims$cell_ID <- if (!is.null(rownames(dims)) && any(nzchar(rownames(dims)))) {
+    rownames(dims)
+  } else {
+    pDataDT(gobj)$cell_ID[seq_len(nrow(dims))]
+  }
+  
+  metadata <- pDataDT(gobj) %>%
+    as_tibble() %>%
+    dplyr::select(cell_ID, dplyr::all_of(color_column))
+  
+  dplyr::left_join(dims, metadata, by = "cell_ID")
+}
+
+.save_continuous_dim_plot <- function(plot_data,
+                                      color_column,
+                                      reduction_label,
+                                      value_label,
+                                      output_path,
+                                      sample_id) {
+  p <- ggplot(plot_data, aes(x = dim1, y = dim2, color = .data[[color_column]])) +
+    geom_point(size = 0.35, alpha = 0.7) +
+    scale_color_viridis_c(option = "magma", na.value = "grey80") +
+    labs(
+      title = paste(sample_id, "-", reduction_label, "colored by", value_label),
+      x = paste(reduction_label, "1"),
+      y = paste(reduction_label, "2"),
+      color = value_label
+    ) +
+    theme_classic() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  ggsave(
+    filename = output_path,
+    plot = p,
+    width = 10,
+    height = 8,
+    dpi = 300,
+    bg = "white"
+  )
 }
 
 #' Dimensionality Reduction
@@ -85,74 +218,35 @@ dimensionality_reduction <- function(gobj,
     cat("Identifying highly variable genes...\n")
     cat("  Target HVGs:", n_hvgs, "\n")
     
-    gobj <- calculateHVF(
-      gobject = gobj,
-      method = "cov_loess",
-      reverse_log_scale = TRUE,
-      difference_in_cov = 0.1,
-      show_plot = FALSE,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_hvg_plot"),
-        save_dir = results_folder,
-        base_width = 10,
-        base_height = 8
-      )
+    hvg_genes <- .select_sparse_hvgs(
+      gobj = gobj,
+      n_hvgs = n_hvgs,
+      sample_id = sample_id,
+      results_folder = results_folder
     )
-    
-    # Get HVG genes
-    feat_metadata <- getFeatureMetadata(gobj, output = "data.table") %>%
-      as_tibble()
-    
-    cat("Feature metadata columns:", paste(names(feat_metadata), collapse = ", "), "\n")
-    
-    # Find HVG column
-    hvf_col <- if ("hvf" %in% names(feat_metadata)) {
-      "hvf"
-    } else if ("hvg" %in% names(feat_metadata)) {
-      "hvg"
-    } else {
-      stop("Cannot find HVF/HVG column in feature metadata")
-    }
-    
-    # Get HVG genes
-    hvg_genes <- feat_metadata %>%
-      filter(.data[[hvf_col]] == "yes") %>%
-      pull(feat_ID)
-    
-    # If we have more HVGs than requested, select top N by variance
-    if (length(hvg_genes) > n_hvgs) {
-      cat("Found", length(hvg_genes), "HVGs, selecting top", n_hvgs, "by variance\n")
-      
-      # Calculate variance for HVG genes
-      expr_mat <- getExpression(gobj, values = "normalized", output = "matrix")
-      hvg_subset <- expr_mat[hvg_genes, ]
-      
-      # Use custom sparse row variance function
-      hvg_vars <- sparse_row_var(hvg_subset)
-      names(hvg_vars) <- hvg_genes
-      
-      hvg_genes <- names(sort(hvg_vars, decreasing = TRUE)[1:n_hvgs])
-    }
     
     cat("✓ Selected", length(hvg_genes), "highly variable genes\n\n")
   }
   
   # Save HVG list
-  write_lines(hvg_genes, 
-              file.path(results_folder, paste0(sample_id, "_hvg_genes.txt")))
+  readr::write_lines(
+    hvg_genes,
+    file.path(results_folder, paste0(sample_id, "_hvg_genes.txt"))
+  )
   
   # PCA
   cat("Running PCA...\n")
   cat("  Number of PCs:", n_pcs, "\n")
   cat("  Using", length(hvg_genes), "features\n")
   
-  gobj <- runPCA(
-    gobject = gobj,
-    feats_to_use = hvg_genes,
-    scale_unit = TRUE,
-    center = TRUE,
-    ncp = n_pcs
+  gobj <- .run_known_giotto_warning_safe(
+    runPCA(
+      gobject = gobj,
+      feats_to_use = hvg_genes,
+      scale_unit = TRUE,
+      center = TRUE,
+      ncp = n_pcs
+    )
   )
   
   cat("✓ PCA complete\n\n")
@@ -180,11 +274,13 @@ dimensionality_reduction <- function(gobj,
   cat("  Neighbors:", umap_n_neighbors, "\n")
   cat("  Min distance:", umap_min_dist, "\n")
   
-  gobj <- runUMAP(
-    gobject = gobj,
-    dimensions_to_use = 1:n_pcs,
-    n_neighbors = umap_n_neighbors,
-    min_dist = umap_min_dist
+  gobj <- .run_known_giotto_warning_safe(
+    runUMAP(
+      gobject = gobj,
+      dimensions_to_use = 1:n_pcs,
+      n_neighbors = umap_n_neighbors,
+      min_dist = umap_min_dist
+    )
   )
   
   cat("✓ UMAP complete\n\n")
@@ -192,10 +288,12 @@ dimensionality_reduction <- function(gobj,
   # t-SNE
   cat("Running t-SNE...\n")
   
-  gobj <- runtSNE(
-    gobject = gobj,
-    dimensions_to_use = 1:n_pcs,
-    perplexity = 30
+  gobj <- .run_known_giotto_warning_safe(
+    runtSNE(
+      gobject = gobj,
+      dimensions_to_use = 1:n_pcs,
+      perplexity = 30
+    )
   )
   
   cat("✓ t-SNE complete\n\n")
@@ -204,48 +302,34 @@ dimensionality_reduction <- function(gobj,
   cat("Creating dimensionality reduction plots...\n")
   
   tryCatch({
-    # UMAP plots
-    dimPlot2D(
-      gobject = gobj,
-      dim_reduction_to_use = "umap",
-      cell_color = "nr_feats",
-      point_size = 0.5,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_umap_by_genes"),
-        save_dir = results_folder,
-        base_width = 10,
-        base_height = 8
-      )
+    umap_genes <- .prepare_dim_plot_data(gobj, "umap", "nr_feats")
+    .save_continuous_dim_plot(
+      plot_data = umap_genes,
+      color_column = "nr_feats",
+      reduction_label = "UMAP",
+      value_label = "genes per cell",
+      output_path = file.path(results_folder, paste0(sample_id, "_umap_by_genes.png")),
+      sample_id = sample_id
     )
     
-    dimPlot2D(
-      gobject = gobj,
-      dim_reduction_to_use = "umap",
-      cell_color = "total_expr",
-      point_size = 0.5,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_umap_by_counts"),
-        save_dir = results_folder,
-        base_width = 10,
-        base_height = 8
-      )
+    umap_counts <- .prepare_dim_plot_data(gobj, "umap", "total_expr")
+    .save_continuous_dim_plot(
+      plot_data = umap_counts,
+      color_column = "total_expr",
+      reduction_label = "UMAP",
+      value_label = "total counts",
+      output_path = file.path(results_folder, paste0(sample_id, "_umap_by_counts.png")),
+      sample_id = sample_id
     )
     
-    # t-SNE plots
-    dimPlot2D(
-      gobject = gobj,
-      dim_reduction_to_use = "tsne",
-      cell_color = "nr_feats",
-      point_size = 0.5,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_tsne_by_genes"),
-        save_dir = results_folder,
-        base_width = 10,
-        base_height = 8
-      )
+    tsne_genes <- .prepare_dim_plot_data(gobj, "tsne", "nr_feats")
+    .save_continuous_dim_plot(
+      plot_data = tsne_genes,
+      color_column = "nr_feats",
+      reduction_label = "t-SNE",
+      value_label = "genes per cell",
+      output_path = file.path(results_folder, paste0(sample_id, "_tsne_by_genes.png")),
+      sample_id = sample_id
     )
     
     cat("✓ Plots saved\n\n")
@@ -255,7 +339,7 @@ dimensionality_reduction <- function(gobj,
   
   # Summary
   cat("=== Dimensionality Reduction Summary ===\n")
-  cat("Method:", ifelse(spatial_hvg, "Spatial HVG", "Standard HVG"), "\n")
+  cat("Method:", ifelse(spatial_hvg, "Spatial HVG", "Standard HVG (sparse variance)"), "\n")
   cat("Features selected:", length(hvg_genes), "\n")
   cat("PCs computed:", n_pcs, "\n")
   
