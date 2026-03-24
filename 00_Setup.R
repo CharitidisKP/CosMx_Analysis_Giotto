@@ -44,6 +44,11 @@ setup_environment <- function(verbose = TRUE) {
     )
   }
   
+  Sys.setenv(
+    COSMX_PYTHON_PATH = python_path,
+    RETICULATE_PYTHON = python_path
+  )
+  
   # Define package list in STRICT load order
   packages <- c(
     "Matrix", "data.table", "tibble", "dplyr", "tidyr", "readr",
@@ -164,14 +169,20 @@ setup_environment <- function(verbose = TRUE) {
       cat("  Path:", py_config$python, "\n")
     }
     
-    if (!reticulate::py_module_available("umap")) {
+    required_python_modules <- c("umap", "igraph", "leidenalg")
+    missing_python_modules <- required_python_modules[!vapply(
+      required_python_modules,
+      reticulate::py_module_available,
+      logical(1)
+    )]
+    if (length(missing_python_modules) > 0) {
       warning(
-        "Python module 'umap' is not available in ",
-        py_config$python,
-        ". Giotto functions that rely on python umap-learn may fail."
+        "Python module(s) missing in ", py_config$python, ": ",
+        paste(missing_python_modules, collapse = ", "),
+        ". Giotto functions that rely on them may fail."
       )
       if (verbose) {
-        cat("  ⚠ python module 'umap' not found\n")
+        cat("  ⚠ missing python modules:", paste(missing_python_modules, collapse = ", "), "\n")
       }
     }
     if (verbose) cat("\n")

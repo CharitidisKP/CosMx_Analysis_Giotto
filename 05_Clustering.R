@@ -39,6 +39,7 @@ perform_clustering <- function(gobj,
                                dim_reduction_to_use = "pca",
                                dim_reduction_name   = NULL,
                                network_name         = NULL,
+                               python_path          = NULL,
                                scripts_dir          = NULL,
                                inspect_snn          = TRUE,
                                n_cells_subgraph     = 100000) {
@@ -56,6 +57,45 @@ perform_clustering <- function(gobj,
   
   results_folder <- file.path(output_dir, "05_Clustering")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
+  
+  if (is.null(python_path) || !nzchar(python_path)) {
+    python_path <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")
+  }
+  if ((!nzchar(python_path)) && exists("python_path", envir = .GlobalEnv, inherits = FALSE)) {
+    python_path <- get("python_path", envir = .GlobalEnv)
+  }
+  
+  if (nzchar(python_path) && requireNamespace("reticulate", quietly = TRUE)) {
+    if (reticulate::py_available(initialize = TRUE)) {
+      py_cfg <- reticulate::py_config()
+      active_python <- normalizePath(py_cfg$python, winslash = "/", mustWork = FALSE)
+      requested_python <- normalizePath(python_path, winslash = "/", mustWork = FALSE)
+      
+      if (!identical(active_python, requested_python)) {
+        stop(
+          "reticulate is already initialized with ", active_python,
+          " but clustering is configured to use ", requested_python,
+          ". Restart the R session before running step 05."
+        )
+      }
+    } else {
+      reticulate::use_python(python_path, required = TRUE)
+    }
+    
+    missing_modules <- c("igraph", "leidenalg")[!vapply(
+      c("igraph", "leidenalg"),
+      reticulate::py_module_available,
+      logical(1)
+    )]
+    
+    if (length(missing_modules) > 0) {
+      stop(
+        "Leiden clustering requires Python module(s) ",
+        paste(missing_modules, collapse = ", "),
+        " in ", python_path, ". Install them in that environment and restart R."
+      )
+    }
+  }
   
   # ── Create nearest neighbour network ────────────────────────────────────────
   cat("Creating nearest neighbor network...\n")
@@ -134,6 +174,7 @@ perform_clustering <- function(gobj,
   
   gobj <- doLeidenCluster(
     gobject      = gobj,
+    python_path  = if (nzchar(python_path)) python_path else NULL,
     resolution   = resolution,
     n_iterations = 1000,
     name         = "leiden_clust"

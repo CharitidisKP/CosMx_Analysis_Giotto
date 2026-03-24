@@ -50,7 +50,7 @@ inspect_nn_network <- function(gobject,
   if (verbose) message(paste("\n========== Analyzing Network for Sample:", sample_id, "==========\n"))
   
   # 1. EXTRACT NETWORK DATA -------------------------------------------------
-
+  
   if (verbose) message("Step 1: Extracting nearest neighbor network...")
   
   nn <- getNearestNetwork(
@@ -63,48 +63,48 @@ inspect_nn_network <- function(gobject,
   
   # Store original edge attributes before conversion
   original_edge_attrs <- list(
-    weight = E(nn_igraph)$weight,
-    distance = E(nn_igraph)$distance,
-    shared = E(nn_igraph)$shared,
-    rank = E(nn_igraph)$rank
+    weight = igraph::E(nn_igraph)$weight,
+    distance = igraph::E(nn_igraph)$distance,
+    shared = igraph::E(nn_igraph)$shared,
+    rank = igraph::E(nn_igraph)$rank
   )
   
   # Convert to undirected graph if needed (FIX FOR LOUVAIN ERROR)
-  if (is_directed(nn_igraph)) {
+  if (igraph::is_directed(nn_igraph)) {
     if (verbose) message("  - Converting directed graph to undirected...")
     
     # Use mode = "each" to keep all edges and preserve attributes better
-    nn_igraph <- as_undirected(nn_igraph, mode = "each", edge.attr.comb = "first")
+    nn_igraph <- igraph::as_undirected(nn_igraph, mode = "each", edge.attr.comb = "first")
     
     # Check if attributes were preserved, if not, restore them
-    if (is.null(E(nn_igraph)$weight)) {
+    if (is.null(igraph::E(nn_igraph)$weight)) {
       if (verbose) message("  - Restoring edge attributes after conversion...")
-      E(nn_igraph)$weight <- original_edge_attrs$weight
-      E(nn_igraph)$distance <- original_edge_attrs$distance
-      E(nn_igraph)$shared <- original_edge_attrs$shared
-      E(nn_igraph)$rank <- original_edge_attrs$rank
+      igraph::E(nn_igraph)$weight <- original_edge_attrs$weight
+      igraph::E(nn_igraph)$distance <- original_edge_attrs$distance
+      igraph::E(nn_igraph)$shared <- original_edge_attrs$shared
+      igraph::E(nn_igraph)$rank <- original_edge_attrs$rank
     }
   }
   
   # Basic network properties
-  n_vertices <- vcount(nn_igraph)
-  n_edges <- ecount(nn_igraph)
+  n_vertices <- igraph::vcount(nn_igraph)
+  n_edges <- igraph::ecount(nn_igraph)
   
   if (verbose) {
     message(paste("  - Number of cells/vertices:", n_vertices))
     message(paste("  - Number of edges:", n_edges))
-    message(paste("  - Graph is directed:", is_directed(nn_igraph)))
+    message(paste("  - Graph is directed:", igraph::is_directed(nn_igraph)))
   }
   
-
+  
   # 2. EXTRACT EDGE ATTRIBUTES ----------------------------------------------
-
+  
   if (verbose) message("\nStep 2: Extracting edge attributes...")
   
-  edge_weights <- E(nn_igraph)$weight
-  edge_distances <- E(nn_igraph)$distance
-  edge_shared <- E(nn_igraph)$shared
-  edge_ranks <- E(nn_igraph)$rank
+  edge_weights <- igraph::E(nn_igraph)$weight
+  edge_distances <- igraph::E(nn_igraph)$distance
+  edge_shared <- igraph::E(nn_igraph)$shared
+  edge_ranks <- igraph::E(nn_igraph)$rank
   
   # Check if attributes exist and have correct length
   if (is.null(edge_weights) || length(edge_weights) == 0) {
@@ -152,7 +152,7 @@ inspect_nn_network <- function(gobject,
   
   
   # 3. CALCULATE SUMMARY STATISTICS -----------------------------------------
-
+  
   
   if (verbose) message("\nStep 3: Calculating summary statistics...")
   
@@ -189,11 +189,11 @@ inspect_nn_network <- function(gobject,
   edge_summaries[, 2:7] <- round(edge_summaries[, 2:7], 3)
   
   # Degree distribution
-  degree_dist <- degree(nn_igraph)
+  degree_dist <- igraph::degree(nn_igraph)
   
   # Network connectivity
-  is_conn <- is_connected(nn_igraph)
-  comp <- components(nn_igraph)
+  is_conn <- igraph::is_connected(nn_igraph)
+  comp <- igraph::components(nn_igraph)
   
   # Network metrics
   network_metrics <- data.frame(
@@ -215,15 +215,15 @@ inspect_nn_network <- function(gobject,
       round(mean(degree_dist), 2),
       min(degree_dist),
       max(degree_dist),
-      round(edge_density(nn_igraph), 6),
+      round(igraph::edge_density(nn_igraph), 6),
       is_conn,
       comp$no,
       max(comp$csize),
-      round(transitivity(nn_igraph, type = "global"), 3)
+      round(igraph::transitivity(nn_igraph, type = "global"), 3)
     ))
   )
   
-
+  
   # 4. CREATE VISUALIZATIONS ------------------------------------------------
   
   if (verbose) message("\nStep 4: Creating visualizations...")
@@ -293,19 +293,19 @@ inspect_nn_network <- function(gobject,
   
   set.seed(123)
   n_sample <- min(n_cells_subgraph, n_vertices)
-  sample_vertices <- sample(vcount(nn_igraph), n_sample)
-  nn_subgraph <- induced_subgraph(nn_igraph, sample_vertices)
+  sample_vertices <- sample(igraph::vcount(nn_igraph), n_sample)
+  nn_subgraph <- igraph::induced_subgraph(nn_igraph, sample_vertices)
   
   # Detect communities
-  communities <- cluster_louvain(nn_subgraph)
+  communities <- igraph::cluster_louvain(nn_subgraph)
   if (verbose) message(paste("  - Detected", length(unique(communities$membership)), "communities"))
   
   # Get node degree
-  node_degrees <- degree(nn_subgraph)
+  node_degrees <- igraph::degree(nn_subgraph)
   
   # METHOD 1: ggraph with manual layout
   if (verbose) message("  - Computing graph layout (Fruchterman-Reingold)...")
-  layout_coords <- layout_with_fr(nn_subgraph, niter = 500)
+  layout_coords <- igraph::layout_with_fr(nn_subgraph, niter = 500)
   
   # Create data frame for plotting
   node_data <- data.frame(
@@ -313,11 +313,11 @@ inspect_nn_network <- function(gobject,
     y = layout_coords[, 2],
     community = as.factor(communities$membership),
     degree = node_degrees,
-    vertex_id = V(nn_subgraph)$name
+    vertex_id = igraph::V(nn_subgraph)$name
   )
   
   # Get edge list with coordinates
-  edge_list <- as_edgelist(nn_subgraph, names = FALSE)
+  edge_list <- igraph::as_edgelist(nn_subgraph, names = FALSE)
   edge_data <- data.frame(
     x = layout_coords[edge_list[, 1], 1],
     y = layout_coords[edge_list[, 1], 2],
@@ -326,8 +326,8 @@ inspect_nn_network <- function(gobject,
   )
   
   # Get edge weights if available
-  if (!is.null(E(nn_subgraph)$weight)) {
-    edge_data$weight <- E(nn_subgraph)$weight
+  if (!is.null(igraph::E(nn_subgraph)$weight)) {
+    edge_data$weight <- igraph::E(nn_subgraph)$weight
   } else {
     edge_data$weight <- 1
   }
@@ -408,14 +408,14 @@ inspect_nn_network <- function(gobject,
   ## 4.4 Adjacency Matrix Heatmap (first 100 cells)
   if (verbose) message("  - Creating adjacency matrix heatmap...")
   
-  adj_matrix <- as_adjacency_matrix(nn_igraph, 
-                                    attr = "weight", 
-                                    sparse = TRUE)
+  adj_matrix <- igraph::as_adjacency_matrix(nn_igraph, 
+                                            attr = "weight", 
+                                            sparse = TRUE)
   
   n_heatmap <- min(100, n_vertices)
   adj_subset <- as.matrix(adj_matrix[1:n_heatmap, 1:n_heatmap])
   
-
+  
   # 5. PRINT SUMMARY TABLES -------------------------------------------------
   
   
@@ -451,9 +451,9 @@ inspect_nn_network <- function(gobject,
     })
   }
   
-
+  
   # 6. SAVE OUTPUTS -----------------------------------------------------
-
+  
   
   if (save_plots) {
     if (verbose) message("\nStep 5: Saving outputs...")
@@ -522,10 +522,10 @@ inspect_nn_network <- function(gobject,
     if (verbose) message(paste("  - All outputs saved to:", full_output_path))
   }
   
-
-
+  
+  
   # 7. RETURN RESULTS -----------------------------------------------------
-
+  
   
   # Create rank table for return object (with error handling)
   rank_table <- tryCatch({

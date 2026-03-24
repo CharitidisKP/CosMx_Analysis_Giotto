@@ -1,0 +1,42 @@
+# R / RStudio
+.Rhistory
+.Rapp.history
+.RData
+.Ruserdata
+.Rprofile
+.Rproj.user/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Python caches / local envs
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.pytest_cache/
+
+# renv local state
+renv/library/
+renv/staging/
+
+# Local logs / scratch
+*.log
+*.tmp
+*.bak
+
+# Old root-level files you do not want tracked
+Giotto_test.Rmd
+Run_CosMx_Portal.R
+config.yaml
+sample_sheet_template.csv
+
+# Keep only the manual runner in Test_Scripts
+Test_Scripts/*
+!Test_Scripts/
+!Test_Scripts/Manual_Single_Sample_Test.R
