@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 11_B_cell_microenvironment.R
+# 12_B_Cell_Analysis.R
 # B-cell focused spatial interaction summaries
 # ==============================================================================
 
@@ -88,7 +88,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
     }
   }
   
-  results_dir <- ensure_dir(file.path(output_dir, "11_BCell_Microenvironment"))
+  results_dir <- ensure_dir(file.path(output_dir, "12_BCell_Microenvironment"))
   metadata <- pDataDT(gobj) %>% as_tibble()
   annotation_column <- detect_annotation_column(metadata, annotation_column)
   
@@ -140,6 +140,61 @@ run_bcell_microenvironment_analysis <- function(gobj,
     bcell_table,
     file.path(results_dir, paste0(sample_id, "_bcell_interactions.csv"))
   )
+  
+  # Bring forward B-cell focused CCI outputs from step 10 when available.
+  liana_path <- file.path(
+    output_dir,
+    "10_CCI_Analysis",
+    "liana",
+    paste0(sample_id, "_liana_aggregate.csv")
+  )
+  if (file.exists(liana_path)) {
+    tryCatch({
+      liana_tbl <- readr::read_csv(liana_path, show_col_types = FALSE)
+      if (all(c("source", "target") %in% names(liana_tbl))) {
+        bcell_liana <- liana_tbl %>%
+          dplyr::filter(
+            grepl(bcell_regex, source, ignore.case = TRUE) |
+              grepl(bcell_regex, target, ignore.case = TRUE)
+          )
+        readr::write_csv(
+          bcell_liana,
+          file.path(results_dir, paste0(sample_id, "_bcell_liana_interactions.csv"))
+        )
+      }
+    }, error = function(e) {
+      message("B-cell LIANA summary skipped: ", conditionMessage(e))
+    })
+  }
+  
+  nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+  if (dir.exists(nichenet_root)) {
+    tryCatch({
+      comparison_dirs <- list.dirs(nichenet_root, full.names = TRUE, recursive = FALSE)
+      comparison_dirs <- comparison_dirs[
+        grepl(bcell_regex, basename(comparison_dirs), ignore.case = TRUE)
+      ]
+      nichenet_tables <- lapply(comparison_dirs, function(dir_path) {
+        csv_path <- file.path(dir_path, paste0(sample_id, "_ligand_activities.csv"))
+        if (!file.exists(csv_path)) {
+          return(NULL)
+        }
+        tbl <- readr::read_csv(csv_path, show_col_types = FALSE)
+        tbl$comparison <- basename(dir_path)
+        tbl
+      })
+      nichenet_tables <- Filter(Negate(is.null), nichenet_tables)
+      if (length(nichenet_tables) > 0) {
+        bcell_nichenet <- dplyr::bind_rows(nichenet_tables)
+        readr::write_csv(
+          bcell_nichenet,
+          file.path(results_dir, paste0(sample_id, "_bcell_nichenet_ligand_activities.csv"))
+        )
+      }
+    }, error = function(e) {
+      message("B-cell NicheNet summary skipped: ", conditionMessage(e))
+    })
+  }
   
   tryCatch({
     heatmap_plot <- cellProximityHeatmap(gobject = gobj, CPscore = cp_scores)

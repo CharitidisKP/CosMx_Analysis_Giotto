@@ -165,7 +165,7 @@ setup_environment <- function(verbose = TRUE) {
     }
     py_config <- reticulate::py_config()
     if (verbose) {
-      cat("✓ Python:", py_config$version, "\n")
+      cat("✓ Python:", as.character(py_config$version), "\n")
       cat("  Path:", py_config$python, "\n")
     }
     
@@ -212,7 +212,8 @@ setup_environment <- function(verbose = TRUE) {
     "Remove_HVF_duplicates.R",
     "Cluster_Visualisations.R",
     "Arrange_Feature_plots.R",
-    "Feature_plots_panel.R"
+    "Feature_plots_panel.R", 
+    "CCI_Summary.R"
   )
   
   sourced_count <- 0

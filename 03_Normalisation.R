@@ -61,7 +61,7 @@
     n_total <- nrow(x) * ncol(x)
     x_c <- methods::as(x, "dgCMatrix")
     return(list(
-      mean = as.numeric(Matrix::sum(x_c) / n_total),
+      mean = as.numeric(sum(x_c) / n_total),
       median = .sparse_matrix_median(x_c),
       max = if (Matrix::nnzero(x_c) == 0) 0 else max(x_c@x)
     ))

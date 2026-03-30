@@ -15,6 +15,49 @@
 #' @param marker_genes Optional vector of marker genes to highlight
 #' @return Giotto object (unchanged)
 
+.muffle_known_giotto_plot_warnings <- function(expr) {
+  withCallingHandlers(
+    expr,
+    warning = function(w) {
+      msg <- conditionMessage(w)
+      if (grepl("`aes_string\\(\\)` was deprecated", msg, fixed = FALSE)) {
+        invokeRestart("muffleWarning")
+      }
+    }
+  )
+}
+
+.filter_celltype_columns <- function(metadata, columns) {
+  if (length(columns) == 0) {
+    return(columns)
+  }
+  
+  present_cols <- columns[columns %in% names(metadata)]
+  if (length(present_cols) == 0) {
+    return(character(0))
+  }
+  
+  excluded_score_cols <- present_cols[grepl("(^score_|_score$|score_)", present_cols)]
+  candidate_cols <- setdiff(present_cols, excluded_score_cols)
+  
+  excluded_numeric_cols <- candidate_cols[
+    vapply(candidate_cols, function(col) is.numeric(metadata[[col]]), logical(1))
+  ]
+  
+  filtered_cols <- setdiff(candidate_cols, excluded_numeric_cols)
+  
+  excluded_cols <- unique(c(excluded_score_cols, excluded_numeric_cols))
+  if (length(excluded_cols) > 0) {
+    cat(
+      "Excluded non-categorical annotation columns:",
+      paste(excluded_cols, collapse = ", "),
+      "\n"
+    )
+  }
+  
+  filtered_cols
+}
+
 create_visualizations <- function(gobj,
                                   sample_id,
                                   output_dir,
@@ -23,7 +66,7 @@ create_visualizations <- function(gobj,
                                   marker_genes = NULL) {
   
   cat("\n========================================\n")
-  cat("STEP 08: Comprehensive Visualization\n")
+  cat("STEP 08: Comprehensive visualization\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
   
@@ -37,18 +80,23 @@ create_visualizations <- function(gobj,
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
   
   # Auto-detect cell type columns if not provided
+  metadata <- pDataDT(gobj)
+  
   if (is.null(celltype_columns)) {
-    metadata_cols <- names(pDataDT(gobj))
+    metadata_cols <- names(metadata)
     celltype_columns <- grep("^celltype_", metadata_cols, value = TRUE)
+    celltype_columns <- .filter_celltype_columns(metadata, celltype_columns)
     
     if (length(celltype_columns) > 0) {
       cat("Auto-detected cell type columns:", paste(celltype_columns, collapse = ", "), "\n\n")
     }
+  } else {
+    celltype_columns <- .filter_celltype_columns(metadata, celltype_columns)
   }
   
   # Auto-detect cluster column
-  if (!cluster_column %in% names(pDataDT(gobj))) {
-    metadata_cols <- names(pDataDT(gobj))
+  if (!cluster_column %in% names(metadata)) {
+    metadata_cols <- names(metadata)
     cluster_cols <- grep("leiden|louvain|cluster", metadata_cols, value = TRUE, ignore.case = TRUE)
     
     if (length(cluster_cols) > 0) {
@@ -67,18 +115,20 @@ create_visualizations <- function(gobj,
   
   # UMAP - Clusters
   tryCatch({
-    dimPlot2D(
-      gobject = gobj,
-      dim_reduction_to_use = "umap",
-      cell_color = cluster_column,
-      point_size = 0.8,
-      show_legend = TRUE,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_umap_clusters"),
-        save_dir = dimred_folder,
-        base_width = 12,
-        base_height = 9
+    .muffle_known_giotto_plot_warnings(
+      dimPlot2D(
+        gobject = gobj,
+        dim_reduction_to_use = "umap",
+        cell_color = cluster_column,
+        point_size = 0.8,
+        show_legend = TRUE,
+        save_plot = TRUE,
+        save_param = list(
+          save_name = paste0(sample_id, "_umap_clusters"),
+          save_dir = dimred_folder,
+          base_width = 12,
+          base_height = 9
+        )
       )
     )
     cat("  ✓ UMAP clusters\n")
@@ -89,18 +139,20 @@ create_visualizations <- function(gobj,
   # UMAP - Cell types
   for (ct_col in celltype_columns) {
     tryCatch({
-      dimPlot2D(
-        gobject = gobj,
-        dim_reduction_to_use = "umap",
-        cell_color = ct_col,
-        point_size = 0.8,
-        show_legend = TRUE,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_umap_", ct_col),
-          save_dir = dimred_folder,
-          base_width = 12,
-          base_height = 9
+      .muffle_known_giotto_plot_warnings(
+        dimPlot2D(
+          gobject = gobj,
+          dim_reduction_to_use = "umap",
+          cell_color = ct_col,
+          point_size = 0.8,
+          show_legend = TRUE,
+          save_plot = TRUE,
+          save_param = list(
+            save_name = paste0(sample_id, "_umap_", ct_col),
+            save_dir = dimred_folder,
+            base_width = 12,
+            base_height = 9
+          )
         )
       )
       cat("  ✓ UMAP", ct_col, "\n")
@@ -111,18 +163,20 @@ create_visualizations <- function(gobj,
   
   # t-SNE - Clusters
   tryCatch({
-    dimPlot2D(
-      gobject = gobj,
-      dim_reduction_to_use = "tsne",
-      cell_color = cluster_column,
-      point_size = 0.8,
-      show_legend = TRUE,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_tsne_clusters"),
-        save_dir = dimred_folder,
-        base_width = 12,
-        base_height = 9
+    .muffle_known_giotto_plot_warnings(
+      dimPlot2D(
+        gobject = gobj,
+        dim_reduction_to_use = "tsne",
+        cell_color = cluster_column,
+        point_size = 0.8,
+        show_legend = TRUE,
+        save_plot = TRUE,
+        save_param = list(
+          save_name = paste0(sample_id, "_tsne_clusters"),
+          save_dir = dimred_folder,
+          base_width = 12,
+          base_height = 9
+        )
       )
     )
     cat("  ✓ t-SNE clusters\n")
@@ -142,18 +196,20 @@ create_visualizations <- function(gobj,
   
   # Spatial - Clusters
   tryCatch({
-    spatPlot2D(
-      gobject = gobj,
-      cell_color = cluster_column,
-      point_size = 0.5,
-      show_image = FALSE,
-      point_alpha = 0.8,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_spatial_clusters"),
-        save_dir = spatial_folder,
-        base_width = 14,
-        base_height = 10
+    .muffle_known_giotto_plot_warnings(
+      spatPlot2D(
+        gobject = gobj,
+        cell_color = cluster_column,
+        point_size = 0.5,
+        show_image = FALSE,
+        point_alpha = 0.8,
+        save_plot = TRUE,
+        save_param = list(
+          save_name = paste0(sample_id, "_spatial_clusters"),
+          save_dir = spatial_folder,
+          base_width = 14,
+          base_height = 10
+        )
       )
     )
     cat("  ✓ Spatial clusters\n")
@@ -164,18 +220,20 @@ create_visualizations <- function(gobj,
   # Spatial - Cell types
   for (ct_col in celltype_columns) {
     tryCatch({
-      spatPlot2D(
-        gobject = gobj,
-        cell_color = ct_col,
-        point_size = 0.5,
-        show_image = FALSE,
-        point_alpha = 0.8,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_spatial_", ct_col),
-          save_dir = spatial_folder,
-          base_width = 14,
-          base_height = 10
+      .muffle_known_giotto_plot_warnings(
+        spatPlot2D(
+          gobject = gobj,
+          cell_color = ct_col,
+          point_size = 0.5,
+          show_image = FALSE,
+          point_alpha = 0.8,
+          save_plot = TRUE,
+          save_param = list(
+            save_name = paste0(sample_id, "_spatial_", ct_col),
+            save_dir = spatial_folder,
+            base_width = 14,
+            base_height = 10
+          )
         )
       )
       cat("  ✓ Spatial", ct_col, "\n")
@@ -186,19 +244,21 @@ create_visualizations <- function(gobj,
   
   # Spatial - QC metrics
   tryCatch({
-    spatPlot2D(
-      gobject = gobj,
-      cell_color = "nr_feats",
-      color_as_factor = FALSE,
-      gradient_style = "sequential",
-      point_size = 0.5,
-      show_image = FALSE,
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_spatial_genes_per_cell"),
-        save_dir = spatial_folder,
-        base_width = 14,
-        base_height = 10
+    .muffle_known_giotto_plot_warnings(
+      spatPlot2D(
+        gobject = gobj,
+        cell_color = "nr_feats",
+        color_as_factor = FALSE,
+        gradient_style = "sequential",
+        point_size = 0.5,
+        show_image = FALSE,
+        save_plot = TRUE,
+        save_param = list(
+          save_name = paste0(sample_id, "_spatial_genes_per_cell"),
+          save_dir = spatial_folder,
+          base_width = 14,
+          base_height = 10
+        )
       )
     )
     cat("  ✓ Spatial genes per cell\n")
@@ -221,18 +281,20 @@ create_visualizations <- function(gobj,
     # Spatial feature plots
     for (gene in marker_genes) {
       tryCatch({
-        spatFeatPlot2D(
-          gobject = gobj,
-          expression_values = "normalized",
-          feats = gene,
-          point_size = 0.5,
-          show_image = FALSE,
-          save_plot = TRUE,
-          save_param = list(
-            save_name = paste0(sample_id, "_spatial_", gene),
-            save_dir = feature_folder,
-            base_width = 12,
-            base_height = 10
+        .muffle_known_giotto_plot_warnings(
+          spatFeatPlot2D(
+            gobject = gobj,
+            expression_values = "normalized",
+            feats = gene,
+            point_size = 0.5,
+            show_image = FALSE,
+            save_plot = TRUE,
+            save_param = list(
+              save_name = paste0(sample_id, "_spatial_", gene),
+              save_dir = feature_folder,
+              base_width = 12,
+              base_height = 10
+            )
           )
         )
         cat("  ✓", gene, "\n")
@@ -255,19 +317,19 @@ create_visualizations <- function(gobj,
   # Cell type proportions
   for (ct_col in celltype_columns) {
     tryCatch({
-      metadata <- pDataDT(gobj) %>% as_tibble()
+      metadata <- metadata %>% as_tibble()
       
       type_counts <- metadata %>%
-        group_by(!!sym(ct_col)) %>%
-        summarise(n = n(), .groups = "drop") %>%
-        arrange(desc(n))
+        dplyr::group_by(!!rlang::sym(ct_col)) %>%
+        dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+        dplyr::arrange(dplyr::desc(n))
       
-      p <- ggplot(type_counts, aes(x = reorder(!!sym(ct_col), n), y = n, fill = !!sym(ct_col))) +
+      p <- ggplot(type_counts, aes(x = reorder(!!rlang::sym(ct_col), n), y = n, fill = !!rlang::sym(ct_col))) +
         geom_bar(stat = "identity") +
         coord_flip() +
         labs(title = paste(sample_id, "-", gsub("celltype_", "", ct_col)),
-             x = "Cell Type",
-             y = "Number of Cells") +
+             x = "Cell type",
+             y = "Number of cells") +
         theme_classic() +
         theme(
           legend.position = "none",
@@ -293,21 +355,21 @@ create_visualizations <- function(gobj,
   if (length(celltype_columns) > 0) {
     for (ct_col in celltype_columns) {
       tryCatch({
-        metadata <- pDataDT(gobj) %>% as_tibble()
+        metadata <- metadata %>% as_tibble()
         
         composition <- metadata %>%
-          group_by(!!sym(cluster_column), !!sym(ct_col)) %>%
-          summarise(n = n(), .groups = "drop") %>%
-          group_by(!!sym(cluster_column)) %>%
-          mutate(prop = n / sum(n))
+          dplyr::group_by(!!rlang::sym(cluster_column), !!rlang::sym(ct_col)) %>%
+          dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
+          dplyr::group_by(!!rlang::sym(cluster_column)) %>%
+          dplyr::mutate(prop = n / sum(n))
         
-        p <- ggplot(composition, aes(x = !!sym(cluster_column), y = prop, fill = !!sym(ct_col))) +
+        p <- ggplot(composition, aes(x = !!rlang::sym(cluster_column), y = prop, fill = !!rlang::sym(ct_col))) +
           geom_bar(stat = "identity", position = "fill") +
-          labs(title = paste(sample_id, "- Cluster Composition"),
+          labs(title = paste(sample_id, "- Cluster composition"),
                subtitle = gsub("celltype_", "", ct_col),
                x = "Cluster",
                y = "Proportion",
-               fill = "Cell Type") +
+               fill = "Cell type") +
           theme_classic() +
           theme(
             plot.title = element_text(hjust = 0.5, face = "bold", size = 14),

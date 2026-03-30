@@ -105,7 +105,17 @@ sparse_row_var <- function(x) {
 }
 
 .prepare_dim_plot_data <- function(gobj, dim_reduction_name, color_column) {
-  dims <- as.data.frame(getDimReduction(gobj, dim_reduction_name))
+  dims <- as.data.frame(
+    getDimReduction(
+      gobject = gobj,
+      spat_unit = "cell",
+      feat_type = "rna",
+      reduction = "cells",
+      reduction_method = dim_reduction_name,
+      name = dim_reduction_name,
+      output = "matrix"
+    )
+  )
   if (ncol(dims) < 2) {
     stop("Dimensionality reduction ", dim_reduction_name, " does not contain at least two components")
   }
@@ -344,8 +354,24 @@ dimensionality_reduction <- function(gobj,
   cat("PCs computed:", n_pcs, "\n")
   
   tryCatch({
-    umap_dims <- getDimReduction(gobj, "umap")
-    tsne_dims <- getDimReduction(gobj, "tsne")
+    umap_dims <- getDimReduction(
+      gobject = gobj,
+      spat_unit = "cell",
+      feat_type = "rna",
+      reduction = "cells",
+      reduction_method = "umap",
+      name = "umap",
+      output = "matrix"
+    )
+    tsne_dims <- getDimReduction(
+      gobject = gobj,
+      spat_unit = "cell",
+      feat_type = "rna",
+      reduction = "cells",
+      reduction_method = "tsne",
+      name = "tsne",
+      output = "matrix"
+    )
     cat("UMAP dimensions:", ncol(umap_dims), "\n")
     cat("t-SNE dimensions:", ncol(tsne_dims), "\n")
   }, error = function(e) {

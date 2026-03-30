@@ -168,6 +168,21 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
   mat_masked           <- mat
   mat_masked[!sig_mat] <- NA
   
+  row_order <- seq_len(n_types)
+  col_order <- seq_len(n_types)
+  if (n_types >= 2) {
+    row_order <- tryCatch(
+      stats::hclust(stats::dist(mat))$order,
+      error = function(e) seq_len(n_types)
+    )
+    col_order <- tryCatch(
+      stats::hclust(stats::dist(t(mat)))$order,
+      error = function(e) seq_len(n_types)
+    )
+  }
+  
+  mat_masked <- mat_masked[row_order, col_order, drop = FALSE]
+  
   breaks <- seq(-max_abs, max_abs, length.out = 101)
   colors <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100)
   
@@ -185,6 +200,7 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
     Compartment = ifelse(all_types %in% immune_types, "Immune", "Structural"),
     row.names   = all_types
   )
+  anno_df <- anno_df[rownames(mat_masked), , drop = FALSE]
   anno_colours <- list(
     Compartment = c(Immune     = "#E41A1C",
                     Structural = "#377EB8")
@@ -199,8 +215,8 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
     color             = colors,
     breaks            = breaks,
     na_col            = "grey92",
-    cluster_rows      = TRUE,
-    cluster_cols      = TRUE,
+    cluster_rows      = FALSE,
+    cluster_cols      = FALSE,
     show_rownames     = TRUE,
     show_colnames     = TRUE,
     fontsize          = 7.5,
@@ -717,9 +733,33 @@ build_spatial_network <- function(gobj,
   cat("================================================================================\n\n")
   
   tryCatch({
-    saveGiotto(gobject = gobj, dir = output_dir,
-               foldername = "Giotto_Object_Spatial", overwrite = TRUE)
-    cat("\u2713 Saved: Giotto_Object_Spatial\n")
+    if (exists("save_giotto_checkpoint")) {
+      checkpoint_info <- save_giotto_checkpoint(
+        gobj = gobj,
+        checkpoint_dir = file.path(output_dir, "Giotto_Object_Spatial"),
+        overwrite = TRUE,
+        metadata = list(
+          sample_id = sample_id,
+          pipeline_step = "09_spatial_network"
+        )
+      )
+      if (!identical(checkpoint_info$save_method, "none")) {
+        cat("\u2713 Saved: Giotto_Object_Spatial (", checkpoint_info$save_method, ")\n", sep = "")
+      } else {
+        cat("\u26A0 Save skipped: no serializer succeeded\n")
+      }
+      if (!is.null(checkpoint_info$error_message) && nzchar(checkpoint_info$error_message)) {
+        cat("  saveGiotto fallback:", checkpoint_info$error_message, "\n")
+      }
+    } else {
+      saveGiotto(
+        gobject = gobj,
+        dir = output_dir,
+        foldername = "Giotto_Object_Spatial",
+        overwrite = TRUE
+      )
+      cat("\u2713 Saved: Giotto_Object_Spatial\n")
+    }
   }, error = function(e) cat("\u26A0 Save failed:", conditionMessage(e), "\n"))
   
   cat("\n=== Step 09 Summary ===\n")

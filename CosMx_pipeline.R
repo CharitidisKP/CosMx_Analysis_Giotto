@@ -646,6 +646,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         celltype_col = cfg$interaction$annotation_column %||% NULL,
         sender_celltypes = cci_cfg$sender_celltypes %||% NULL,
         receiver_celltype = cci_cfg$receiver_celltype %||% NULL,
+        target_genes = cci_cfg$target_genes %||% NULL,
         nichenet_network_dir = cci_cfg$nichenet_network_dir %||% NULL,
         run_sections = unlist(cci_cfg$run_sections %||% c(
           insitucor = TRUE,

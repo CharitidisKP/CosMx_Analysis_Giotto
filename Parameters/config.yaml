@@ -52,6 +52,7 @@ cci:
     nnsvg: true
   sender_celltypes: null
   receiver_celltype: null
+  target_genes: null
   nichenet_network_dir: null
 
 spatial_de:

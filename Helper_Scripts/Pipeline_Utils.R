@@ -96,9 +96,23 @@ save_giotto_checkpoint <- function(gobj,
   }
   
   if (save_method == "none") {
-    saveRDS(gobj, rds_file, compress = "xz")
-    save_method <- "rds"
-    error_message <- NULL
+    tryCatch({
+      saveRDS(gobj, rds_file, compress = "xz")
+      save_method <- "rds"
+      error_message <- NULL
+    }, error = function(e) {
+      error_message <<- conditionMessage(e)
+    })
+  }
+  
+  if (save_method == "none") {
+    return(invisible(
+      list(
+        checkpoint_dir = checkpoint_dir,
+        save_method = save_method,
+        error_message = error_message
+      )
+    ))
   }
   
   write_json_pretty(

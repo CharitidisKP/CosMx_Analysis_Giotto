@@ -165,8 +165,8 @@ gobj <- dimensionality_reduction(
 gobj <- perform_clustering(
   gobj = gobj,
   sample_id = sample_id,
-  output_dir = output_dir, 
-  inspect_snn = FALSE
+  output_dir = output_dir,
+  scripts_dir = scripts_dir
 )
 
 # Step 06
@@ -226,16 +226,47 @@ if (isTRUE(run_cci_step)) {
     celltype_col = interaction_cfg$annotation_column %||% spatial_de_cfg$annotation_column %||% NULL,
     sender_celltypes = cci_cfg$sender_celltypes %||% NULL,
     receiver_celltype = cci_cfg$receiver_celltype %||% NULL,
+    target_genes = cci_cfg$target_genes %||% NULL,
     nichenet_network_dir = cci_cfg$nichenet_network_dir %||% NULL,
-    run_sections = cci_cfg$run_sections %||% c(
+    run_sections = unlist(cci_cfg$run_sections %||% c(
       insitucor = TRUE,
       liana = TRUE,
       nichenet = FALSE,
       misty = TRUE,
       nnsvg = TRUE
-    )
+    ))
   )
 }
+
+
+## Manual check for each part, temp ##
+list.files(network_dir)
+
+target_genes <- c(
+  "CD19",   # canonical B-cell CAR-T target
+  "MS4A1",  # CD20
+  "CD22",   # common alternative / dual-target CAR-T antigen
+  "CD79A",
+  "CD79B",
+  "PAX5",
+  "CD37",
+  "CD74",
+  "BANK1",
+  "BLNK",
+  "FCER2",
+  "HLA-DRA"
+)
+
+nichenet_res <- run_nichenet(
+  gobj = gobj,
+  sample_id = sample_id,
+  output_dir = output_dir,
+  celltype_col = celltype_col,
+  sender_celltypes = c("CD4.T.cell", "CD8.T.cell"),
+  receiver_celltype = "B.cell",
+  target_genes = target_genes,
+  network_dir = network_dir
+)
 
 # Step 12
 if (isTRUE(run_bcell_step)) {
