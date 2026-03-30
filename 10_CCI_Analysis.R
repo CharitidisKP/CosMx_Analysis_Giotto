@@ -168,6 +168,169 @@
   names(detected_fraction)[detected_fraction >= pct]
 }
 
+.normalize_named_character_list <- function(x) {
+  if (is.null(x)) {
+    return(NULL)
+  }
+  if (!is.list(x)) {
+    return(NULL)
+  }
+  
+  nm <- names(x)
+  if (is.null(nm) || any(!nzchar(nm))) {
+    return(NULL)
+  }
+  
+  out <- lapply(x, function(v) unique(as.character(v[!is.na(v)])))
+  names(out) <- nm
+  out
+}
+
+.resolve_target_genes_for_receiver <- function(receiver_celltype,
+                                               target_genes = NULL,
+                                               target_genes_by_receiver = NULL) {
+  target_genes_by_receiver <- .normalize_named_character_list(target_genes_by_receiver)
+  if (!is.null(target_genes_by_receiver) &&
+      receiver_celltype %in% names(target_genes_by_receiver)) {
+    return(target_genes_by_receiver[[receiver_celltype]])
+  }
+  
+  if (!is.null(target_genes) && length(target_genes) > 0) {
+    return(unique(as.character(target_genes)))
+  }
+  
+  NULL
+}
+
+.find_proximity_enrichment_path <- function(output_dir,
+                                            sample_id,
+                                            proximity_enrichment_path = NULL) {
+  candidates <- unique(c(
+    proximity_enrichment_path %||% "",
+    file.path(output_dir, "09_Spatial_Network", "proximity",
+              paste0(sample_id, "_proximity_enrichment.csv"))
+  ))
+  candidates <- candidates[nzchar(candidates)]
+  hit <- candidates[file.exists(candidates)][1]
+  if (is.na(hit) || !nzchar(hit)) {
+    return(NULL)
+  }
+  hit
+}
+
+.load_proximity_enrichment <- function(output_dir,
+                                       sample_id,
+                                       proximity_enrichment_path = NULL) {
+  prox_path <- .find_proximity_enrichment_path(
+    output_dir = output_dir,
+    sample_id = sample_id,
+    proximity_enrichment_path = proximity_enrichment_path
+  )
+  if (is.null(prox_path)) {
+    return(NULL)
+  }
+  
+  prox_tbl <- tryCatch(
+    data.table::fread(prox_path, data.table = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(prox_tbl) || !"unified_int" %in% names(prox_tbl)) {
+    return(NULL)
+  }
+  
+  prox_tbl$unified_int <- as.character(prox_tbl$unified_int)
+  prox_tbl
+}
+
+.pair_is_spatially_supported <- function(sender,
+                                         receiver,
+                                         proximity_tbl,
+                                         spatial_padj_threshold = 0.05) {
+  if (is.null(proximity_tbl) || nrow(proximity_tbl) == 0) {
+    return(FALSE)
+  }
+  
+  pair_labels <- c(
+    paste(sender, receiver, sep = "--"),
+    paste(receiver, sender, sep = "--")
+  )
+  pair_rows <- proximity_tbl[proximity_tbl$unified_int %in% pair_labels, , drop = FALSE]
+  if (nrow(pair_rows) == 0) {
+    return(FALSE)
+  }
+  
+  if ("type_int" %in% names(pair_rows)) {
+    pair_rows <- pair_rows[is.na(pair_rows$type_int) | pair_rows$type_int == "hetero", , drop = FALSE]
+  }
+  if (nrow(pair_rows) == 0) {
+    return(FALSE)
+  }
+  
+  enrich_ok <- if ("enrichm" %in% names(pair_rows)) pair_rows$enrichm > 0 else TRUE
+  padj_ok <- if ("p.adj_higher" %in% names(pair_rows)) {
+    !is.na(pair_rows$p.adj_higher) & pair_rows$p.adj_higher < spatial_padj_threshold
+  } else {
+    TRUE
+  }
+  
+  any(enrich_ok & padj_ok, na.rm = TRUE)
+}
+
+.build_nichenet_comparison_table <- function(metadata,
+                                             celltype_col,
+                                             mode = c("single", "all_senders_to_receiver", "all_pairs"),
+                                             sender_celltypes = NULL,
+                                             receiver_celltype = NULL,
+                                             min_cells_per_celltype = 5,
+                                             include_self_pairs = FALSE) {
+  mode <- match.arg(mode)
+  
+  celltype_counts <- sort(table(stats::na.omit(metadata[[celltype_col]])), decreasing = TRUE)
+  valid_celltypes <- names(celltype_counts[celltype_counts >= min_cells_per_celltype])
+  
+  if (mode == "single") {
+    if (is.null(sender_celltypes) || is.null(receiver_celltype)) {
+      stop("NicheNet mode 'single' requires sender_celltypes and receiver_celltype.")
+    }
+    return(data.frame(
+      sender_label = paste(unique(as.character(sender_celltypes)), collapse = " + "),
+      receiver = as.character(receiver_celltype),
+      stringsAsFactors = FALSE
+    ) |>
+      dplyr::mutate(sender_list = I(list(unique(as.character(sender_celltypes))))))
+  }
+  
+  if (mode == "all_senders_to_receiver") {
+    if (is.null(receiver_celltype) || !nzchar(receiver_celltype)) {
+      stop("NicheNet mode 'all_senders_to_receiver' requires receiver_celltype.")
+    }
+    senders <- valid_celltypes
+    if (!is.null(sender_celltypes) && length(sender_celltypes) > 0) {
+      senders <- intersect(senders, unique(as.character(sender_celltypes)))
+    }
+    if (!include_self_pairs) {
+      senders <- setdiff(senders, receiver_celltype)
+    }
+    return(data.frame(
+      sender_label = senders,
+      receiver = rep(receiver_celltype, length(senders)),
+      stringsAsFactors = FALSE
+    ) |>
+      dplyr::mutate(sender_list = as.list(sender_label)))
+  }
+  
+  pair_grid <- expand.grid(
+    sender_label = valid_celltypes,
+    receiver = valid_celltypes,
+    stringsAsFactors = FALSE
+  )
+  if (!include_self_pairs) {
+    pair_grid <- pair_grid[pair_grid$sender_label != pair_grid$receiver, , drop = FALSE]
+  }
+  pair_grid |>
+    dplyr::mutate(sender_list = as.list(sender_label))
+}
+
 .load_cci_summary_helper <- function() {
   if (exists("create_cci_summary", mode = "function", inherits = TRUE)) {
     return(TRUE)
@@ -667,6 +830,170 @@ run_nichenet <- function(gobj,
   ))
 }
 
+run_nichenet_batch <- function(gobj,
+                               sample_id,
+                               output_dir,
+                               celltype_col             = NULL,
+                               sender_celltypes         = NULL,
+                               receiver_celltype        = NULL,
+                               target_genes             = NULL,
+                               target_genes_by_receiver = NULL,
+                               network_dir              = NULL,
+                               mode                     = c("single", "all_senders_to_receiver", "all_pairs"),
+                               use_spatial_filter       = FALSE,
+                               proximity_enrichment_path = NULL,
+                               spatial_padj_threshold   = 0.05,
+                               min_cells_per_celltype   = 5,
+                               include_self_pairs       = FALSE) {
+  mode <- match.arg(mode)
+  cat("NicheNet batch mode:", mode, "\n")
+  
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (is.null(celltype_col)) {
+    sup_cols <- grep("celltype_.*_supervised$", names(meta), value = TRUE)
+    celltype_col <- if (length(sup_cols) > 0) sup_cols[1] else "leiden_clust"
+  }
+  
+  comparisons <- .build_nichenet_comparison_table(
+    metadata = meta,
+    celltype_col = celltype_col,
+    mode = mode,
+    sender_celltypes = sender_celltypes,
+    receiver_celltype = receiver_celltype,
+    min_cells_per_celltype = min_cells_per_celltype,
+    include_self_pairs = include_self_pairs
+  )
+  
+  if (nrow(comparisons) == 0) {
+    cat("\u26A0 No NicheNet comparisons passed the initial filters.\n")
+    return(invisible(NULL))
+  }
+  
+  nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+  dir.create(nichenet_root, recursive = TRUE, showWarnings = FALSE)
+  
+  utils::write.csv(
+    comparisons[, c("sender_label", "receiver"), drop = FALSE],
+    file.path(nichenet_root, paste0(sample_id, "_nichenet_requested_comparisons.csv")),
+    row.names = FALSE
+  )
+  cat("Requested NicheNet comparisons:", nrow(comparisons), "\n")
+  
+  proximity_tbl <- if (isTRUE(use_spatial_filter)) {
+    .load_proximity_enrichment(
+      output_dir = output_dir,
+      sample_id = sample_id,
+      proximity_enrichment_path = proximity_enrichment_path
+    )
+  } else {
+    NULL
+  }
+  
+  if (isTRUE(use_spatial_filter) && is.null(proximity_tbl)) {
+    cat("\u26A0 Spatial filter requested for NicheNet, but no proximity enrichment table was found.\n")
+    cat("  Proceeding without the spatial filter.\n\n")
+  }
+  
+  if (isTRUE(use_spatial_filter) && !is.null(proximity_tbl)) {
+    keep_idx <- vapply(seq_len(nrow(comparisons)), function(i) {
+      .pair_is_spatially_supported(
+        sender = comparisons$sender_label[[i]],
+        receiver = comparisons$receiver[[i]],
+        proximity_tbl = proximity_tbl,
+        spatial_padj_threshold = spatial_padj_threshold
+      )
+    }, logical(1))
+    comparisons <- comparisons[keep_idx, , drop = FALSE]
+    if (nrow(comparisons) == 0) {
+      cat("\u26A0 No NicheNet comparisons passed the spatial proximity filter.\n")
+      return(invisible(NULL))
+    }
+    cat("NicheNet spatial filter retained", nrow(comparisons), "comparison(s).\n\n")
+    utils::write.csv(
+      comparisons[, c("sender_label", "receiver"), drop = FALSE],
+      file.path(nichenet_root, paste0(sample_id, "_nichenet_spatially_retained_comparisons.csv")),
+      row.names = FALSE
+    )
+  }
+  
+  if (mode == "all_pairs" && is.null(.normalize_named_character_list(target_genes_by_receiver)) &&
+      (is.null(target_genes) || length(target_genes) == 0)) {
+    stop("NicheNet mode 'all_pairs' requires target_genes_by_receiver or a fallback target_genes vector.")
+  }
+  
+  summary_rows <- list()
+  results <- list()
+  
+  for (i in seq_len(nrow(comparisons))) {
+    sender_label <- comparisons$sender_label[[i]]
+    sender_list <- unlist(comparisons$sender_list[[i]], use.names = FALSE)
+    receiver_label <- comparisons$receiver[[i]]
+    receiver_targets <- .resolve_target_genes_for_receiver(
+      receiver_celltype = receiver_label,
+      target_genes = target_genes,
+      target_genes_by_receiver = target_genes_by_receiver
+    )
+    
+    if (is.null(receiver_targets) || length(receiver_targets) < 10) {
+      cat("\u26A0 Skipping NicheNet", sender_label, "->", receiver_label,
+          ": fewer than 10 receiver target genes available.\n")
+      next
+    }
+    
+    nichenet_out <- tryCatch(
+      run_nichenet(
+        gobj = gobj,
+        sample_id = sample_id,
+        output_dir = output_dir,
+        celltype_col = celltype_col,
+        sender_celltypes = sender_list,
+        receiver_celltype = receiver_label,
+        target_genes = receiver_targets,
+        network_dir = network_dir
+      ),
+      error = function(e) {
+        cat("\u26A0 NicheNet comparison failed for", sender_label, "->", receiver_label, ":", conditionMessage(e), "\n")
+        NULL
+      }
+    )
+    
+    comparison_key <- paste(receiver_label, "from", sender_label, sep = "__")
+    results[[comparison_key]] <- nichenet_out
+    
+    if (is.null(nichenet_out) || is.null(nichenet_out$ligand_activities)) {
+      next
+    }
+    
+    top_tbl <- as.data.frame(nichenet_out$ligand_activities, stringsAsFactors = FALSE)
+    if ("pearson" %in% names(top_tbl)) {
+      top_tbl <- top_tbl[order(-top_tbl$pearson), , drop = FALSE]
+    }
+    top_tbl <- utils::head(top_tbl, 10)
+    if (nrow(top_tbl) == 0) {
+      next
+    }
+    
+    top_tbl$sender <- sender_label
+    top_tbl$receiver <- receiver_label
+    summary_rows[[length(summary_rows) + 1L]] <- top_tbl
+  }
+  
+  summary_df <- if (length(summary_rows) > 0) dplyr::bind_rows(summary_rows) else data.frame()
+  if (nrow(summary_df) > 0) {
+    utils::write.csv(
+      summary_df,
+      file.path(nichenet_root, paste0(sample_id, "_nichenet_comparison_summary.csv")),
+      row.names = FALSE
+    )
+  }
+  
+  invisible(list(
+    comparisons = comparisons,
+    summary = summary_df,
+    results = results
+  ))
+}
+
 
 # ==============================================================================
 # SECTION 3 — MISTy: intercellular spatial modelling
@@ -1000,7 +1327,14 @@ run_cci_analysis <- function(gobj,
                              sender_celltypes   = NULL,
                              receiver_celltype  = NULL,
                              target_genes       = NULL,
+                             target_genes_by_receiver = NULL,
                              nichenet_network_dir = NULL,
+                             nichenet_mode      = c("single", "all_senders_to_receiver", "all_pairs"),
+                             nichenet_spatial_filter = FALSE,
+                             nichenet_proximity_enrichment_path = NULL,
+                             nichenet_spatial_padj_threshold = 0.05,
+                             nichenet_min_cells_per_celltype = 5,
+                             nichenet_include_self_pairs = FALSE,
                              run_sections       = c(insitucor = TRUE,
                                                     liana     = TRUE,
                                                     nichenet  = TRUE,
@@ -1012,6 +1346,7 @@ run_cci_analysis <- function(gobj,
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
   
+  nichenet_mode <- match.arg(nichenet_mode)
   run_sections <- .normalize_run_sections(run_sections)
   enabled_sections <- names(run_sections)[run_sections]
   cat(
@@ -1059,7 +1394,7 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nichenet"])) {
     section_out <- .run_cci_section(
       "NicheNet",
-      function() run_nichenet(
+      function() run_nichenet_batch(
         gobj,
         sample_id,
         output_dir,
@@ -1067,7 +1402,14 @@ run_cci_analysis <- function(gobj,
         sender_celltypes,
         receiver_celltype,
         target_genes = target_genes,
-        network_dir = nichenet_network_dir
+        target_genes_by_receiver = target_genes_by_receiver,
+        network_dir = nichenet_network_dir,
+        mode = nichenet_mode,
+        use_spatial_filter = nichenet_spatial_filter,
+        proximity_enrichment_path = nichenet_proximity_enrichment_path,
+        spatial_padj_threshold = nichenet_spatial_padj_threshold,
+        min_cells_per_celltype = nichenet_min_cells_per_celltype,
+        include_self_pairs = nichenet_include_self_pairs
       )
     )
     results$nichenet <- section_out$result
