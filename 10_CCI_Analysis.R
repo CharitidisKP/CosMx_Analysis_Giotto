@@ -186,6 +186,29 @@
   out
 }
 
+.normalize_nichenet_spatial_option <- function(x) {
+  if (is.null(x) || length(x) == 0) {
+    return("none")
+  }
+  if (is.logical(x)) {
+    return(if (isTRUE(x[[1]])) "filtered" else "none")
+  }
+  
+  value <- tolower(as.character(x[[1]]))
+  if (value %in% c("true", "filtered", "spatial", "yes")) {
+    return("filtered")
+  }
+  if (value %in% c("false", "none", "no", "unfiltered")) {
+    return("none")
+  }
+  if (value %in% c("both", "all")) {
+    return("both")
+  }
+  
+  stop("Unsupported nichenet spatial option: ", x[[1]],
+       ". Use FALSE, TRUE, 'filtered', 'none', or 'both'.")
+}
+
 .resolve_target_genes_for_receiver <- function(receiver_celltype,
                                                target_genes = NULL,
                                                target_genes_by_receiver = NULL) {
@@ -667,7 +690,8 @@ run_nichenet <- function(gobj,
                          receiver_celltype  = NULL,
                          target_genes       = NULL,
                          top_n_ligands      = 20,
-                         network_dir        = NULL) {
+                         network_dir        = NULL,
+                         result_root_dir    = NULL) {
   
   if (!requireNamespace("nichenetr", quietly = TRUE))
     stop("nichenetr not installed.\n",
@@ -680,7 +704,11 @@ run_nichenet <- function(gobj,
   if (is.null(sender_celltypes) || is.null(receiver_celltype))
     stop("sender_celltypes and receiver_celltype must both be specified.")
   
-  out_dir <- file.path(output_dir, "10_CCI_Analysis", "nichenet",
+  if (is.null(result_root_dir) || !nzchar(result_root_dir)) {
+    result_root_dir <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+  }
+  
+  out_dir <- file.path(result_root_dir,
                        paste0(receiver_celltype, "_from_",
                               paste(sender_celltypes, collapse = "_")))
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -844,7 +872,8 @@ run_nichenet_batch <- function(gobj,
                                proximity_enrichment_path = NULL,
                                spatial_padj_threshold   = 0.05,
                                min_cells_per_celltype   = 5,
-                               include_self_pairs       = FALSE) {
+                               include_self_pairs       = FALSE,
+                               result_root_dir          = NULL) {
   mode <- match.arg(mode)
   cat("NicheNet batch mode:", mode, "\n")
   
@@ -869,7 +898,10 @@ run_nichenet_batch <- function(gobj,
     return(invisible(NULL))
   }
   
-  nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+  if (is.null(result_root_dir) || !nzchar(result_root_dir)) {
+    result_root_dir <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+  }
+  nichenet_root <- result_root_dir
   dir.create(nichenet_root, recursive = TRUE, showWarnings = FALSE)
   
   utils::write.csv(
@@ -949,7 +981,8 @@ run_nichenet_batch <- function(gobj,
         sender_celltypes = sender_list,
         receiver_celltype = receiver_label,
         target_genes = receiver_targets,
-        network_dir = network_dir
+        network_dir = network_dir,
+        result_root_dir = nichenet_root
       ),
       error = function(e) {
         cat("\u26A0 NicheNet comparison failed for", sender_label, "->", receiver_label, ":", conditionMessage(e), "\n")
@@ -1347,6 +1380,7 @@ run_cci_analysis <- function(gobj,
   cat("========================================\n\n")
   
   nichenet_mode <- match.arg(nichenet_mode)
+  nichenet_spatial_option <- .normalize_nichenet_spatial_option(nichenet_spatial_filter)
   run_sections <- .normalize_run_sections(run_sections)
   enabled_sections <- names(run_sections)[run_sections]
   cat(
@@ -1394,23 +1428,67 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nichenet"])) {
     section_out <- .run_cci_section(
       "NicheNet",
-      function() run_nichenet_batch(
-        gobj,
-        sample_id,
-        output_dir,
-        celltype_col,
-        sender_celltypes,
-        receiver_celltype,
-        target_genes = target_genes,
-        target_genes_by_receiver = target_genes_by_receiver,
-        network_dir = nichenet_network_dir,
-        mode = nichenet_mode,
-        use_spatial_filter = nichenet_spatial_filter,
-        proximity_enrichment_path = nichenet_proximity_enrichment_path,
-        spatial_padj_threshold = nichenet_spatial_padj_threshold,
-        min_cells_per_celltype = nichenet_min_cells_per_celltype,
-        include_self_pairs = nichenet_include_self_pairs
-      )
+      function() {
+        if (identical(nichenet_spatial_option, "both")) {
+          list(
+            unfiltered = run_nichenet_batch(
+              gobj,
+              sample_id,
+              output_dir,
+              celltype_col,
+              sender_celltypes,
+              receiver_celltype,
+              target_genes = target_genes,
+              target_genes_by_receiver = target_genes_by_receiver,
+              network_dir = nichenet_network_dir,
+              mode = nichenet_mode,
+              use_spatial_filter = FALSE,
+              proximity_enrichment_path = nichenet_proximity_enrichment_path,
+              spatial_padj_threshold = nichenet_spatial_padj_threshold,
+              min_cells_per_celltype = nichenet_min_cells_per_celltype,
+              include_self_pairs = nichenet_include_self_pairs,
+              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "unfiltered")
+            ),
+            spatial_filtered = run_nichenet_batch(
+              gobj,
+              sample_id,
+              output_dir,
+              celltype_col,
+              sender_celltypes,
+              receiver_celltype,
+              target_genes = target_genes,
+              target_genes_by_receiver = target_genes_by_receiver,
+              network_dir = nichenet_network_dir,
+              mode = nichenet_mode,
+              use_spatial_filter = TRUE,
+              proximity_enrichment_path = nichenet_proximity_enrichment_path,
+              spatial_padj_threshold = nichenet_spatial_padj_threshold,
+              min_cells_per_celltype = nichenet_min_cells_per_celltype,
+              include_self_pairs = nichenet_include_self_pairs,
+              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "spatial_filtered")
+            )
+          )
+        } else {
+          run_nichenet_batch(
+            gobj,
+            sample_id,
+            output_dir,
+            celltype_col,
+            sender_celltypes,
+            receiver_celltype,
+            target_genes = target_genes,
+            target_genes_by_receiver = target_genes_by_receiver,
+            network_dir = nichenet_network_dir,
+            mode = nichenet_mode,
+            use_spatial_filter = identical(nichenet_spatial_option, "filtered"),
+            proximity_enrichment_path = nichenet_proximity_enrichment_path,
+            spatial_padj_threshold = nichenet_spatial_padj_threshold,
+            min_cells_per_celltype = nichenet_min_cells_per_celltype,
+            include_self_pairs = nichenet_include_self_pairs,
+            result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet")
+          )
+        }
+      }
     )
     results$nichenet <- section_out$result
     section_status["nichenet"] <- section_out$status

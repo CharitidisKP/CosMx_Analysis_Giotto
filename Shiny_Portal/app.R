@@ -35,8 +35,9 @@ pretty_step_label <- function(step_id) {
     "08_visualize" = "08 Visualisation",
     "09_spatial" = "09 Spatial network analysis",
     "10_cci" = "10 CCI analysis",
-    "11_batch" = "11 Harmony batch correction",
-    "12_bcell" = "12 B-cell microenvironment",
+    "merge_batch" = "Merge batch correction",
+    "12_spatial_de" = "12 Spatial differential expression",
+    "11_bcell" = "11 B-cell microenvironment",
     "merge" = "Merge sample objects"
   )
   labels[[step_id]] %||% step_id
@@ -57,7 +58,7 @@ read_table_preview <- function(path, n_max = 1000) {
   if (ext %in% c("tsv", "txt")) {
     return(readr::read_tsv(path, show_col_types = FALSE, n_max = n_max))
   }
-  tibble(note = "Preview is only available for CSV/TSV/TXT files.")
+  tibble::tibble(note = "Preview is only available for CSV/TSV/TXT files.")
 }
 
 list_latest_run_files <- function(output_dir) {
@@ -159,7 +160,7 @@ ui <- page_sidebar(
   ),
   sidebar = sidebar(
     width = 360,
-    textInput("config_path", "Config file", value = file.path(repo_dir, "config.yaml")),
+    textInput("config_path", "Config file", value = default_config_path(repo_dir)),
     textInput("sample_sheet", "Sample sheet (optional)", value = ""),
     actionButton("refresh_context", "Refresh samples"),
     selectInput(
@@ -321,7 +322,7 @@ server <- function(input, output, session) {
   
   output$metric_pairs <- renderText({
     sample_tbl <- selected_samples()
-    n_distinct(na.omit(sample_tbl$pair_id))
+    dplyr::n_distinct(stats::na.omit(sample_tbl$pair_id))
   })
   
   output$metric_latest_run <- renderText({
@@ -345,7 +346,7 @@ server <- function(input, output, session) {
     if (!is.null(latest$merged_results) && file.exists(latest$merged_results)) {
       return(datatable(readr::read_csv(latest$merged_results, show_col_types = FALSE), options = list(scrollX = TRUE)))
     }
-    datatable(tibble(message = "No pipeline results found yet."))
+    datatable(tibble::tibble(message = "No pipeline results found yet."))
   })
   
   cli_args <- reactive({

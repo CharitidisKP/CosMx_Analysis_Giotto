@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 13_Spatial_Differential_Expression.R
+# 12_Spatial_Differential_Expression.R
 #
 # Spatially resolved differential expression for CosMx / Giotto objects.
 #
@@ -1237,7 +1237,7 @@ run_spatial_differential_expression <- function(gobj,
   sample_contrast <- match.arg(sample_contrast)
   
   cat("\n========================================\n")
-  cat("STEP 13: Spatial Differential Expression\n")
+  cat("STEP 12: Spatial Differential Expression\n")
   cat("Run:", run_label, "\n")
   cat("========================================\n\n")
   
@@ -1250,7 +1250,7 @@ run_spatial_differential_expression <- function(gobj,
     }
   }
   
-  results_dir <- ensure_dir(file.path(output_dir, "13_Spatial_Differential_Expression"))
+  results_dir <- ensure_dir(file.path(output_dir, "12_Spatial_Differential_Expression"))
   tables_dir <- ensure_dir(file.path(results_dir, "tables"))
   plots_dir <- ensure_dir(file.path(results_dir, "plots"))
   
@@ -1437,6 +1437,6 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       backend = if (length(args) >= 5) args[5] else "smiDE"
     )
   } else {
-    stop("Usage: Rscript 13_Spatial_Differential_Expression.R <run_label> <input_path> <output_dir> [analysis_scope] [backend]")
+    stop("Usage: Rscript 12_Spatial_Differential_Expression.R <run_label> <input_path> <output_dir> [analysis_scope] [backend]")
   }
 }

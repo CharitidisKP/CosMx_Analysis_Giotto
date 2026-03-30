@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 12_B_Cell_Analysis.R
+# 11_B_Cell_Analysis.R
 # B-cell focused spatial interaction summaries
 # ==============================================================================
 
@@ -75,7 +75,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 number_of_simulations = 250,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
-  cat("STEP 12: B-Cell Microenvironment\n")
+  cat("STEP 11: B-Cell Microenvironment\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
   
@@ -88,7 +88,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
     }
   }
   
-  results_dir <- ensure_dir(file.path(output_dir, "12_BCell_Microenvironment"))
+  results_dir <- ensure_dir(file.path(output_dir, "11_BCell_Microenvironment"))
   metadata <- pDataDT(gobj) %>% as_tibble()
   annotation_column <- detect_annotation_column(metadata, annotation_column)
   
@@ -170,7 +170,8 @@ run_bcell_microenvironment_analysis <- function(gobj,
   nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
   if (dir.exists(nichenet_root)) {
     tryCatch({
-      comparison_dirs <- list.dirs(nichenet_root, full.names = TRUE, recursive = FALSE)
+      comparison_dirs <- list.dirs(nichenet_root, full.names = TRUE, recursive = TRUE)
+      comparison_dirs <- comparison_dirs[comparison_dirs != nichenet_root]
       comparison_dirs <- comparison_dirs[
         grepl(bcell_regex, basename(comparison_dirs), ignore.case = TRUE)
       ]

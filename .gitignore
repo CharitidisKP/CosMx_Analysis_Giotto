@@ -35,6 +35,7 @@ Giotto_test.Rmd
 Run_CosMx_Portal.R
 config.yaml
 sample_sheet_template.csv
+Other/
 
 # Keep only the manual runner in Test_Scripts
 Test_Scripts/*

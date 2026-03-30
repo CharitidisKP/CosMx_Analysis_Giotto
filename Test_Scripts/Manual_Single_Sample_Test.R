@@ -98,8 +98,8 @@ source(file.path(scripts_dir, "07_Annotation.R"))
 source(file.path(scripts_dir, "08_Visualisation.R"))
 source(file.path(scripts_dir, "09_Spatial_Network.R"))
 source(file.path(scripts_dir, "10_CCI_Analysis.R"))
-source(file.path(scripts_dir, "12_B_Cell_Analysis.R"))
-source(file.path(scripts_dir, "13_Spatial_Differential_Expression.R"))
+source(file.path(scripts_dir, "11_B_Cell_Analysis.R"))
+source(file.path(scripts_dir, "12_Spatial_Differential_Expression.R"))
 
 if (!dir.exists(data_dir)) {
   stop(
@@ -218,6 +218,17 @@ gobj <- build_spatial_network(
 )
 
 # Step 10
+# nichenet_res <- run_nichenet(
+#   gobj = gobj,
+#   sample_id = sample_id,
+#   output_dir = output_dir,
+#   celltype_col = celltype_col,
+#   sender_celltypes = c("CD4.T.cell", "CD8.T.cell"),
+#   receiver_celltype = "B.cell",
+#   target_genes = target_genes,
+#   network_dir = network_dir
+# )
+
 if (isTRUE(run_cci_step)) {
   cci_results <- run_cci_analysis(
     gobj = gobj,
@@ -227,46 +238,24 @@ if (isTRUE(run_cci_step)) {
     sender_celltypes = cci_cfg$sender_celltypes %||% NULL,
     receiver_celltype = cci_cfg$receiver_celltype %||% NULL,
     target_genes = cci_cfg$target_genes %||% NULL,
+    target_genes_by_receiver = cci_cfg$target_genes_by_receiver %||% NULL,
     nichenet_network_dir = cci_cfg$nichenet_network_dir %||% NULL,
+    nichenet_mode = cci_cfg$nichenet_mode %||% "single",
+    nichenet_spatial_filter = cci_cfg$nichenet_spatial_filter %||% FALSE,
+    nichenet_proximity_enrichment_path = cci_cfg$nichenet_proximity_enrichment_path %||% NULL,
+    nichenet_spatial_padj_threshold = cci_cfg$nichenet_spatial_padj_threshold %||% 0.05,
+    nichenet_min_cells_per_celltype = cci_cfg$nichenet_min_cells_per_celltype %||% 5,
+    nichenet_include_self_pairs = cci_cfg$nichenet_include_self_pairs %||% FALSE,
     run_sections = unlist(cci_cfg$run_sections %||% c(
       insitucor = TRUE,
       liana = TRUE,
-      nichenet = FALSE,
+      nichenet = TRUE,
       misty = TRUE,
       nnsvg = TRUE
     ))
   )
 }
 
-
-## Manual check for each part, temp ##
-list.files(network_dir)
-
-target_genes <- c(
-  "CD19",   # canonical B-cell CAR-T target
-  "MS4A1",  # CD20
-  "CD22",   # common alternative / dual-target CAR-T antigen
-  "CD79A",
-  "CD79B",
-  "PAX5",
-  "CD37",
-  "CD74",
-  "BANK1",
-  "BLNK",
-  "FCER2",
-  "HLA-DRA"
-)
-
-nichenet_res <- run_nichenet(
-  gobj = gobj,
-  sample_id = sample_id,
-  output_dir = output_dir,
-  celltype_col = celltype_col,
-  sender_celltypes = c("CD4.T.cell", "CD8.T.cell"),
-  receiver_celltype = "B.cell",
-  target_genes = target_genes,
-  network_dir = network_dir
-)
 
 # Step 12
 if (isTRUE(run_bcell_step)) {

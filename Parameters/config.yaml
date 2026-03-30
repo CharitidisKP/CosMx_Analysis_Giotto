@@ -47,7 +47,7 @@ cci:
   run_sections:
     insitucor: true
     liana: true
-    nichenet: false
+    nichenet: true
     misty: true
     nnsvg: true
   nichenet_mode: "single"
@@ -56,7 +56,7 @@ cci:
   target_genes: null
   target_genes_by_receiver: null
   nichenet_network_dir: null
-  nichenet_spatial_filter: false
+  nichenet_spatial_filter: false  # false, true, or both
   nichenet_proximity_enrichment_path: null
   nichenet_spatial_padj_threshold: 0.05
   nichenet_min_cells_per_celltype: 5

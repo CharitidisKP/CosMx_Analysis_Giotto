@@ -208,6 +208,7 @@ setup_environment <- function(verbose = TRUE) {
   
   helper_files <- c(
     "Helper_Functions.R",
+    "Merge_Batch_Correction.R",
     "Inspect_sNN_network.R",
     "Remove_HVF_duplicates.R",
     "Cluster_Visualisations.R",
