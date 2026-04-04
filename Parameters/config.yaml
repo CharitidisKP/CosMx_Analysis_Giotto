@@ -9,13 +9,14 @@ paths:
   raw_data_dir: "../Data/Raw_data"
   output_dir: "../Output"
   sample_sheet: "sample_sheet.csv"
-  python_path: "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
+  python_path: null
 
 pipeline:
   mode: "all"
   save_intermediates: true
   overwrite_existing: false
   skip_on_error: false
+  memory_cleanup: true
 
 paired:
   pair_column: "pair_id"
@@ -39,7 +40,7 @@ merged:
 
 interaction:
   annotation_column: null
-  bcell_regex: "B|Plasma|Plasmablast"
+  bcell_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
 
@@ -47,20 +48,21 @@ cci:
   run_sections:
     insitucor: true
     liana: true
-    nichenet: true
+    nichenet: false
     misty: true
-    nnsvg: true
+    nnsvg: false
   nichenet_mode: "single"
   sender_celltypes: null
   receiver_celltype: null
   target_genes: null
   target_genes_by_receiver: null
   nichenet_network_dir: null
-  nichenet_spatial_filter: false  # false, true, or both
+  nichenet_spatial_filter: false  # false, true, or "both"
   nichenet_proximity_enrichment_path: null
   nichenet_spatial_padj_threshold: 0.05
   nichenet_min_cells_per_celltype: 5
   nichenet_include_self_pairs: false
+  cleanup_between_sections: true
 
 spatial_de:
   sample_backend: "smiDE"
@@ -80,15 +82,23 @@ spatial_de:
   n_spatial_patches: 8
   smide_family: "nbinom2"
   smide_radius: 0.05
-  smide_ncores: 1
-  smide_overlap_threshold: null
+  smide_ncores: 4
+  smide_overlap_threshold: 1
+  smide_annotation_subset: null
+  smide_min_detection_fraction: 0.05
+  smide_custom_predictor: null
+  smide_partner_celltypes: null
+  smide_partner_source: "none"
+  smide_partner_top_n: 3
+  smide_partner_padj_threshold: 0.05
+  smide_include_self_partner: false
   smide_save_raw: true
 
 parameters:
   qc:
     gene_min_cells: 10
     cell_min_genes: 50
-    cell_max_genes: null
+    cell_max_genes: 5000
     min_count: 100
     max_mito_pct: null
 
@@ -106,6 +116,8 @@ parameters:
   clustering:
     k_nn: 15
     resolution: 0.3
+    n_iterations: 200
+    resolution_sweep: null
     dimensions_to_use: "1:30"
 
   markers:
@@ -146,3 +158,5 @@ parameters:
       myeloid: ["CD14", "CD68", "LYZ", "CSF1R"]
       nk_cells: ["NCAM1", "KLRF1", "GNLY", "NKG7"]
       kidney: ["NPHS1", "NPHS2", "PODXL", "SLC12A1", "UMOD", "CDH1", "KRT8"]
+    max_cells_preview: 50000
+    preview_seed: 1

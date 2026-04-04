@@ -84,3 +84,125 @@ read_profile_csv <- function(url) {
   as.matrix(read.csv(url, row.names = 1, check.names = FALSE))
 }
 
+cleanup_memory <- function(remove = NULL,
+                           envir = parent.frame(),
+                           verbose = TRUE,
+                           label = NULL) {
+  if (!is.null(remove)) {
+    remove <- unique(as.character(remove))
+    remove <- remove[nzchar(remove)]
+    remove <- remove[vapply(remove, exists, logical(1), envir = envir, inherits = FALSE)]
+    if (length(remove) > 0) {
+      rm(list = remove, envir = envir)
+    }
+  }
+  
+  gc_out <- gc(verbose = FALSE)
+  if (isTRUE(verbose)) {
+    used_mb <- round(sum(gc_out[, "used"]) / 1024, 1)
+    prefix <- if (!is.null(label) && nzchar(label)) paste0(label, ": ") else ""
+    cat(prefix, "gc() complete; approx. ", used_mb, " MB tracked in use\n", sep = "")
+  }
+  invisible(gc_out)
+}
+
+sanitize_smide_name <- function(x) {
+  gsub("[^A-Za-z0-9]+", "_", as.character(x))
+}
+
+parse_smide_unified_interactions <- function(unified_int) {
+  parts <- strsplit(as.character(unified_int), "--", fixed = TRUE)
+  data.frame(
+    source = vapply(parts, function(x) if (length(x) >= 1) x[1] else NA_character_, character(1)),
+    target = vapply(parts, function(x) if (length(x) >= 2) x[2] else NA_character_, character(1)),
+    stringsAsFactors = FALSE
+  )
+}
+
+resolve_smide_gobj <- function(gobj_ref) {
+  if (is.null(gobj_ref) || !is.character(gobj_ref)) {
+    return(gobj_ref)
+  }
+  
+  manifest_path <- file.path(gobj_ref, "manifest.json")
+  if (file.exists(manifest_path) && exists("load_giotto_checkpoint", mode = "function")) {
+    return(load_giotto_checkpoint(gobj_ref))
+  }
+  
+  if (exists(".giotto_load", mode = "function")) {
+    return(.giotto_load(gobj_ref))
+  }
+  
+  gobj_ref
+}
+
+get_smide_neighbor_counts <- function(metadata, annotation_column) {
+  neighbor_counts <- getOption("cosmx.smide.neighbor_counts", NULL)
+  if (!is.null(neighbor_counts)) {
+    return(neighbor_counts)
+  }
+  
+  gobj_ref <- resolve_smide_gobj(getOption("cosmx.smide.gobj", NULL))
+  spatial_network_name <- getOption("cosmx.smide.spatial_network_name", NULL)
+  if (is.null(gobj_ref) || is.null(spatial_network_name)) {
+    return(NULL)
+  }
+  
+  build_neighbourhood_matrix(
+    gobj = gobj_ref,
+    metadata = metadata,
+    annotation_column = annotation_column,
+    spatial_network_name = spatial_network_name
+  )
+}
+
+select_smide_partner_celltypes <- function(output_dir,
+                                           run_label,
+                                           focal_celltype,
+                                           top_n = 3,
+                                           padj_threshold = 0.05,
+                                           include_self = FALSE) {
+  cp_path <- file.path(
+    output_dir,
+    "11_BCell_Microenvironment",
+    paste0(run_label, "_cell_proximity_enrichment.csv")
+  )
+  if (!file.exists(cp_path)) {
+    return(character())
+  }
+  
+  tbl <- tryCatch(
+    readr::read_csv(cp_path, show_col_types = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(tbl) || !"unified_int" %in% names(tbl)) {
+    return(character())
+  }
+  
+  parsed <- parse_smide_unified_interactions(tbl$unified_int)
+  tbl$source <- parsed$source
+  tbl$target <- parsed$target
+  
+  partner_tbl <- tbl[tbl$source == focal_celltype | tbl$target == focal_celltype, , drop = FALSE]
+  if (!include_self) {
+    partner_tbl <- partner_tbl[!(partner_tbl$source == focal_celltype & partner_tbl$target == focal_celltype), , drop = FALSE]
+  }
+  if ("p.adj_higher" %in% names(partner_tbl)) {
+    partner_tbl <- partner_tbl[is.na(partner_tbl$p.adj_higher) | partner_tbl$p.adj_higher <= padj_threshold, , drop = FALSE]
+  }
+  if (nrow(partner_tbl) == 0) {
+    return(character())
+  }
+  
+  partner_tbl$partner_celltype <- ifelse(partner_tbl$source == focal_celltype, partner_tbl$target, partner_tbl$source)
+  partner_tbl <- partner_tbl[!is.na(partner_tbl$partner_celltype) & nzchar(partner_tbl$partner_celltype), , drop = FALSE]
+  if (nrow(partner_tbl) == 0) {
+    return(character())
+  }
+  
+  if ("int_ranking" %in% names(partner_tbl)) {
+    partner_tbl <- partner_tbl[order(partner_tbl$int_ranking, partner_tbl$partner_celltype), , drop = FALSE]
+  }
+  
+  unique(head(partner_tbl$partner_celltype, top_n))
+}

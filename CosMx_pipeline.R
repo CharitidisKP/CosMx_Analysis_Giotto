@@ -51,6 +51,19 @@ if (!exists("ensure_dir")) {
   }
 }
 
+maybe_cleanup_runtime <- function(cfg, label = NULL) {
+  if (!isTRUE(cfg$pipeline$memory_cleanup %||% TRUE)) {
+    return(invisible(NULL))
+  }
+  
+  cleanup_fn <- get0("cleanup_memory", mode = "function", inherits = TRUE)
+  if (is.function(cleanup_fn)) {
+    cleanup_fn(label = label %||% "Pipeline", verbose = TRUE)
+  } else {
+    gc(verbose = FALSE)
+  }
+}
+
 if (!exists("resolve_path")) {
   resolve_path <- function(path, base_dir = getwd(), mustWork = FALSE) {
     if (is.null(path) || !nzchar(path)) {
@@ -103,16 +116,24 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
     "08_visualisation" = "08_visualize",
     "09_spatial_network" = "09_spatial",
     "10_cci_analysis" = "10_cci",
-    "12_b_cell" = "12_bcell",
-    "12_b_cell_analysis" = "12_bcell",
-    "13_spatial_de" = "13_spatial_de",
-    "13_spatial_differential_expression" = "13_spatial_de"
+    "11_b_cell" = "11_bcell",
+    "11_b_cell_analysis" = "11_bcell",
+    "12_b_cell" = "11_bcell",
+    "12_b_cell_analysis" = "11_bcell",
+    "12_spatial_de" = "12_spatial_de",
+    "12_spatial_differential_expression" = "12_spatial_de",
+    "13_spatial_de" = "12_spatial_de",
+    "13_spatial_differential_expression" = "12_spatial_de"
   )
   
   merged_aliases <- c(
-    "11_batch_correction" = "11_batch",
-    "13_spatial_de" = "13_spatial_de",
-    "13_spatial_differential_expression" = "13_spatial_de"
+    "11_batch" = "merge_batch",
+    "11_batch_correction" = "merge_batch",
+    "merge_batch" = "merge_batch",
+    "12_spatial_de" = "12_spatial_de",
+    "12_spatial_differential_expression" = "12_spatial_de",
+    "13_spatial_de" = "12_spatial_de",
+    "13_spatial_differential_expression" = "12_spatial_de"
   )
   
   aliases <- if (type == "sample") sample_aliases else merged_aliases
@@ -131,11 +152,11 @@ SAMPLE_STEP_ORDER <- c(
   "08_visualize",
   "09_spatial",
   "10_cci",
-  "13_spatial_de",
-  "12_bcell"
+  "11_bcell",
+  "12_spatial_de"
 )
 
-MERGED_STEP_ORDER <- c("merge", "11_batch", "13_spatial_de")
+MERGED_STEP_ORDER <- c("merge", "merge_batch", "12_spatial_de")
 
 step_label <- function(step_id) {
   labels <- c(
@@ -149,9 +170,9 @@ step_label <- function(step_id) {
     "08_visualize" = "08 Visualisation",
     "09_spatial" = "09 Spatial network analysis",
     "10_cci" = "10 CCI analysis",
-    "11_batch" = "11 Harmony batch correction",
-    "13_spatial_de" = "13 Spatial differential expression",
-    "12_bcell" = "12 B-cell microenvironment",
+    "merge_batch" = "Merge batch correction",
+    "11_bcell" = "11 B-cell microenvironment",
+    "12_spatial_de" = "12 Spatial differential expression",
     "merge" = "Merge sample objects"
   )
   labels[[step_id]] %||% step_id
@@ -414,8 +435,8 @@ native_sample_artifact <- function(sample_output_dir, sample_id, step_id) {
     "08_visualize" = file.path(sample_output_dir, "Giotto_Object_Annotated"),
     "09_spatial" = file.path(sample_output_dir, "Giotto_Object_Spatial"),
     "10_cci" = file.path(sample_output_dir, "Giotto_Object_Spatial"),
-    "12_bcell" = file.path(sample_output_dir, "Giotto_Object_BCell_Analysis"),
-    "13_spatial_de" = file.path(sample_output_dir, "Giotto_Object_Spatial_DE"),
+    "11_bcell" = file.path(sample_output_dir, "Giotto_Object_BCell_Analysis"),
+    "12_spatial_de" = file.path(sample_output_dir, "Giotto_Object_Spatial_DE"),
     NULL
   )
 }
@@ -424,8 +445,8 @@ native_merged_artifact <- function(merged_output_dir, step_id) {
   switch(
     step_id,
     "merge" = file.path(merged_output_dir, "Giotto_Object_Merged"),
-    "11_batch" = file.path(merged_output_dir, "Giotto_Object_BatchCorrected"),
-    "13_spatial_de" = file.path(merged_output_dir, "Giotto_Object_Spatial_DE"),
+    "merge_batch" = file.path(merged_output_dir, "Giotto_Object_BatchCorrected"),
+    "12_spatial_de" = file.path(merged_output_dir, "Giotto_Object_Spatial_DE"),
     NULL
   )
 }
@@ -525,9 +546,9 @@ runtime_script_paths <- function() {
       "08_Visualisation.R",
       "09_Spatial_Network.R",
       "10_CCI_Analysis.R",
-      "11_Batch_Correction.R",
-      "12_B_Cell_Analysis.R",
-      "13_Spatial_Differential_Expression.R"
+      file.path("Helper_Scripts", "Merge_Batch_Correction.R"),
+      "11_B_Cell_Analysis.R",
+      "12_Spatial_Differential_Expression.R"
     )
   )
 }
@@ -598,6 +619,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       k_nn = cfg$parameters$clustering$k_nn %||% 15,
       resolution = cfg$parameters$clustering$resolution %||% 0.3,
       dimensions_to_use = coerce_dimension_vector(cfg$parameters$clustering$dimensions_to_use %||% "1:30"),
+      leiden_n_iterations = cfg$parameters$clustering$n_iterations %||% 200,
+      resolution_sweep = cfg$parameters$clustering$resolution_sweep %||% NULL,
       scripts_dir = cfg$paths$scripts_dir
     ),
     "06_markers" = runtime_env$marker_analysis(
@@ -628,7 +651,9 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       output_dir = output_dir,
       celltype_columns = cfg$parameters$visualization$celltype_columns %||% NULL,
       cluster_column = cfg$parameters$visualization$cluster_column %||% "leiden_clust",
-      marker_genes = flatten_marker_genes(cfg$parameters$visualization$marker_genes)
+      marker_genes = flatten_marker_genes(cfg$parameters$visualization$marker_genes),
+      max_cells_preview = cfg$parameters$visualization$max_cells_preview %||% NULL,
+      preview_seed = cfg$parameters$visualization$preview_seed %||% 1
     ),
     "09_spatial" = runtime_env$build_spatial_network(
       gobj = gobj,
@@ -661,24 +686,25 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
           nichenet = TRUE,
           misty = TRUE,
           nnsvg = TRUE
-        ))
+        )),
+        cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE
       )
       gobj
     },
-    "12_bcell" = {
+    "11_bcell" = {
       runtime_env$run_bcell_microenvironment_analysis(
         gobj = gobj,
         sample_id = sample_id,
         output_dir = output_dir,
         annotation_column = cfg$interaction$annotation_column %||% NULL,
-        bcell_regex = cfg$interaction$bcell_regex %||% "B|Plasma|Plasmablast",
+        bcell_regex = cfg$interaction$bcell_regex %||% "^B\\.cell$",
         spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
         number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
         save_object = TRUE
       )
       gobj
     },
-    "13_spatial_de" = {
+    "12_spatial_de" = {
       spatial_de_cfg <- cfg$spatial_de %||% list()
       runtime_env$run_spatial_differential_expression(
         gobj = gobj,
@@ -703,7 +729,15 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         smide_family = spatial_de_cfg$smide_family %||% "nbinom2",
         smide_radius = spatial_de_cfg$smide_radius %||% 0.05,
         smide_ncores = spatial_de_cfg$smide_ncores %||% 1,
-        smide_overlap_threshold = spatial_de_cfg$smide_overlap_threshold %||% NULL,
+        smide_overlap_threshold = spatial_de_cfg$smide_overlap_threshold %||% 1,
+        smide_annotation_subset = spatial_de_cfg$smide_annotation_subset %||% NULL,
+        smide_min_detection_fraction = spatial_de_cfg$smide_min_detection_fraction %||% 0.05,
+        smide_custom_predictor = spatial_de_cfg$smide_custom_predictor %||% NULL,
+        smide_partner_celltypes = spatial_de_cfg$smide_partner_celltypes %||% NULL,
+        smide_partner_source = spatial_de_cfg$smide_partner_source %||% "none",
+        smide_partner_top_n = spatial_de_cfg$smide_partner_top_n %||% 3,
+        smide_partner_padj_threshold = spatial_de_cfg$smide_partner_padj_threshold %||% 0.05,
+        smide_include_self_partner = spatial_de_cfg$smide_include_self_partner %||% FALSE,
         smide_save_raw = spatial_de_cfg$smide_save_raw %||% TRUE,
         save_object = TRUE
       )
@@ -752,6 +786,7 @@ run_sample_pipeline <- function(runtime_env,
             metadata = list(sample_id = sample_name)
           )
         }
+        maybe_cleanup_runtime(cfg, label = paste(sample_name, step_id))
         last_step <- step_id
       }
     }, error = function(e) {
@@ -825,7 +860,7 @@ run_merged_pipeline <- function(runtime_env,
           x_padding = cfg$merged$x_padding %||% 1000,
           save_object = TRUE
         )
-      } else if (step_id == "11_batch") {
+      } else if (step_id == "merge_batch") {
         current_gobj <- runtime_env$batch_correct_merged_object(
           gobj = current_gobj,
           sample_id = merged_name,
@@ -839,7 +874,7 @@ run_merged_pipeline <- function(runtime_env,
           create_plots = TRUE,
           save_object = TRUE
         )
-      } else if (step_id == "13_spatial_de") {
+      } else if (step_id == "12_spatial_de") {
         spatial_de_cfg <- cfg$spatial_de %||% list()
         current_gobj <- runtime_env$run_spatial_differential_expression(
           gobj = current_gobj,
@@ -870,6 +905,7 @@ run_merged_pipeline <- function(runtime_env,
           metadata = list(run_label = merged_name)
         )
       }
+      maybe_cleanup_runtime(cfg, label = paste("merged", merged_name, step_id))
       last_step <- step_id
     }
   }, error = function(e) {

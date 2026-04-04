@@ -21,8 +21,145 @@ current_script_dir <- function() {
 }
 
 pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
-if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
+if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
   source(pipeline_utils)
+}
+
+.giotto_pdata_dt <- function(gobj) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("pDataDT", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("pDataDT", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("pDataDT", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("pDataDT", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("pDataDT", mode = "function")
+  }
+  
+  accessor(gobj)
+}
+
+.giotto_load <- function(path) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("loadGiotto", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("loadGiotto", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("loadGiotto", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("loadGiotto", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("loadGiotto", mode = "function")
+  }
+  
+  accessor(path)
+}
+
+.giotto_get_spatial_network <- function(gobj, name, output = "networkDT") {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getSpatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("getSpatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getSpatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("getSpatialNetwork", envir = asNamespace("GiottoClass"))
+  } else if (requireNamespace("Giotto", quietly = TRUE) &&
+             exists("get_spatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("get_spatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("get_spatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("get_spatialNetwork", envir = asNamespace("GiottoClass"))
+  } else if (exists("getSpatialNetwork", mode = "function")) {
+    accessor <- get("getSpatialNetwork", mode = "function")
+  } else {
+    accessor <- get("get_spatialNetwork", mode = "function")
+  }
+  
+  accessor(gobject = gobj, name = name, output = output)
+}
+
+.giotto_create_spatial_network <- function(gobj,
+                                           name = "Delaunay_network",
+                                           method = "Delaunay",
+                                           minimum_k = 2) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("createSpatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("createSpatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("createSpatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("createSpatialNetwork", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("createSpatialNetwork", mode = "function")
+  }
+  
+  accessor(
+    gobject = gobj,
+    name = name,
+    method = method,
+    minimum_k = minimum_k
+  )
+}
+
+.giotto_cell_proximity_enrichment <- function(gobj,
+                                              spatial_network_name,
+                                              cluster_column,
+                                              number_of_simulations = 250) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("cellProximityEnrichment", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("cellProximityEnrichment", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("cellProximityEnrichment", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("cellProximityEnrichment", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("cellProximityEnrichment", mode = "function")
+  }
+  
+  accessor(
+    gobject = gobj,
+    spatial_network_name = spatial_network_name,
+    cluster_column = cluster_column,
+    number_of_simulations = number_of_simulations
+  )
+}
+
+.giotto_cell_proximity_heatmap <- function(gobj, cp_score, ...) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("cellProximityHeatmap", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("cellProximityHeatmap", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("cellProximityHeatmap", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("cellProximityHeatmap", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("cellProximityHeatmap", mode = "function")
+  }
+  
+  accessor(gobject = gobj, CPscore = cp_score, ...)
+}
+
+.giotto_cell_proximity_network <- function(gobj, cp_score, ...) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("cellProximityNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("cellProximityNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("cellProximityNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("cellProximityNetwork", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("cellProximityNetwork", mode = "function")
+  }
+  
+  accessor(gobject = gobj, CPscore = cp_score, ...)
 }
 
 detect_annotation_column <- function(metadata, preferred = NULL) {
@@ -44,13 +181,259 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
   candidates[1]
 }
 
+.matches_bcell_label <- function(labels, bcell_regex) {
+  grepl(bcell_regex, labels, ignore.case = TRUE)
+}
+
+.parse_unified_interactions <- function(unified_int) {
+  parts <- strsplit(as.character(unified_int), "--", fixed = TRUE)
+  data.frame(
+    source = vapply(parts, function(x) if (length(x) >= 1) x[1] else NA_character_, character(1)),
+    target = vapply(parts, function(x) if (length(x) >= 2) x[2] else NA_character_, character(1)),
+    stringsAsFactors = FALSE
+  )
+}
+
+.filter_interactions_for_bcells <- function(tbl, bcell_regex) {
+  if (is.null(tbl) || nrow(tbl) == 0) {
+    return(tbl)
+  }
+  
+  if (all(c("source", "target") %in% names(tbl))) {
+    return(dplyr::filter(
+      tbl,
+      .matches_bcell_label(source, bcell_regex) |
+        .matches_bcell_label(target, bcell_regex)
+    ))
+  }
+  
+  bcell_cols <- grep("cell.*type|celltype|cluster", names(tbl), value = TRUE, ignore.case = TRUE)
+  if (length(bcell_cols) >= 2) {
+    return(dplyr::filter(
+      tbl,
+      .matches_bcell_label(rlang::.data[[bcell_cols[1]]], bcell_regex) |
+        .matches_bcell_label(rlang::.data[[bcell_cols[2]]], bcell_regex)
+    ))
+  }
+  
+  if ("unified_int" %in% names(tbl)) {
+    parsed <- .parse_unified_interactions(tbl$unified_int)
+    keep <- .matches_bcell_label(parsed$source, bcell_regex) |
+      .matches_bcell_label(parsed$target, bcell_regex)
+    return(tbl[keep, , drop = FALSE])
+  }
+  
+  tbl[0, , drop = FALSE]
+}
+
+.comparison_involves_bcell <- function(comparison_name, bcell_regex) {
+  parts <- strsplit(as.character(comparison_name), "_from_", fixed = TRUE)
+  labels <- unique(unlist(parts, use.names = FALSE))
+  any(.matches_bcell_label(labels, bcell_regex))
+}
+
+.build_proximity_heatmap_plot <- function(enrichment_table, sample_id) {
+  parsed <- .parse_unified_interactions(enrichment_table$unified_int)
+  metric <- enrichment_table$enrichm
+  labels <- sort(unique(c(parsed$source, parsed$target)))
+  mat <- matrix(
+    0,
+    nrow = length(labels),
+    ncol = length(labels),
+    dimnames = list(labels, labels)
+  )
+  
+  for (i in seq_len(nrow(parsed))) {
+    src <- parsed$source[i]
+    tgt <- parsed$target[i]
+    if (!is.na(src) && !is.na(tgt)) {
+      mat[src, tgt] <- metric[i]
+      mat[tgt, src] <- metric[i]
+    }
+  }
+  
+  if (nrow(mat) > 2) {
+    ord <- stats::hclust(stats::dist(mat))$order
+    mat <- mat[ord, ord, drop = FALSE]
+  }
+  
+  heatmap_df <- as.data.frame(as.table(mat), stringsAsFactors = FALSE)
+  colnames(heatmap_df) <- c("source", "target", "enrichment")
+  heatmap_df$source <- factor(
+    pretty_plot_label(heatmap_df$source, width = 18),
+    levels = pretty_plot_label(rownames(mat), width = 18)
+  )
+  heatmap_df$target <- factor(
+    pretty_plot_label(heatmap_df$target, width = 18),
+    levels = pretty_plot_label(colnames(mat), width = 18)
+  )
+  
+  ggplot2::ggplot(
+    heatmap_df,
+    ggplot2::aes(x = source, y = target, fill = enrichment)
+  ) +
+    ggplot2::geom_tile(color = "white", linewidth = 0.15) +
+    ggplot2::scale_fill_gradient2(
+      low = "#3B82F6",
+      mid = "white",
+      high = "#EF4444",
+      midpoint = 0,
+      name = "Spatial\nEnrichment"
+    ) +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id, "Spatial Proximity Enrichment Heatmap"),
+      subtitle = "Red indicates enriched neighborhoods; blue indicates depleted neighborhoods",
+      x = "Interacting Cell Type",
+      y = "Interacting Cell Type"
+    ) +
+    presentation_theme(base_size = 12, x_angle = 50) +
+    ggplot2::theme(
+      axis.text.x = ggplot2::element_text(
+        size = 9,
+        angle = 50,
+        hjust = 1,
+        vjust = 1,
+        lineheight = 0.9
+      ),
+      axis.text.y = ggplot2::element_text(size = 9, lineheight = 0.9),
+      legend.key.height = grid::unit(0.7, "cm")
+    )
+}
+
+.build_proximity_network_plot <- function(enrichment_table, sample_id, max_edges = 70) {
+  if (!requireNamespace("igraph", quietly = TRUE)) {
+    stop("igraph is required to build the custom proximity network plot.")
+  }
+  
+  parsed <- .parse_unified_interactions(enrichment_table$unified_int)
+  plot_df <- cbind(enrichment_table, parsed, stringsAsFactors = FALSE)
+  plot_df <- plot_df[!is.na(plot_df$source) & !is.na(plot_df$target), , drop = FALSE]
+  plot_df$edge_direction <- ifelse(plot_df$enrichm >= 0, "Enriched proximity", "Depleted proximity")
+  plot_df$edge_weight <- abs(plot_df$PI_value)
+  plot_df$edge_significance <- pmin(plot_df$p.adj_higher, plot_df$p.adj_lower, na.rm = TRUE)
+  
+  sig_edges <- plot_df[plot_df$edge_significance < 0.05, , drop = FALSE]
+  if (nrow(sig_edges) < max_edges) {
+    top_edges <- plot_df[order(plot_df$edge_weight, decreasing = TRUE), , drop = FALSE]
+    top_edges <- top_edges[!duplicated(top_edges$unified_int), , drop = FALSE]
+    keep_n <- min(max_edges, nrow(top_edges))
+    plot_df <- top_edges[seq_len(keep_n), , drop = FALSE]
+  } else {
+    plot_df <- sig_edges[order(sig_edges$edge_weight, decreasing = TRUE), , drop = FALSE]
+  }
+  
+  graph_obj <- igraph::graph_from_data_frame(
+    d = plot_df[, c("source", "target")],
+    directed = FALSE
+  )
+  set.seed(42)
+  layout_mat <- igraph::layout_with_kk(graph_obj)
+  node_names <- igraph::V(graph_obj)$name
+  node_df <- data.frame(
+    node = node_names,
+    x = layout_mat[, 1],
+    y = layout_mat[, 2],
+    label = pretty_plot_label(node_names, width = 18),
+    stringsAsFactors = FALSE
+  )
+  
+  edge_df <- data.frame(
+    source = plot_df$source,
+    target = plot_df$target,
+    edge_direction = plot_df$edge_direction,
+    edge_weight = plot_df$edge_weight,
+    stringsAsFactors = FALSE
+  )
+  edge_df <- merge(edge_df, node_df[, c("node", "x", "y")], by.x = "source", by.y = "node", all.x = TRUE)
+  names(edge_df)[names(edge_df) %in% c("x", "y")] <- c("x", "y")
+  edge_df <- merge(edge_df, node_df[, c("node", "x", "y")], by.x = "target", by.y = "node", all.x = TRUE)
+  names(edge_df)[names(edge_df) %in% c("x", "y")][3:4] <- c("xend", "yend")
+  edge_df$linewidth <- scales::rescale(edge_df$edge_weight, to = c(0.3, 1.8))
+  
+  palette <- setNames(grDevices::hcl.colors(length(node_names), palette = "Dynamic"), node_names)
+  
+  p <- ggplot2::ggplot() +
+    ggplot2::geom_segment(
+      data = edge_df,
+      ggplot2::aes(
+        x = x,
+        y = y,
+        xend = xend,
+        yend = yend,
+        color = edge_direction,
+        linewidth = linewidth
+      ),
+      alpha = 0.55,
+      show.legend = TRUE
+    ) +
+    ggplot2::scale_color_manual(
+      values = c(
+        "Enriched proximity" = "#EF4444",
+        "Depleted proximity" = "#3B82F6"
+      ),
+      name = "Interaction type"
+    ) +
+    ggplot2::scale_linewidth_identity() +
+    ggplot2::geom_point(
+      data = node_df,
+      ggplot2::aes(x = x, y = y, fill = node),
+      shape = 21,
+      size = 4.5,
+      color = "white",
+      stroke = 0.5,
+      show.legend = TRUE
+    ) +
+    ggplot2::scale_fill_manual(
+      values = palette,
+      labels = pretty_plot_label(names(palette), width = 20),
+      name = "Cell Type"
+    ) +
+    {
+      if (requireNamespace("ggrepel", quietly = TRUE)) {
+        ggrepel::geom_text_repel(
+          data = node_df,
+          ggplot2::aes(x = x, y = y, label = label),
+          size = 3.6,
+          box.padding = 0.35,
+          point.padding = 0.15,
+          segment.alpha = 0.35,
+          max.overlaps = Inf
+        )
+      } else {
+        ggplot2::geom_text(
+          data = node_df,
+          ggplot2::aes(x = x, y = y, label = label),
+          size = 3.3,
+          check_overlap = TRUE,
+          vjust = -0.8
+        )
+      }
+    } +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id, "Spatial Proximity Network"),
+      subtitle = "Top neighborhood enrichments shown; edge color marks enrichment vs depletion",
+      x = NULL,
+      y = NULL
+    ) +
+    presentation_theme(base_size = 12, legend_position = "right") +
+    ggplot2::theme(
+      axis.text = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      axis.line = ggplot2::element_blank(),
+      panel.border = ggplot2::element_blank(),
+      legend.box = "vertical"
+    ) +
+    ggplot2::guides(
+      fill = ggplot2::guide_legend(ncol = 2, override.aes = list(size = 4.5)),
+      color = ggplot2::guide_legend(override.aes = list(linewidth = 1.2))
+    )
+  
+  p
+}
+
 ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_network") {
   network_exists <- tryCatch({
-    get_spatialNetwork(
-      gobject = gobj,
-      name = spatial_network_name,
-      output = "networkDT"
-    )
+    .giotto_get_spatial_network(gobj, name = spatial_network_name, output = "networkDT")
     TRUE
   }, error = function(e) FALSE)
   
@@ -58,8 +441,8 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
     return(gobj)
   }
   
-  createSpatialNetwork(
-    gobject = gobj,
+  .giotto_create_spatial_network(
+    gobj = gobj,
     name = spatial_network_name,
     method = "Delaunay",
     minimum_k = 2
@@ -70,7 +453,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 sample_id,
                                                 output_dir,
                                                 annotation_column = NULL,
-                                                bcell_regex = "B|Plasma|Plasmablast",
+                                                bcell_regex = "^B\\.cell$",
                                                 spatial_network_name = "Delaunay_network",
                                                 number_of_simulations = 250,
                                                 save_object = FALSE) {
@@ -84,22 +467,27 @@ run_bcell_microenvironment_analysis <- function(gobj,
     if (file.exists(manifest_path)) {
       gobj <- load_giotto_checkpoint(gobj)
     } else {
-      gobj <- loadGiotto(gobj)
+      gobj <- .giotto_load(gobj)
     }
   }
   
   results_dir <- ensure_dir(file.path(output_dir, "11_BCell_Microenvironment"))
-  metadata <- pDataDT(gobj) %>% as_tibble()
+  metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
   annotation_column <- detect_annotation_column(metadata, annotation_column)
   
-  abundance_table <- metadata %>%
-    count(.data[[annotation_column]], sort = TRUE, name = "n_cells")
-  names(abundance_table)[1] <- "annotation"
-  abundance_table <- abundance_table %>%
-    mutate(
-      sample_id = sample_id,
-      is_bcell = grepl(bcell_regex, annotation, ignore.case = TRUE)
-    )
+  abundance_table <- metadata
+  abundance_table$annotation <- metadata[[annotation_column]]
+  abundance_table <- dplyr::summarise(
+    dplyr::group_by(abundance_table, annotation),
+    n_cells = dplyr::n(),
+    .groups = "drop"
+  )
+  abundance_table <- dplyr::arrange(abundance_table, dplyr::desc(n_cells))
+  abundance_table <- dplyr::mutate(
+    abundance_table,
+    sample_id = sample_id,
+    is_bcell = grepl(bcell_regex, annotation, ignore.case = TRUE)
+  )
   
   readr::write_csv(
     abundance_table,
@@ -108,29 +496,20 @@ run_bcell_microenvironment_analysis <- function(gobj,
   
   gobj <- ensure_spatial_network(gobj, spatial_network_name = spatial_network_name)
   
-  cp_scores <- cellProximityEnrichment(
-    gobject = gobj,
+  cp_scores <- .giotto_cell_proximity_enrichment(
+    gobj = gobj,
     spatial_network_name = spatial_network_name,
     cluster_column = annotation_column,
     number_of_simulations = number_of_simulations
   )
   
   readr::write_csv(
-    as_tibble(cp_scores$raw_sim_table),
+    tibble::as_tibble(cp_scores$raw_sim_table),
     file.path(results_dir, paste0(sample_id, "_cell_proximity_raw.csv"))
   )
   
-  enrichment_table <- as_tibble(cp_scores$enrichm_res)
-  bcell_cols <- grep("cell.*type|celltype|cluster", names(enrichment_table), value = TRUE, ignore.case = TRUE)
-  if (length(bcell_cols) >= 2) {
-    bcell_table <- enrichment_table %>%
-      filter(
-        grepl(bcell_regex, .data[[bcell_cols[1]]], ignore.case = TRUE) |
-          grepl(bcell_regex, .data[[bcell_cols[2]]], ignore.case = TRUE)
-      )
-  } else {
-    bcell_table <- enrichment_table
-  }
+  enrichment_table <- tibble::as_tibble(cp_scores$enrichm_res)
+  bcell_table <- .filter_interactions_for_bcells(enrichment_table, bcell_regex = bcell_regex)
   
   readr::write_csv(
     enrichment_table,
@@ -152,11 +531,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
     tryCatch({
       liana_tbl <- readr::read_csv(liana_path, show_col_types = FALSE)
       if (all(c("source", "target") %in% names(liana_tbl))) {
-        bcell_liana <- liana_tbl %>%
-          dplyr::filter(
-            grepl(bcell_regex, source, ignore.case = TRUE) |
-              grepl(bcell_regex, target, ignore.case = TRUE)
-          )
+        bcell_liana <- .filter_interactions_for_bcells(liana_tbl, bcell_regex = bcell_regex)
         readr::write_csv(
           bcell_liana,
           file.path(results_dir, paste0(sample_id, "_bcell_liana_interactions.csv"))
@@ -173,7 +548,12 @@ run_bcell_microenvironment_analysis <- function(gobj,
       comparison_dirs <- list.dirs(nichenet_root, full.names = TRUE, recursive = TRUE)
       comparison_dirs <- comparison_dirs[comparison_dirs != nichenet_root]
       comparison_dirs <- comparison_dirs[
-        grepl(bcell_regex, basename(comparison_dirs), ignore.case = TRUE)
+        vapply(
+          basename(comparison_dirs),
+          .comparison_involves_bcell,
+          logical(1),
+          bcell_regex = bcell_regex
+        )
       ]
       nichenet_tables <- lapply(comparison_dirs, function(dir_path) {
         csv_path <- file.path(dir_path, paste0(sample_id, "_ligand_activities.csv"))
@@ -198,28 +578,24 @@ run_bcell_microenvironment_analysis <- function(gobj,
   }
   
   tryCatch({
-    heatmap_plot <- cellProximityHeatmap(gobject = gobj, CPscore = cp_scores)
-    ggsave(
-      filename = file.path(results_dir, paste0(sample_id, "_cell_proximity_heatmap.png")),
+    heatmap_plot <- .build_proximity_heatmap_plot(enrichment_table, sample_id = sample_id)
+    save_presentation_plot(
       plot = heatmap_plot,
+      filename = file.path(results_dir, paste0(sample_id, "_cell_proximity_heatmap.png")),
       width = 12,
-      height = 10,
-      dpi = 300,
-      bg = "white"
+      height = 10
     )
   }, error = function(e) {
     message("cellProximityHeatmap() skipped: ", conditionMessage(e))
   })
   
   tryCatch({
-    net_plot <- cellProximityNetwork(gobject = gobj, CPscore = cp_scores)
-    ggsave(
+    network_plot <- .build_proximity_network_plot(enrichment_table, sample_id = sample_id)
+    save_presentation_plot(
+      plot = network_plot,
       filename = file.path(results_dir, paste0(sample_id, "_cell_proximity_network.png")),
-      plot = net_plot,
-      width = 12,
-      height = 10,
-      dpi = 300,
-      bg = "white"
+      width = 13,
+      height = 10
     )
   }, error = function(e) {
     message("cellProximityNetwork() skipped: ", conditionMessage(e))

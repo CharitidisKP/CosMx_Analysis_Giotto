@@ -18,6 +18,28 @@
 #' @param max_mito_pct Maximum mitochondrial percentage (NULL = no filter)
 #' @return Filtered Giotto object
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 .run_spatial_qc_plot <- function(...) {
   withCallingHandlers(
     spatPlot2D(...),
@@ -128,15 +150,13 @@ quality_control <- function(gobj,
     geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
     geom_vline(xintercept = gene_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
     geom_vline(xintercept = gene_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
-    labs(title = "Genes per cell (pre-filtering)",
-         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
-         x = "Number of genes",
-         y = "Cell count") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      plot.subtitle = element_text(hjust = 0.5, size = 10)
-    )
+    labs(
+      title = "Detected Genes Per Cell",
+      subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
+      x = "Detected genes",
+      y = "Number of cells"
+    ) +
+    presentation_theme(base_size = 12)
   
   if (!is.null(cell_max_genes)) {
     p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
@@ -148,15 +168,13 @@ quality_control <- function(gobj,
     geom_vline(xintercept = count_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
     geom_vline(xintercept = count_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
     scale_x_log10() +
-    labs(title = "Total counts per cell (pre-filtering)",
-         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
-         x = "Total counts (log10)",
-         y = "Cell count") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      plot.subtitle = element_text(hjust = 0.5, size = 10)
-    )
+    labs(
+      title = "Total Counts Per Cell",
+      subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
+      x = log10_axis_label("Total Counts Per Cell"),
+      y = "Number of cells"
+    ) +
+    presentation_theme(base_size = 12)
   
   if ("mito_pct" %in% names(metadata) && !is.null(max_mito_pct)) {
     mito_median_pre <- stats::median(metadata$mito_pct, na.rm = TRUE)
@@ -167,32 +185,30 @@ quality_control <- function(gobj,
       geom_vline(xintercept = max_mito_pct, color = "red", linetype = "dashed", linewidth = 1) +
       geom_vline(xintercept = mito_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
       geom_vline(xintercept = mito_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
-      labs(title = "Mitochondrial % (pre-filtering)",
-           subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
-           x = "Mitochondrial %",
-           y = "Cell count") +
-      theme_classic() +
-      theme(
-        plot.title = element_text(hjust = 0.5, face = "bold"),
-        plot.subtitle = element_text(hjust = 0.5, size = 10)
-      )
+      labs(
+        title = "Mitochondrial Fraction",
+        subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
+        x = "Mitochondrial reads (%)",
+        y = "Number of cells"
+      ) +
+      presentation_theme(base_size = 12)
     
     combined <- (p1 | p2 | p3) +
       plot_annotation(
-        title = paste(sample_id, "- QC metrics before filtering"),
-        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+        title = sample_plot_title(sample_id, "Quality Control Metrics Before Filtering"),
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
   } else {
     combined <- (p1 | p2) +
       plot_annotation(
-        title = paste(sample_id, "- QC metrics before filtering"),
-        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+        title = sample_plot_title(sample_id, "Quality Control Metrics Before Filtering"),
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
   }
   
-  ggsave(
-    filename = file.path(results_folder, paste0(sample_id, "_qc_pre_filtering.png")),
+  save_presentation_plot(
     plot = combined,
+    filename = file.path(results_folder, paste0(sample_id, "_qc_pre_filtering.png")),
     width = 18,
     height = 6,
     dpi = 300,
@@ -343,15 +359,13 @@ quality_control <- function(gobj,
     geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
     geom_vline(xintercept = gene_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
     geom_vline(xintercept = gene_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
-    labs(title = "Genes per cell (post-filtering)",
-         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
-         x = "Number of genes",
-         y = "Cell count") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      plot.subtitle = element_text(hjust = 0.5, size = 10)
-    )
+    labs(
+      title = "Detected Genes Per Cell",
+      subtitle = "After filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
+      x = "Detected genes",
+      y = "Number of cells"
+    ) +
+    presentation_theme(base_size = 12)
   
   if (!is.null(cell_max_genes)) {
     p1_post <- p1_post + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
@@ -363,25 +377,23 @@ quality_control <- function(gobj,
     geom_vline(xintercept = count_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
     geom_vline(xintercept = count_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
     scale_x_log10() +
-    labs(title = "Total counts per cell (post-filtering)",
-         subtitle = "Red dashed = threshold, blue dotted = median, orange dotdash = mean",
-         x = "Total counts (log10)",
-         y = "Cell count") +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      plot.subtitle = element_text(hjust = 0.5, size = 10)
-    )
+    labs(
+      title = "Total Counts Per Cell",
+      subtitle = "After filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
+      x = log10_axis_label("Total Counts Per Cell"),
+      y = "Number of cells"
+    ) +
+    presentation_theme(base_size = 12)
   
   combined_post <- (p1_post | p2_post) +
     plot_annotation(
-      title = paste(sample_id, "- QC metrics after filtering"),
-      theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+      title = sample_plot_title(sample_id, "Quality Control Metrics After Filtering"),
+      theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
     )
   
-  ggsave(
-    filename = file.path(results_folder, paste0(sample_id, "_qc_post_filtering.png")),
+  save_presentation_plot(
     plot = combined_post,
+    filename = file.path(results_folder, paste0(sample_id, "_qc_post_filtering.png")),
     width = 14,
     height = 6,
     dpi = 300,

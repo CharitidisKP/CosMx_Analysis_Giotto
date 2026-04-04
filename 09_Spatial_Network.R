@@ -32,7 +32,8 @@ current_script_dir <- function() {
 }
 
 pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
-if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
+if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
   source(pipeline_utils)
 }
 
@@ -96,23 +97,28 @@ if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
       mapping = ggplot2::aes(x = sdimx, y = sdimy, colour = cell_type),
       size    = 1.4, alpha = 0.9
     ) +
-    ggplot2::scale_colour_manual(values = ct_colours, name = "Cell type") +
+    ggplot2::scale_colour_manual(
+      values = ct_colours,
+      labels = function(x) pretty_plot_label(x, width = 18),
+      name = "Cell Type"
+    ) +
     ggplot2::coord_fixed() +
     ggplot2::labs(
-      title    = paste0("Cell proximity: ", interaction_name),
+      title    = sample_plot_title(sample_id, paste0("Cell Proximity: ", pretty_plot_label(interaction_name))),
       subtitle = sprintf("%d interacting edges  |  network: %s",
                          nrow(int_edges), primary_network),
-      x = "x (global pixels)", y = "y (global pixels)"
+      x = "Global X Coordinate", y = "Global Y Coordinate"
     ) +
-    ggplot2::theme_classic(base_size = 11) +
-    ggplot2::theme(plot.title      = ggplot2::element_text(face = "bold"),
-                   legend.position = "right")
+    presentation_theme(base_size = 12, legend_position = "right") +
+    ggplot2::theme(
+      legend.key.height = grid::unit(0.45, "cm")
+    )
   
   safe_name <- gsub("[^A-Za-z0-9]", "_", interaction_name)
   save_path <- file.path(prox_folder,
                          paste0(sample_id, "_proximity_visplot_",
                                 safe_name, ".png"))
-  ggplot2::ggsave(save_path, plot = p, width = 14, height = 10, dpi = 150)
+  save_presentation_plot(p, save_path, width = 14, height = 10, dpi = 150)
   cat("\u2713 Proximity vis plot saved:", basename(save_path), "\n")
   invisible(p)
 }

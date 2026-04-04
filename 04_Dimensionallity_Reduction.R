@@ -11,6 +11,28 @@
 #' @param x Sparse matrix
 #' @return Vector of row variances
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 sparse_row_var <- function(x) {
   if (!inherits(x, "sparseMatrix")) {
     return(apply(x, 1, stats::var))
@@ -80,21 +102,17 @@ sparse_row_var <- function(x) {
     geom_point(alpha = 0.5, size = 0.7) +
     scale_color_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick")) +
     labs(
-      title = paste(sample_id, "- Highly variable genes"),
+      title = sample_plot_title(sample_id, "Highly Variable Genes"),
       subtitle = "Top genes selected by sparse variance on normalized expression",
-      x = "Log10 mean expression",
-      y = "Log10 variance",
-      color = "Selected"
+      x = log10_axis_label("Mean Expression"),
+      y = log10_axis_label("Variance"),
+      color = "Selected\nas HVG"
     ) +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold"),
-      plot.subtitle = element_text(hjust = 0.5)
-    )
+    presentation_theme(base_size = 12)
   
-  ggsave(
-    filename = file.path(results_folder, paste0(sample_id, "_hvg_plot.png")),
+  save_presentation_plot(
     plot = hvg_plot,
+    filename = file.path(results_folder, paste0(sample_id, "_hvg_plot.png")),
     width = 10,
     height = 8,
     dpi = 300,
@@ -140,21 +158,21 @@ sparse_row_var <- function(x) {
                                       value_label,
                                       output_path,
                                       sample_id) {
+  reduction_label <- display_reduction_name(reduction_label)
   p <- ggplot(plot_data, aes(x = dim1, y = dim2, color = .data[[color_column]])) +
     geom_point(size = 0.35, alpha = 0.7) +
     scale_color_viridis_c(option = "magma", na.value = "grey80") +
     labs(
-      title = paste(sample_id, "-", reduction_label, "colored by", value_label),
-      x = paste(reduction_label, "1"),
-      y = paste(reduction_label, "2"),
+      title = sample_plot_title(sample_id, paste(reduction_label, "Embedding Colored By", tools::toTitleCase(value_label))),
+      x = embedding_axis_label(reduction_label, 1),
+      y = embedding_axis_label(reduction_label, 2),
       color = value_label
     ) +
-    theme_classic() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+    presentation_theme(base_size = 12)
   
-  ggsave(
-    filename = output_path,
+  save_presentation_plot(
     plot = p,
+    filename = output_path,
     width = 10,
     height = 8,
     dpi = 300,
@@ -199,10 +217,12 @@ dimensionality_reduction <- function(gobj,
   
   # Identify highly variable genes
   if (spatial_hvg) {
-    cat("Identifying spatially variable genes...\n")
-    cat("  Target SVGs:", n_hvgs, "\n")
+    cat("Identifying spatially informed feature rankings...\n")
+    cat("  Target ranked features:", n_hvgs, "\n")
+    cat("  Note: this mode uses Giotto spatial enrichment ranking as a proxy, not a dedicated SVG model.\n")
+    cat("  For true SVG detection on large cohorts, prefer nnSVG or a dedicated binSpect workflow.\n")
     
-    # Use spatial method (binSpect or spark)
+    # Use Giotto spatial enrichment ranking as a lightweight spatial proxy
     gobj <- runSpatialEnrich(
       gobject = gobj,
       sign_method = "rank",
@@ -222,7 +242,7 @@ dimensionality_reduction <- function(gobj,
     
     hvg_genes <- spatial_genes
     
-    cat("✓ Selected", length(hvg_genes), "spatially variable genes\n\n")
+    cat("✓ Selected", length(hvg_genes), "spatially ranked features\n\n")
     
   } else {
     cat("Identifying highly variable genes...\n")
@@ -349,7 +369,7 @@ dimensionality_reduction <- function(gobj,
   
   # Summary
   cat("=== Dimensionality Reduction Summary ===\n")
-  cat("Method:", ifelse(spatial_hvg, "Spatial HVG", "Standard HVG (sparse variance)"), "\n")
+  cat("Method:", ifelse(spatial_hvg, "Spatial proxy ranking", "Standard HVG (sparse variance)"), "\n")
   cat("Features selected:", length(hvg_genes), "\n")
   cat("PCs computed:", n_pcs, "\n")
   

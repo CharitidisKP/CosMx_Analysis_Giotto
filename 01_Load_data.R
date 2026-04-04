@@ -387,6 +387,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   expr_matrix    <- Matrix::Matrix(t(expr_matrix_ct), sparse = TRUE)
   rownames(expr_matrix) <- gene_names
   colnames(expr_matrix) <- expr_data$giotto_cell_ID
+  rm(expr_matrix_ct)
   
   # Handle duplicate gene names
   if (any(duplicated(rownames(expr_matrix)))) {
@@ -450,6 +451,18 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
     results_folder  = results_folder,
     min_overlap_pct = min_overlap_pct
   )
+  
+  cleanup_fn <- get0("cleanup_memory", mode = "function", inherits = TRUE)
+  if (is.function(cleanup_fn)) {
+    cleanup_fn(
+      remove = c("expr_data", "metadata", "aligned", "spatial_locs", "fov_positions"),
+      envir = environment(),
+      label = "Data loading",
+      verbose = TRUE
+    )
+  } else {
+    gc(verbose = FALSE)
+  }
   
   cat("\n✓ Data loading complete\n")
   
@@ -520,7 +533,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
   gpolygon <- new("giottoPolygon",
                   spatVector          = spat_vect,
                   spatVectorCentroids = terra::centroids(spat_vect),
-                  overlaps            = data.table::data.table(),
+                  overlaps            = data.table(),
                   name                = "cell",
                   unique_ID_cache     = as.character(poly_list$cell))
   

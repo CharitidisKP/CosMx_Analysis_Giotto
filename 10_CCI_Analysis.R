@@ -18,6 +18,28 @@
 #           └── Summary/      Step-level summary tables and overview plots
 # ==============================================================================
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 
 # ==============================================================================
 # SECTION 0 — InSituCor (NanoString-native spatially co-expressed modules)
@@ -645,10 +667,18 @@ run_liana <- function(gobj,
         ntop          = 20,
         specificity   = specificity_col,
         magnitude     = magnitude_col
-      )
-      ggplot2::ggsave(
-        file.path(out_dir, paste0(sample_id, "_liana_dotplot.png")),
-        p, width = 14, height = 10, dpi = 150
+      ) +
+        ggplot2::labs(
+          title = sample_plot_title(sample_id, "Top LIANA Ligand-Receptor Interactions"),
+          subtitle = "Top-ranked sender and receiver pairs across the selected LIANA scoring methods."
+        ) +
+        presentation_theme(base_size = 12, legend_position = "right")
+      save_presentation_plot(
+        plot = p,
+        filename = file.path(out_dir, paste0(sample_id, "_liana_dotplot.png")),
+        width = 14,
+        height = 10,
+        dpi = 150
       )
       cat("\u2713 LIANA dotplot saved\n")
     }, error = function(e) {
@@ -1059,6 +1089,11 @@ run_misty <- function(gobj,
   if (!requireNamespace("mistyR", quietly = TRUE))
     stop("mistyR not installed.\n",
          'Install: BiocManager::install("mistyR")')
+  ridge_ready <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
+  if (!isTRUE(ridge_ready)) {
+    cat("⚠ MISTy skipped: ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27).\n")
+    return(invisible(NULL))
+  }
   
   cat("\n--- MISTy: Intercellular spatial modelling ---\n")
   
@@ -1304,13 +1339,26 @@ run_nnsvg <- function(gobj,
 #'                          Default: all TRUE.
 #' @return Named list of results from each section
 
+.maybe_cleanup_between_cci_sections <- function(enabled = TRUE, label = NULL) {
+  if (!isTRUE(enabled)) {
+    return(invisible(NULL))
+  }
+  
+  cleanup_fn <- get0("cleanup_memory", mode = "function", inherits = TRUE)
+  if (is.function(cleanup_fn)) {
+    cleanup_fn(label = paste("CCI", label), verbose = TRUE)
+  } else {
+    gc(verbose = FALSE)
+  }
+}
+
 .normalize_run_sections <- function(run_sections) {
   default_sections <- c(
     insitucor = TRUE,
     liana = TRUE,
-    nichenet = TRUE,
+    nichenet = FALSE,
     misty = TRUE,
-    nnsvg = TRUE
+    nnsvg = FALSE
   )
   
   if (is.null(run_sections) || length(run_sections) == 0) {
@@ -1335,6 +1383,45 @@ run_nnsvg <- function(gobj,
   normalized
 }
 
+.nichenet_section_ready <- function(mode, sender_celltypes = NULL, receiver_celltype = NULL) {
+  mode <- match.arg(mode, c("single", "all_senders_to_receiver", "all_pairs"))
+  
+  if (mode == "single") {
+    if (is.null(sender_celltypes) || length(sender_celltypes) == 0 ||
+        is.null(receiver_celltype) || !nzchar(as.character(receiver_celltype)[1])) {
+      return(list(
+        ok = FALSE,
+        reason = "NicheNet mode 'single' requires sender_celltypes and receiver_celltype."
+      ))
+    }
+  }
+  
+  if (mode == "all_senders_to_receiver" &&
+      (is.null(receiver_celltype) || !nzchar(as.character(receiver_celltype)[1]))) {
+    return(list(
+      ok = FALSE,
+      reason = "NicheNet mode 'all_senders_to_receiver' requires receiver_celltype."
+    ))
+  }
+  
+  list(ok = TRUE, reason = NULL)
+}
+
+.misty_runtime_ready <- function() {
+  if (!requireNamespace("mistyR", quietly = TRUE)) {
+    return(list(ok = FALSE, reason = "mistyR is not installed."))
+  }
+  
+  ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
+  if (!isTRUE(ridge_ok)) {
+    return(list(
+      ok = FALSE,
+      reason = "ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27)."
+    ))
+  }
+  
+  list(ok = TRUE, reason = NULL)
+}
 .run_cci_section <- function(label, runner) {
   tryCatch(
     {
@@ -1370,9 +1457,10 @@ run_cci_analysis <- function(gobj,
                              nichenet_include_self_pairs = FALSE,
                              run_sections       = c(insitucor = TRUE,
                                                     liana     = TRUE,
-                                                    nichenet  = TRUE,
+                                                    nichenet  = FALSE,
                                                     misty     = TRUE,
-                                                    nnsvg     = TRUE)) {
+                                                    nnsvg     = FALSE),
+                             cleanup_between_sections = TRUE) {
   
   cat("\n========================================\n")
   cat("STEP 10: CCI Analysis (Layer 2 & 3)\n")
@@ -1413,6 +1501,7 @@ run_cci_analysis <- function(gobj,
     results$insitucor <- section_out$result
     section_status["insitucor"] <- section_out$status
     section_messages[["insitucor"]] <- section_out$message
+    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "InSituCor")
   }
   
   if (isTRUE(run_sections["liana"])) {
@@ -1423,86 +1512,103 @@ run_cci_analysis <- function(gobj,
     results$liana <- section_out$result
     section_status["liana"] <- section_out$status
     section_messages[["liana"]] <- section_out$message
+    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "LIANA")
   }
   
   if (isTRUE(run_sections["nichenet"])) {
-    section_out <- .run_cci_section(
-      "NicheNet",
-      function() {
-        if (identical(nichenet_spatial_option, "both")) {
-          list(
-            unfiltered = run_nichenet_batch(
-              gobj,
-              sample_id,
-              output_dir,
-              celltype_col,
-              sender_celltypes,
-              receiver_celltype,
-              target_genes = target_genes,
-              target_genes_by_receiver = target_genes_by_receiver,
-              network_dir = nichenet_network_dir,
-              mode = nichenet_mode,
-              use_spatial_filter = FALSE,
-              proximity_enrichment_path = nichenet_proximity_enrichment_path,
-              spatial_padj_threshold = nichenet_spatial_padj_threshold,
-              min_cells_per_celltype = nichenet_min_cells_per_celltype,
-              include_self_pairs = nichenet_include_self_pairs,
-              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "unfiltered")
-            ),
-            spatial_filtered = run_nichenet_batch(
-              gobj,
-              sample_id,
-              output_dir,
-              celltype_col,
-              sender_celltypes,
-              receiver_celltype,
-              target_genes = target_genes,
-              target_genes_by_receiver = target_genes_by_receiver,
-              network_dir = nichenet_network_dir,
-              mode = nichenet_mode,
-              use_spatial_filter = TRUE,
-              proximity_enrichment_path = nichenet_proximity_enrichment_path,
-              spatial_padj_threshold = nichenet_spatial_padj_threshold,
-              min_cells_per_celltype = nichenet_min_cells_per_celltype,
-              include_self_pairs = nichenet_include_self_pairs,
-              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "spatial_filtered")
+    nichenet_ready <- .nichenet_section_ready(nichenet_mode, sender_celltypes, receiver_celltype)
+    if (!isTRUE(nichenet_ready$ok)) {
+      cat("⚠ Skipping NicheNet:", nichenet_ready$reason, "\n")
+      section_status["nichenet"] <- "skipped"
+      section_messages[["nichenet"]] <- nichenet_ready$reason
+    } else {
+      section_out <- .run_cci_section(
+        "NicheNet",
+        function() {
+          if (identical(nichenet_spatial_option, "both")) {
+            list(
+              unfiltered = run_nichenet_batch(
+                gobj,
+                sample_id,
+                output_dir,
+                celltype_col,
+                sender_celltypes,
+                receiver_celltype,
+                target_genes = target_genes,
+                target_genes_by_receiver = target_genes_by_receiver,
+                network_dir = nichenet_network_dir,
+                mode = nichenet_mode,
+                use_spatial_filter = FALSE,
+                proximity_enrichment_path = nichenet_proximity_enrichment_path,
+                spatial_padj_threshold = nichenet_spatial_padj_threshold,
+                min_cells_per_celltype = nichenet_min_cells_per_celltype,
+                include_self_pairs = nichenet_include_self_pairs,
+                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "unfiltered")
+              ),
+              spatial_filtered = run_nichenet_batch(
+                gobj,
+                sample_id,
+                output_dir,
+                celltype_col,
+                sender_celltypes,
+                receiver_celltype,
+                target_genes = target_genes,
+                target_genes_by_receiver = target_genes_by_receiver,
+                network_dir = nichenet_network_dir,
+                mode = nichenet_mode,
+                use_spatial_filter = TRUE,
+                proximity_enrichment_path = nichenet_proximity_enrichment_path,
+                spatial_padj_threshold = nichenet_spatial_padj_threshold,
+                min_cells_per_celltype = nichenet_min_cells_per_celltype,
+                include_self_pairs = nichenet_include_self_pairs,
+                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "spatial_filtered")
+              )
             )
-          )
-        } else {
-          run_nichenet_batch(
-            gobj,
-            sample_id,
-            output_dir,
-            celltype_col,
-            sender_celltypes,
-            receiver_celltype,
-            target_genes = target_genes,
-            target_genes_by_receiver = target_genes_by_receiver,
-            network_dir = nichenet_network_dir,
-            mode = nichenet_mode,
-            use_spatial_filter = identical(nichenet_spatial_option, "filtered"),
-            proximity_enrichment_path = nichenet_proximity_enrichment_path,
-            spatial_padj_threshold = nichenet_spatial_padj_threshold,
-            min_cells_per_celltype = nichenet_min_cells_per_celltype,
-            include_self_pairs = nichenet_include_self_pairs,
-            result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet")
-          )
+          } else {
+            run_nichenet_batch(
+              gobj,
+              sample_id,
+              output_dir,
+              celltype_col,
+              sender_celltypes,
+              receiver_celltype,
+              target_genes = target_genes,
+              target_genes_by_receiver = target_genes_by_receiver,
+              network_dir = nichenet_network_dir,
+              mode = nichenet_mode,
+              use_spatial_filter = identical(nichenet_spatial_option, "filtered"),
+              proximity_enrichment_path = nichenet_proximity_enrichment_path,
+              spatial_padj_threshold = nichenet_spatial_padj_threshold,
+              min_cells_per_celltype = nichenet_min_cells_per_celltype,
+              include_self_pairs = nichenet_include_self_pairs,
+              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet")
+            )
+          }
         }
-      }
-    )
-    results$nichenet <- section_out$result
-    section_status["nichenet"] <- section_out$status
-    section_messages[["nichenet"]] <- section_out$message
+      )
+      results$nichenet <- section_out$result
+      section_status["nichenet"] <- section_out$status
+      section_messages[["nichenet"]] <- section_out$message
+      .maybe_cleanup_between_cci_sections(cleanup_between_sections, "NicheNet")
+    }
   }
   
   if (isTRUE(run_sections["misty"])) {
-    section_out <- .run_cci_section(
-      "MISTy",
-      function() run_misty(gobj, sample_id, output_dir)
-    )
-    results$misty <- section_out$result
-    section_status["misty"] <- section_out$status
-    section_messages[["misty"]] <- section_out$message
+    misty_ready <- .misty_runtime_ready()
+    if (!isTRUE(misty_ready$ok)) {
+      cat("⚠ Skipping MISTy:", misty_ready$reason, "\n")
+      section_status["misty"] <- "skipped"
+      section_messages[["misty"]] <- misty_ready$reason
+    } else {
+      section_out <- .run_cci_section(
+        "MISTy",
+        function() run_misty(gobj, sample_id, output_dir)
+      )
+      results$misty <- section_out$result
+      section_status["misty"] <- section_out$status
+      section_messages[["misty"]] <- section_out$message
+      .maybe_cleanup_between_cci_sections(cleanup_between_sections, "MISTy")
+    }
   }
   
   if (isTRUE(run_sections["nnsvg"])) {
@@ -1513,6 +1619,7 @@ run_cci_analysis <- function(gobj,
     results$nnsvg <- section_out$result
     section_status["nnsvg"] <- section_out$status
     section_messages[["nnsvg"]] <- section_out$message
+    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "nnSVG")
   }
   attr(results, "section_status") <- section_status
   attr(results, "section_messages") <- section_messages
@@ -1540,12 +1647,16 @@ run_cci_analysis <- function(gobj,
   for (section_name in names(section_status)) {
     icon <- switch(
       section_status[[section_name]],
-      ok = "\u2713",
-      error = "\u26A0",
+      ok = "✓",
+      error = "⚠",
+      skipped = "-",
       disabled = "-",
       "-"
     )
     cat("  ", icon, " ", section_name, ": ", section_status[[section_name]], "\n", sep = "")
+    if (!is.null(section_messages[[section_name]]) && nzchar(section_messages[[section_name]])) {
+      cat("      ", section_messages[[section_name]], "\n", sep = "")
+    }
   }
   
   cat("\n\u2713 STEP 10 complete for", sample_id, "\n\n")

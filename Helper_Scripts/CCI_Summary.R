@@ -17,6 +17,28 @@ cci_summary_get_expression <- function(gobj, values = "normalized", output = "ma
   accessor(gobj, values = values, output = output)
 }
 
+if (!exists("presentation_theme", mode = "function", inherits = TRUE)) {
+  current_script_dir <- function() {
+    args <- commandArgs(trailingOnly = FALSE)
+    file_arg <- grep("^--file=", args, value = TRUE)
+    if (length(file_arg) > 0) {
+      return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+    }
+    ofiles <- vapply(sys.frames(), function(frame) {
+      if (is.null(frame$ofile)) "" else frame$ofile
+    }, character(1))
+    ofiles <- ofiles[nzchar(ofiles)]
+    if (length(ofiles) > 0) {
+      return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+    }
+    normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+  }
+  pipeline_utils <- file.path(dirname(current_script_dir()), "Helper_Scripts", "Pipeline_Utils.R")
+  if (file.exists(pipeline_utils)) {
+    source(pipeline_utils)
+  }
+}
+
 cci_summary_muffle_plot_warnings <- function(expr) {
   withCallingHandlers(
     expr,
@@ -162,15 +184,15 @@ create_cci_summary <- function(gobj,
       ggplot2::coord_flip() +
       ggplot2::scale_fill_viridis_c(option = "C", name = "Mean weight") +
       ggplot2::labs(
-        title = "Top InSituCor modules by gene count",
+        title = sample_plot_title(sample_id, "Top InSituCor Modules by Gene Count"),
         x = "Module",
         y = "Number of genes"
       ) +
-      ggplot2::theme_minimal(base_size = 11)
+      presentation_theme(base_size = 12)
     
-    ggplot2::ggsave(
-      filename = file.path(summary_dir, paste0(sample_id, "_insitucor_module_sizes.png")),
+    save_presentation_plot(
       plot = p_modules,
+      filename = file.path(summary_dir, paste0(sample_id, "_insitucor_module_sizes.png")),
       width = 10,
       height = 6,
       dpi = 150
@@ -258,15 +280,15 @@ create_cci_summary <- function(gobj,
       ggplot2::geom_col(fill = "#2C7FB8") +
       ggplot2::coord_flip() +
       ggplot2::labs(
-        title = "Top nnSVG genes",
+        title = sample_plot_title(sample_id, "Top nnSVG Genes"),
         x = "Gene",
         y = y_label
       ) +
-      ggplot2::theme_minimal(base_size = 11)
+      presentation_theme(base_size = 12)
     
-    ggplot2::ggsave(
-      filename = file.path(summary_dir, paste0(sample_id, "_nnsvg_top_genes.png")),
+    save_presentation_plot(
       plot = p_svg,
+      filename = file.path(summary_dir, paste0(sample_id, "_nnsvg_top_genes.png")),
       width = 10,
       height = 6,
       dpi = 150
@@ -325,15 +347,15 @@ create_cci_summary <- function(gobj,
         ggplot2::geom_col(fill = "#1B9E77") +
         ggplot2::coord_flip() +
         ggplot2::labs(
-          title = "Top MISTy targets by improvement",
+          title = sample_plot_title(sample_id, "Top MISTy Targets by Improvement"),
           x = "Target",
           y = metric_col
         ) +
-        ggplot2::theme_minimal(base_size = 11)
+        presentation_theme(base_size = 12)
       
-      ggplot2::ggsave(
-        filename = file.path(summary_dir, paste0(sample_id, "_misty_top_targets.png")),
+      save_presentation_plot(
         plot = p_misty,
+        filename = file.path(summary_dir, paste0(sample_id, "_misty_top_targets.png")),
         width = 10,
         height = 6,
         dpi = 150
@@ -381,15 +403,15 @@ create_cci_summary <- function(gobj,
         ggplot2::geom_col(fill = "#A6611A") +
         ggplot2::coord_flip() +
         ggplot2::labs(
-          title = "Top LIANA interactions",
+          title = sample_plot_title(sample_id, "Top LIANA Interactions"),
           x = "Interaction",
           y = metric_col
         ) +
-        ggplot2::theme_minimal(base_size = 11)
+        presentation_theme(base_size = 12)
       
-      ggplot2::ggsave(
-        filename = file.path(summary_dir, paste0(sample_id, "_liana_top_interactions.png")),
+      save_presentation_plot(
         plot = p_liana,
+        filename = file.path(summary_dir, paste0(sample_id, "_liana_top_interactions.png")),
         width = 10,
         height = 6,
         dpi = 150
@@ -421,15 +443,15 @@ create_cci_summary <- function(gobj,
         ggplot2::geom_col(fill = "#8C6BB1") +
         ggplot2::coord_flip() +
         ggplot2::labs(
-          title = "Top NicheNet ligands",
+          title = sample_plot_title(sample_id, "Top NicheNet Ligands"),
           x = "Ligand",
           y = "Pearson activity score"
         ) +
-        ggplot2::theme_minimal(base_size = 11)
+        presentation_theme(base_size = 12)
       
-      ggplot2::ggsave(
-        filename = file.path(summary_dir, paste0(sample_id, "_nichenet_top_ligands.png")),
+      save_presentation_plot(
         plot = p_nichenet,
+        filename = file.path(summary_dir, paste0(sample_id, "_nichenet_top_ligands.png")),
         width = 10,
         height = 6,
         dpi = 150

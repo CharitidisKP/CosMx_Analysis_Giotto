@@ -33,7 +33,8 @@ current_script_dir <- function() {
 }
 
 pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
-if (!exists("save_giotto_checkpoint") && file.exists(pipeline_utils)) {
+if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
   source(pipeline_utils)
 }
 
@@ -47,6 +48,118 @@ if (!exists("%||%")) {
     }
     x
   }
+}
+
+.giotto_get_expression <- function(gobj, values, output = "matrix") {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getExpression", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("getExpression", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getExpression", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("getExpression", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("getExpression", mode = "function")
+  }
+  
+  accessor(gobj, values = values, output = output)
+}
+
+.giotto_load <- function(path) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("loadGiotto", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("loadGiotto", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("loadGiotto", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("loadGiotto", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("loadGiotto", mode = "function")
+  }
+  
+  accessor(path)
+}
+
+.giotto_pdata_dt <- function(gobj) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("pDataDT", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("pDataDT", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("pDataDT", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("pDataDT", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("pDataDT", mode = "function")
+  }
+  
+  accessor(gobj)
+}
+
+.giotto_get_spatial_network <- function(gobj, name, output = "networkDT") {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getSpatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("getSpatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getSpatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("getSpatialNetwork", envir = asNamespace("GiottoClass"))
+  } else if (requireNamespace("Giotto", quietly = TRUE) &&
+             exists("get_spatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("get_spatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("get_spatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("get_spatialNetwork", envir = asNamespace("GiottoClass"))
+  } else if (exists("getSpatialNetwork", mode = "function")) {
+    accessor <- get("getSpatialNetwork", mode = "function")
+  } else {
+    accessor <- get("get_spatialNetwork", mode = "function")
+  }
+  
+  accessor(gobject = gobj, name = name, output = output)
+}
+
+.giotto_create_spatial_network <- function(gobj,
+                                           name = "Delaunay_network",
+                                           method = "Delaunay",
+                                           minimum_k = 2) {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("createSpatialNetwork", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("createSpatialNetwork", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("createSpatialNetwork", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("createSpatialNetwork", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("createSpatialNetwork", mode = "function")
+  }
+  
+  accessor(
+    gobject = gobj,
+    name = name,
+    method = method,
+    minimum_k = minimum_k
+  )
+}
+
+.giotto_get_spatial_locations <- function(gobj, output = "data.table") {
+  accessor <- NULL
+  
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getSpatialLocations", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    accessor <- get("getSpatialLocations", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getSpatialLocations", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
+    accessor <- get("getSpatialLocations", envir = asNamespace("GiottoClass"))
+  } else {
+    accessor <- get("getSpatialLocations", mode = "function")
+  }
+  
+  accessor(gobj, output = output)
 }
 
 inspect_smide_namespace <- function(verbose = TRUE) {
@@ -100,13 +213,25 @@ align_metadata_with_spatial_locations <- function(metadata, spatial_locations) {
   )
 }
 
-get_counts_cells_by_genes <- function(expr_mat, metadata) {
-  keep_ids <- metadata$cell_ID[metadata$cell_ID %in% colnames(expr_mat)]
-  if (length(keep_ids) == 0) {
+get_counts_genes_by_cells <- function(expr_mat, metadata) {
+  expr_mat <- as.matrix(expr_mat)
+  metadata_ids <- unique(metadata$cell_ID)
+  
+  col_matches <- sum(metadata_ids %in% colnames(expr_mat))
+  row_matches <- sum(metadata_ids %in% rownames(expr_mat))
+  
+  if (col_matches == 0 && row_matches == 0) {
     stop("No cell IDs from metadata were found in the expression matrix.")
   }
   
-  counts <- t(as.matrix(expr_mat[, keep_ids, drop = FALSE]))
+  if (col_matches >= row_matches) {
+    keep_ids <- metadata$cell_ID[metadata$cell_ID %in% colnames(expr_mat)]
+    counts <- expr_mat[, keep_ids, drop = FALSE]
+  } else {
+    keep_ids <- metadata$cell_ID[metadata$cell_ID %in% rownames(expr_mat)]
+    counts <- t(expr_mat[keep_ids, , drop = FALSE])
+  }
+  
   storage.mode(counts) <- "numeric"
   counts
 }
@@ -154,6 +279,277 @@ extract_overlap_targets <- function(overlap_df, threshold = NULL) {
   keep <- overlap_df[[metric_col]] <= threshold
   targets <- overlap_df$gene[keep & !is.na(overlap_df$gene)]
   unique(targets[nzchar(targets)])
+}
+
+normalize_annotation_subset <- function(annotation_subset) {
+  if (is.null(annotation_subset)) {
+    return(NULL)
+  }
+  
+  annotation_subset <- unique(as.character(annotation_subset))
+  annotation_subset <- annotation_subset[!is.na(annotation_subset) & nzchar(annotation_subset)]
+  if (length(annotation_subset) == 0) {
+    return(NULL)
+  }
+  
+  annotation_subset
+}
+
+prepare_smide_targets <- function(cell_counts,
+                                  targets = NULL,
+                                  min_detection_fraction = NULL) {
+  gene_names <- rownames(cell_counts)
+  if (is.null(gene_names)) {
+    stop("smiDE counts matrix must contain gene names as rownames.")
+  }
+  
+  keep <- rep(TRUE, nrow(cell_counts))
+  names(keep) <- gene_names
+  
+  if (!is.null(targets)) {
+    keep <- keep & gene_names %in% unique(targets)
+  }
+  
+  if (!is.null(min_detection_fraction)) {
+    min_detection_fraction <- as.numeric(min_detection_fraction)[1]
+    min_detection_fraction <- min(max(min_detection_fraction, 0), 1)
+    keep <- keep & (rowSums(cell_counts > 0, na.rm = TRUE) / ncol(cell_counts)) >= min_detection_fraction
+  }
+  
+  kept_genes <- gene_names[keep]
+  if (length(kept_genes) == 0) {
+    return(list(
+      counts = NULL,
+      targets = character(),
+      n_genes = 0L
+    ))
+  }
+  
+  filtered_counts <- cell_counts[kept_genes, , drop = FALSE]
+  filtered_targets <- if (is.null(targets)) NULL else kept_genes
+  
+  list(
+    counts = filtered_counts,
+    targets = filtered_targets,
+    n_genes = nrow(filtered_counts)
+  )
+}
+
+
+sanitize_smide_name <- function(x) {
+  gsub("[^A-Za-z0-9]+", "_", as.character(x))
+}
+
+parse_smide_unified_interactions <- function(unified_int) {
+  parts <- strsplit(as.character(unified_int), "--", fixed = TRUE)
+  data.frame(
+    source = vapply(parts, function(x) if (length(x) >= 1) x[1] else NA_character_, character(1)),
+    target = vapply(parts, function(x) if (length(x) >= 2) x[2] else NA_character_, character(1)),
+    stringsAsFactors = FALSE
+  )
+}
+
+select_smide_partner_celltypes <- function(output_dir,
+                                           run_label,
+                                           focal_celltype,
+                                           top_n = 3,
+                                           padj_threshold = 0.05,
+                                           include_self = FALSE) {
+  cp_path <- file.path(
+    output_dir,
+    "11_BCell_Microenvironment",
+    paste0(run_label, "_cell_proximity_enrichment.csv")
+  )
+  if (!file.exists(cp_path)) {
+    return(character())
+  }
+  
+  tbl <- tryCatch(
+    readr::read_csv(cp_path, show_col_types = FALSE),
+    error = function(e) NULL
+  )
+  if (is.null(tbl) || !"unified_int" %in% names(tbl)) {
+    return(character())
+  }
+  
+  parsed <- parse_smide_unified_interactions(tbl$unified_int)
+  tbl$source <- parsed$source
+  tbl$target <- parsed$target
+  
+  partner_tbl <- tbl[tbl$source == focal_celltype | tbl$target == focal_celltype, , drop = FALSE]
+  if (!include_self) {
+    partner_tbl <- partner_tbl[
+      !(partner_tbl$source == focal_celltype & partner_tbl$target == focal_celltype),
+      ,
+      drop = FALSE
+    ]
+  }
+  if ("p.adj_higher" %in% names(partner_tbl)) {
+    partner_tbl <- partner_tbl[
+      is.na(partner_tbl$p.adj_higher) | partner_tbl$p.adj_higher <= padj_threshold,
+      ,
+      drop = FALSE
+    ]
+  }
+  if (nrow(partner_tbl) == 0) {
+    return(character())
+  }
+  
+  partner_tbl$partner_celltype <- ifelse(
+    partner_tbl$source == focal_celltype,
+    partner_tbl$target,
+    partner_tbl$source
+  )
+  partner_tbl <- partner_tbl[
+    !is.na(partner_tbl$partner_celltype) & nzchar(partner_tbl$partner_celltype),
+    ,
+    drop = FALSE
+  ]
+  if (nrow(partner_tbl) == 0) {
+    return(character())
+  }
+  
+  if ("int_ranking" %in% names(partner_tbl)) {
+    partner_tbl <- partner_tbl[order(partner_tbl$int_ranking, partner_tbl$partner_celltype), , drop = FALSE]
+  }
+  
+  unique(head(partner_tbl$partner_celltype, top_n))
+}
+
+make_smide_neighbor_group <- function(cell_meta,
+                                      neighbor_counts,
+                                      partner_celltype,
+                                      min_group_size = 5) {
+  if (is.null(neighbor_counts) || !partner_celltype %in% colnames(neighbor_counts)) {
+    return(NULL)
+  }
+  
+  counts <- neighbor_counts[cell_meta$cell_ID, partner_celltype, drop = TRUE]
+  counts[is.na(counts)] <- 0
+  if (length(counts) == 0 || all(counts == counts[1])) {
+    return(NULL)
+  }
+  
+  threshold <- stats::median(counts, na.rm = TRUE)
+  if (!is.finite(threshold)) {
+    return(NULL)
+  }
+  
+  group <- if (threshold <= 0) {
+    ifelse(counts > 0, "high", "low")
+  } else {
+    ifelse(counts >= threshold, "high", "low")
+  }
+  
+  group <- factor(group, levels = c("low", "high"))
+  group_sizes <- table(group)
+  if (length(group_sizes) < 2 || any(group_sizes < min_group_size)) {
+    return(NULL)
+  }
+  
+  list(
+    column = paste0("neighbor_group__", sanitize_smide_name(partner_celltype)),
+    values = group,
+    partner_celltype = partner_celltype,
+    threshold = threshold
+  )
+}
+
+build_smide_predictor_specs <- function(cell_meta,
+                                        cell_type,
+                                        annotation_column,
+                                        valid_niches,
+                                        min_group_size,
+                                        sample_contrast = c("one_vs_rest", "pairwise"),
+                                        custom_predictor = NULL,
+                                        partner_celltypes = NULL,
+                                        partner_source = c("none", "cell_proximity_auto"),
+                                        partner_top_n = 3,
+                                        partner_padj_threshold = 0.05,
+                                        include_self_partner = FALSE,
+                                        output_dir = NULL,
+                                        run_label = NULL,
+                                        neighbor_counts = NULL) {
+  sample_contrast <- match.arg(sample_contrast)
+  partner_source <- match.arg(partner_source)
+  
+  specs <- list()
+  
+  if (!is.null(custom_predictor) && custom_predictor %in% names(cell_meta)) {
+    predictor_values <- as.character(cell_meta[[custom_predictor]])
+    predictor_values[!nzchar(predictor_values)] <- NA_character_
+    predictor_levels <- unique(stats::na.omit(predictor_values))
+    if (length(predictor_levels) >= 2) {
+      cell_meta[[custom_predictor]] <- factor(predictor_values, levels = sort(predictor_levels))
+      result_mode <- if (length(levels(cell_meta[[custom_predictor]])) == 2 || sample_contrast == "pairwise") {
+        "pairwise"
+      } else {
+        "one.vs.rest"
+      }
+      specs[[length(specs) + 1L]] <- list(
+        metadata = cell_meta,
+        predictor_var = custom_predictor,
+        predictor_label = custom_predictor,
+        group_levels = levels(cell_meta[[custom_predictor]]),
+        result_mode = result_mode
+      )
+    }
+  }
+  
+  if (length(specs) == 0L && partner_source != "none" && is.null(partner_celltypes)) {
+    if (!is.null(output_dir) && !is.null(run_label)) {
+      partner_celltypes <- select_smide_partner_celltypes(
+        output_dir = output_dir,
+        run_label = run_label,
+        focal_celltype = cell_type,
+        top_n = partner_top_n,
+        padj_threshold = partner_padj_threshold,
+        include_self = include_self_partner
+      )
+    }
+  }
+  
+  if (length(specs) == 0L && !is.null(partner_celltypes) && length(partner_celltypes) > 0) {
+    for (partner in unique(as.character(partner_celltypes))) {
+      group_spec <- make_smide_neighbor_group(
+        cell_meta = cell_meta,
+        neighbor_counts = neighbor_counts,
+        partner_celltype = partner,
+        min_group_size = min_group_size
+      )
+      if (is.null(group_spec)) {
+        next
+      }
+      predictor_meta <- cell_meta
+      predictor_meta[[group_spec$column]] <- group_spec$values
+      specs[[length(specs) + 1L]] <- list(
+        metadata = predictor_meta,
+        predictor_var = group_spec$column,
+        predictor_label = paste0("neighbor_", partner),
+        group_levels = levels(group_spec$values),
+        result_mode = "pairwise"
+      )
+    }
+  }
+  
+  if (length(specs) == 0L) {
+    fallback_meta <- cell_meta
+    fallback_meta$spatial_niche <- factor(fallback_meta$spatial_niche, levels = valid_niches)
+    fallback_mode <- if (length(valid_niches) == 2 || sample_contrast == "pairwise") {
+      "pairwise"
+    } else {
+      "one.vs.rest"
+    }
+    specs[[1L]] <- list(
+      metadata = fallback_meta,
+      predictor_var = "spatial_niche",
+      predictor_label = "spatial_niche",
+      group_levels = valid_niches,
+      result_mode = fallback_mode
+    )
+  }
+  
+  specs
 }
 
 coerce_smide_results_table <- function(res_obj) {
@@ -207,31 +603,57 @@ guess_significance_column <- function(result_df) {
 run_smide_sample_backend <- function(expr_mat,
                                      metadata,
                                      run_label,
+                                     output_dir,
                                      annotation_column,
                                      tables_dir,
                                      sample_replicate_column = "fov",
                                      sample_contrast = c("one_vs_rest", "pairwise"),
                                      min_cells_per_niche = 30,
                                      spatial_locations = NULL,
+                                     spatial_network_name = "Delaunay_network",
+                                     neighbor_counts = NULL,
                                      smide_family = "nbinom2",
                                      smide_radius = 0.05,
                                      smide_ncores = 1,
                                      smide_overlap_threshold = NULL,
+                                     smide_annotation_subset = NULL,
+                                     smide_min_detection_fraction = 0.05,
+                                     smide_custom_predictor = NULL,
+                                     smide_partner_celltypes = NULL,
+                                     smide_partner_source = c("none", "cell_proximity_auto"),
+                                     smide_partner_top_n = 3,
+                                     smide_partner_padj_threshold = 0.05,
+                                     smide_include_self_partner = FALSE,
                                      smide_save_raw = TRUE) {
   sample_contrast <- match.arg(sample_contrast)
+  smide_partner_source <- match.arg(smide_partner_source)
   
   if (!requireNamespace("smiDE", quietly = TRUE)) {
     stop("smiDE is not installed, but backend = 'smiDE' was requested.")
   }
   
   metadata <- align_metadata_with_spatial_locations(metadata, spatial_locations)
-  counts_cells_genes <- get_counts_cells_by_genes(expr_mat, metadata)
-  metadata <- metadata[match(rownames(counts_cells_genes), metadata$cell_ID), , drop = FALSE]
+  counts_genes_cells <- get_counts_genes_by_cells(expr_mat, metadata)
+  metadata <- metadata[match(colnames(counts_genes_cells), metadata$cell_ID), , drop = FALSE]
   
   sample_ids <- unique(stats::na.omit(metadata$sample_id))
   if (length(sample_ids) > 1) {
     stop("smiDE sample-mode analysis expects exactly one sample in the input object.")
   }
+  
+  smide_annotation_subset <- normalize_annotation_subset(smide_annotation_subset)
+  smide_min_detection_fraction <- as.numeric(smide_min_detection_fraction)[1]
+  if (!is.finite(smide_min_detection_fraction)) {
+    smide_min_detection_fraction <- 0.05
+  }
+  smide_min_detection_fraction <- min(max(smide_min_detection_fraction, 0), 1)
+  
+  if (is.null(smide_overlap_threshold)) {
+    smide_overlap_threshold <- 1
+    message("Using default smiDE overlap-ratio threshold of 1 to prefilter contamination-prone genes.")
+  }
+  
+  neighbor_counts <- if (is.null(neighbor_counts)) NULL else as_plain_numeric_matrix(neighbor_counts)
   
   replicate_column <- detect_replicate_column(metadata, sample_replicate_column)
   split_col <- if (!is.null(replicate_column) && length(unique(stats::na.omit(metadata[[replicate_column]]))) > 1) {
@@ -249,21 +671,31 @@ run_smide_sample_backend <- function(expr_mat,
   summary_rows <- list()
   all_results <- list()
   idx <- 1L
+  candidate_cell_types <- sort(unique(stats::na.omit(metadata[[annotation_column]])))
+  if (!is.null(smide_annotation_subset)) {
+    candidate_cell_types <- intersect(candidate_cell_types, smide_annotation_subset)
+  }
+  if (length(candidate_cell_types) == 0) {
+    warning("No cell types matched the requested smiDE annotation subset.")
+    return(list(metadata = metadata, summary = data.frame(), results = data.frame()))
+  }
   
-  for (cell_type in sort(unique(stats::na.omit(metadata[[annotation_column]])))) {
+  cat("smiDE candidate cell types:", length(candidate_cell_types), "
+")
+  cat("smiDE min detection fraction:", smide_min_detection_fraction, "
+")
+  
+  for (cell_type in candidate_cell_types) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
     niche_sizes <- table(cell_meta$spatial_niche)
     valid_niches <- names(niche_sizes[niche_sizes >= min_cells_per_niche])
     cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
-    if (length(valid_niches) < 2) {
+    if (nrow(cell_meta) < min_cells_per_niche || length(valid_niches) < 2) {
       next
     }
     
     cell_ids <- cell_meta$cell_ID
-    cell_counts <- counts_cells_genes[cell_ids, , drop = FALSE]
-    cell_meta$spatial_niche <- factor(cell_meta$spatial_niche, levels = valid_niches)
-    
-    cat("Running smiDE:", run_label, "|", cell_type, "|", paste(valid_niches, collapse = ", "), "\n")
+    cell_counts <- counts_genes_cells[, cell_ids, drop = FALSE]
     
     pre_obj <- tryCatch(
       smiDE::pre_de(
@@ -276,7 +708,7 @@ run_smide_sample_backend <- function(expr_mat,
         sdimy_colname = "sdimy",
         split_neighbors_by_colname = split_col,
         mm_radius = smide_radius,
-        counts = counts_cells_genes,
+        counts = counts_genes_cells,
         verbose = FALSE
       ),
       error = function(e) {
@@ -288,28 +720,17 @@ run_smide_sample_backend <- function(expr_mat,
       next
     }
     
-    file_stub <- paste(
-      gsub("[^A-Za-z0-9]+", "_", run_label),
-      "sample",
-      gsub("[^A-Za-z0-9]+", "_", cell_type),
-      "smide",
-      sep = "_"
-    )
-    
-    if (isTRUE(smide_save_raw)) {
-      saveRDS(pre_obj, file.path(tables_dir, paste0(file_stub, "_pre_de.rds")))
-    }
-    
     overlap_df <- tryCatch(
       coerce_overlap_metric_table(
         smiDE::overlap_ratio_metric(
-          assay_matrix = counts_cells_genes,
+          assay_matrix = counts_genes_cells,
           metadata = metadata,
           cluster_col = annotation_column,
           cellid_col = "cell_ID",
           sdimx_col = "sdimx",
           sdimy_col = "sdimy",
           split_neighbors_by_colname = split_col,
+          radius = smide_radius,
           verbose = FALSE
         )
       ),
@@ -319,10 +740,21 @@ run_smide_sample_backend <- function(expr_mat,
       }
     )
     
+    file_stub_base <- paste(
+      gsub("[^A-Za-z0-9]+", "_", run_label),
+      "sample",
+      gsub("[^A-Za-z0-9]+", "_", cell_type),
+      "smide",
+      sep = "_"
+    )
+    
+    if (isTRUE(smide_save_raw)) {
+      saveRDS(pre_obj, file.path(tables_dir, paste0(file_stub_base, "_pre_de.rds")))
+    }
     if (!is.null(overlap_df)) {
       utils::write.csv(
         overlap_df,
-        file.path(tables_dir, paste0(file_stub, "_overlap_ratio_metric.csv")),
+        file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
         row.names = FALSE
       )
     }
@@ -333,102 +765,157 @@ run_smide_sample_backend <- function(expr_mat,
       next
     }
     
-    fit <- tryCatch(
-      smiDE::smi_de(
-        assay_matrix = cell_counts,
-        metadata = cell_meta,
-        formula = stats::as.formula("~ spatial_niche"),
-        pre_de_obj = pre_obj,
-        groupVar = "spatial_niche",
-        groupVar_levels = valid_niches,
-        nCores = smide_ncores,
-        family = smide_family,
-        targets = targets,
-        cellid_colname = "cell_ID"
-      ),
-      error = function(e) {
-        message("Skipping smiDE model for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
-        NULL
-      }
+    model_inputs <- prepare_smide_targets(
+      cell_counts = cell_counts,
+      targets = targets,
+      min_detection_fraction = smide_min_detection_fraction
     )
-    if (is.null(fit)) {
+    if (is.null(model_inputs$counts) || model_inputs$n_genes == 0) {
+      message("No genes passed the smiDE filters for ", run_label, " / ", cell_type)
       next
     }
     
-    if (isTRUE(smide_save_raw)) {
-      saveRDS(fit, file.path(tables_dir, paste0(file_stub, "_smide_fit.rds")))
-    }
-    
-    comparison_mode <- if (sample_contrast == "pairwise") "pairwise" else "one.vs.rest"
-    res_obj <- tryCatch(
-      smiDE::results(
-        smide_results = fit,
-        comparisons = comparison_mode,
-        variable = "spatial_niche",
-        targets = "all"
-      ),
-      error = function(e) {
-        message("Could not extract smiDE results for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
-        NULL
-      }
+    predictor_specs <- build_smide_predictor_specs(
+      cell_meta = cell_meta,
+      cell_type = cell_type,
+      annotation_column = annotation_column,
+      valid_niches = valid_niches,
+      min_group_size = min_cells_per_niche,
+      sample_contrast = sample_contrast,
+      custom_predictor = smide_custom_predictor,
+      partner_celltypes = smide_partner_celltypes,
+      partner_source = smide_partner_source,
+      partner_top_n = smide_partner_top_n,
+      partner_padj_threshold = smide_partner_padj_threshold,
+      include_self_partner = smide_include_self_partner,
+      output_dir = output_dir,
+      run_label = run_label,
+      neighbor_counts = neighbor_counts
     )
     
-    if (isTRUE(smide_save_raw)) {
-      saveRDS(res_obj, file.path(tables_dir, paste0(file_stub, "_smide_results_raw.rds")))
-    }
-    
-    result_df <- coerce_smide_results_table(res_obj)
-    if (is.null(result_df) || nrow(result_df) == 0) {
+    for (spec in predictor_specs) {
+      predictor_meta <- spec$metadata
+      predictor_var <- spec$predictor_var
+      predictor_label <- spec$predictor_label
+      predictor_levels <- spec$group_levels
+      result_mode <- spec$result_mode
+      
+      predictor_meta <- predictor_meta[!is.na(predictor_meta[[predictor_var]]), , drop = FALSE]
+      predictor_sizes <- table(predictor_meta[[predictor_var]])
+      predictor_sizes <- predictor_sizes[predictor_sizes > 0]
+      if (length(predictor_sizes) < 2 || any(predictor_sizes < min_cells_per_niche)) {
+        next
+      }
+      predictor_levels <- names(predictor_sizes)
+      predictor_meta[[predictor_var]] <- factor(predictor_meta[[predictor_var]], levels = predictor_levels)
+      predictor_counts <- model_inputs$counts[, predictor_meta$cell_ID, drop = FALSE]
+      
+      cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label, "
+")
+      cat("smiDE workload for", cell_type, "/", predictor_label, ":", nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes
+")
+      
+      fit <- tryCatch(
+        smiDE::smi_de(
+          assay_matrix = predictor_counts,
+          metadata = predictor_meta,
+          formula = stats::as.formula(paste("~", predictor_var)),
+          pre_de_obj = pre_obj,
+          groupVar = predictor_var,
+          groupVar_levels = predictor_levels,
+          nCores = smide_ncores,
+          family = smide_family,
+          targets = model_inputs$targets,
+          neighbor_expr_cell_type_metadata_colname = annotation_column,
+          cellid_colname = "cell_ID"
+        ),
+        error = function(e) {
+          message("Skipping smiDE model for ", run_label, " / ", cell_type, " / ", predictor_label, ": ", conditionMessage(e))
+          NULL
+        }
+      )
+      if (is.null(fit)) {
+        next
+      }
+      
+      file_stub <- paste(file_stub_base, sanitize_smide_name(predictor_label), sep = "_")
+      if (isTRUE(smide_save_raw)) {
+        saveRDS(fit, file.path(tables_dir, paste0(file_stub, "_smide_fit.rds")))
+      }
+      
+      res_obj <- tryCatch(
+        smiDE::results(
+          smide_results = fit,
+          comparisons = result_mode,
+          variable = predictor_var,
+          targets = "all"
+        ),
+        error = function(e) {
+          message("Could not extract smiDE results for ", run_label, " / ", cell_type, " / ", predictor_label, ": ", conditionMessage(e))
+          NULL
+        }
+      )
+      
+      if (isTRUE(smide_save_raw)) {
+        saveRDS(res_obj, file.path(tables_dir, paste0(file_stub, "_smide_results_raw.rds")))
+      }
+      
+      result_df <- coerce_smide_results_table(res_obj)
+      if (is.null(result_df) || nrow(result_df) == 0) {
+        summary_rows[[idx]] <- data.frame(
+          analysis_scope = "sample",
+          backend = "smiDE",
+          run_label = run_label,
+          sample_id = if (length(sample_ids) > 0) sample_ids[1] else run_label,
+          annotation = cell_type,
+          spatial_niche = paste(valid_niches, collapse = " / "),
+          predictor = predictor_label,
+          comparison = result_mode,
+          replicate_column = if (is.null(split_col)) "<none>" else split_col,
+          n_cells = nrow(predictor_meta),
+          n_genes_tested = model_inputs$n_genes,
+          n_fdr_005 = NA_integer_,
+          stringsAsFactors = FALSE
+        )
+        idx <- idx + 1L
+        next
+      }
+      
+      result_df$analysis_scope <- "sample"
+      result_df$backend <- "smiDE"
+      result_df$run_label <- run_label
+      result_df$sample_id <- if (length(sample_ids) > 0) sample_ids[1] else run_label
+      result_df$annotation <- cell_type
+      result_df$predictor <- predictor_label
+      result_df$replicate_column <- if (is.null(split_col)) "<none>" else split_col
+      all_results[[idx]] <- result_df
+      
+      utils::write.csv(
+        result_df,
+        file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
+        row.names = FALSE
+      )
+      
+      sig_col <- guess_significance_column(result_df)
+      n_sig <- if (!is.null(sig_col)) sum(result_df[[sig_col]] < 0.05, na.rm = TRUE) else NA_integer_
+      
       summary_rows[[idx]] <- data.frame(
         analysis_scope = "sample",
         backend = "smiDE",
         run_label = run_label,
-        sample_id = sample_ids[1] %||% run_label,
+        sample_id = if (length(sample_ids) > 0) sample_ids[1] else run_label,
         annotation = cell_type,
         spatial_niche = paste(valid_niches, collapse = " / "),
-        comparison = comparison_mode,
-        replicate_column = split_col %||% "<none>",
-        n_cells = nrow(cell_meta),
-        n_genes_tested = if (is.null(targets)) ncol(cell_counts) else length(targets),
-        n_fdr_005 = NA_integer_,
+        predictor = predictor_label,
+        comparison = result_mode,
+        replicate_column = if (is.null(split_col)) "<none>" else split_col,
+        n_cells = nrow(predictor_meta),
+        n_genes_tested = model_inputs$n_genes,
+        n_fdr_005 = n_sig,
         stringsAsFactors = FALSE
       )
       idx <- idx + 1L
-      next
     }
-    
-    result_df$analysis_scope <- "sample"
-    result_df$backend <- "smiDE"
-    result_df$run_label <- run_label
-    result_df$sample_id <- sample_ids[1] %||% run_label
-    result_df$annotation <- cell_type
-    result_df$replicate_column <- split_col %||% "<none>"
-    all_results[[idx]] <- result_df
-    
-    utils::write.csv(
-      result_df,
-      file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
-      row.names = FALSE
-    )
-    
-    sig_col <- guess_significance_column(result_df)
-    n_sig <- if (!is.null(sig_col)) sum(result_df[[sig_col]] < 0.05, na.rm = TRUE) else NA_integer_
-    
-    summary_rows[[idx]] <- data.frame(
-      analysis_scope = "sample",
-      backend = "smiDE",
-      run_label = run_label,
-      sample_id = sample_ids[1] %||% run_label,
-      annotation = cell_type,
-      spatial_niche = paste(valid_niches, collapse = " / "),
-      comparison = comparison_mode,
-      replicate_column = split_col %||% "<none>",
-      n_cells = nrow(cell_meta),
-      n_genes_tested = nrow(result_df),
-      n_fdr_005 = n_sig,
-      stringsAsFactors = FALSE
-    )
-    idx <- idx + 1L
   }
   
   list(
@@ -439,21 +926,64 @@ run_smide_sample_backend <- function(expr_mat,
 }
 
 detect_annotation_column <- function(metadata, preferred = NULL) {
+  annotation_stats <- function(column) {
+    values <- metadata[[column]]
+    values <- trimws(as.character(values))
+    values[values == ""] <- NA_character_
+    values <- stats::na.omit(values)
+    list(
+      n_non_missing = length(values),
+      n_unique = length(unique(values))
+    )
+  }
+  
   if (!is.null(preferred) && preferred %in% names(metadata)) {
-    return(preferred)
+    stats <- annotation_stats(preferred)
+    if (stats$n_non_missing > 0 && stats$n_unique >= 2) {
+      return(preferred)
+    }
+    message(
+      "Preferred annotation column '", preferred,
+      "' is not usable for spatial DE (",
+      stats$n_non_missing, " labeled cells, ",
+      stats$n_unique, " unique labels). Auto-detecting a better column."
+    )
   }
   
   candidates <- c(
-    "celltype",
     grep("^celltype", names(metadata), value = TRUE),
     grep("annotation|annot", names(metadata), value = TRUE, ignore.case = TRUE),
-    grep("leiden|cluster", names(metadata), value = TRUE, ignore.case = TRUE)
+    grep("leiden|cluster", names(metadata), value = TRUE, ignore.case = TRUE),
+    "celltype"
   )
   candidates <- unique(candidates[candidates %in% names(metadata)])
   if (length(candidates) == 0) {
     stop("No annotation column was found for spatial differential expression.")
   }
-  candidates[1]
+  
+  candidate_scores <- vapply(candidates, function(column) {
+    stats <- annotation_stats(column)
+    if (stats$n_non_missing == 0 || stats$n_unique < 2) {
+      return(-Inf)
+    }
+    bonus <- 0
+    if (grepl("supervised", column, ignore.case = TRUE)) {
+      bonus <- bonus + 1000
+    }
+    if (grepl("^celltype_", column)) {
+      bonus <- bonus + 100
+    }
+    if (identical(column, "celltype")) {
+      bonus <- bonus - 10
+    }
+    stats$n_unique + bonus
+  }, numeric(1))
+  
+  if (all(!is.finite(candidate_scores))) {
+    stop("No annotation column with at least two non-missing labels was found for spatial differential expression.")
+  }
+  
+  candidates[which.max(candidate_scores)]
 }
 
 detect_sample_column <- function(metadata, preferred = "sample_id", required = TRUE) {
@@ -534,21 +1064,16 @@ infer_analysis_scope <- function(metadata,
 
 ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_network") {
   network_exists <- tryCatch({
-    getSpatialNetwork(gobject = gobj, name = spatial_network_name, output = "networkDT")
+    .giotto_get_spatial_network(gobj, name = spatial_network_name, output = "networkDT")
     TRUE
-  }, error = function(e) {
-    tryCatch({
-      get_spatialNetwork(gobject = gobj, name = spatial_network_name, output = "networkDT")
-      TRUE
-    }, error = function(e2) FALSE)
-  })
+  }, error = function(e) FALSE)
   
   if (network_exists) {
     return(gobj)
   }
   
-  createSpatialNetwork(
-    gobject = gobj,
+  .giotto_create_spatial_network(
+    gobj = gobj,
     name = spatial_network_name,
     method = "Delaunay",
     minimum_k = 2
@@ -556,18 +1081,27 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 }
 
 get_network_dt <- function(gobj, spatial_network_name) {
-  tryCatch({
-    getSpatialNetwork(gobject = gobj, name = spatial_network_name, output = "networkDT")
-  }, error = function(e) {
-    get_spatialNetwork(gobject = gobj, name = spatial_network_name, output = "networkDT")
-  })
+  .giotto_get_spatial_network(gobj, name = spatial_network_name, output = "networkDT")
 }
 
 get_spatial_locations_df <- function(gobj) {
-  as.data.frame(getSpatialLocations(gobj, output = "data.table"), stringsAsFactors = FALSE)
+  as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table"), stringsAsFactors = FALSE)
+}
+
+as_plain_numeric_matrix <- function(x) {
+  x_mat <- as.matrix(x)
+  x_mat <- matrix(
+    as.numeric(x_mat),
+    nrow = nrow(x_mat),
+    ncol = ncol(x_mat),
+    dimnames = dimnames(x_mat)
+  )
+  storage.mode(x_mat) <- "double"
+  x_mat
 }
 
 normalise_rows <- function(mat) {
+  mat <- as_plain_numeric_matrix(mat)
   rs <- rowSums(mat)
   rs[rs == 0] <- 1
   mat / rs
@@ -598,8 +1132,16 @@ build_neighbourhood_matrix <- function(gobj,
   edges$neighbor_type <- unname(cell_types[edges$neighbor_ID])
   edges <- edges[!is.na(edges$neighbor_type), , drop = FALSE]
   
+  if (nrow(edges) == 0) {
+    stop(
+      "No annotated neighbors could be constructed from annotation column '",
+      annotation_column,
+      "'. Check that the selected annotation column contains non-missing labels for cells in the spatial network."
+    )
+  }
+  
   niche_mat <- xtabs(~ cell_ID + neighbor_type, data = edges)
-  niche_mat <- as.matrix(niche_mat)
+  niche_mat <- as_plain_numeric_matrix(niche_mat)
   
   missing_cells <- setdiff(metadata$cell_ID, rownames(niche_mat))
   if (length(missing_cells) > 0) {
@@ -616,22 +1158,55 @@ build_neighbourhood_matrix <- function(gobj,
 }
 
 assign_spatial_niches <- function(niche_props, n_niches = 6) {
-  if (nrow(niche_props) == 0) {
+  niche_props <- as_plain_numeric_matrix(niche_props)
+  
+  if (is.null(dim(niche_props)) || nrow(niche_props) == 0) {
     return(character())
   }
   
+  if (is.null(ncol(niche_props)) || ncol(niche_props) == 0) {
+    warning("Neighborhood matrix has zero informative columns. Assigning all cells to niche_1.")
+    return(rep("niche_1", nrow(niche_props)))
+  }
+  
+  storage.mode(niche_props) <- "double"
+  niche_props[!is.finite(niche_props)] <- 0
+  if (all(rowSums(abs(niche_props)) == 0)) {
+    warning("Neighborhood matrix contains only zeros. Assigning all cells to niche_1.")
+    return(rep("niche_1", nrow(niche_props)))
+  }
+  
+  rounded_props <- round(niche_props, 6)
+  unique_props <- unique(as.data.frame(rounded_props, check.names = FALSE))
+  unique_row_count <- if (is.null(dim(unique_props))) 1L else nrow(unique_props)
+  if (length(unique_row_count) == 0 || is.na(unique_row_count) || !is.finite(unique_row_count)) {
+    unique_row_count <- 1L
+  }
+  
   max_centers <- min(
-    n_niches,
+    as.integer(n_niches)[1],
     nrow(niche_props),
-    nrow(unique(round(niche_props, 6)))
+    unique_row_count
   )
   
-  if (max_centers <= 1) {
+  if (length(max_centers) == 0 || is.na(max_centers) || !is.finite(max_centers) || max_centers <= 1) {
     return(rep("niche_1", nrow(niche_props)))
   }
   
   set.seed(42)
-  niche_fit <- stats::kmeans(niche_props, centers = max_centers, nstart = 25)
+  niche_fit <- tryCatch(
+    stats::kmeans(niche_props, centers = max_centers, nstart = 25),
+    error = function(e) {
+      warning(
+        "Spatial niche clustering failed (", conditionMessage(e),
+        "). Assigning all cells to niche_1."
+      )
+      NULL
+    }
+  )
+  if (is.null(niche_fit)) {
+    return(rep("niche_1", nrow(niche_props)))
+  }
   paste0("niche_", niche_fit$cluster)
 }
 
@@ -749,18 +1324,38 @@ create_spatial_patches <- function(metadata,
                                    n_spatial_patches = 8) {
   xy <- spatial_locations[match(metadata$cell_ID, spatial_locations$cell_ID), c("sdimx", "sdimy"), drop = FALSE]
   xy <- as.matrix(xy)
-  if (nrow(xy) < 2 || anyNA(xy)) {
-    stop("Could not create spatial patches because spatial coordinates are missing.")
+  if (is.null(dim(xy)) || nrow(xy) < 2 || is.null(ncol(xy)) || ncol(xy) < 2 || anyNA(xy)) {
+    metadata$spatial_patch <- "patch_1"
+    return(list(metadata = metadata, replicate_column = "spatial_patch"))
   }
   
-  n_centers <- min(n_spatial_patches, nrow(unique(round(xy, 3))))
+  unique_xy <- unique(as.data.frame(round(xy, 3), check.names = FALSE))
+  n_unique_xy <- if (is.null(dim(unique_xy))) 1L else nrow(unique_xy)
+  if (length(n_unique_xy) == 0 || is.na(n_unique_xy) || !is.finite(n_unique_xy)) {
+    n_unique_xy <- 1L
+  }
+  
+  n_centers <- min(as.integer(n_spatial_patches)[1], nrow(xy), n_unique_xy)
   if (n_centers < 2) {
     metadata$spatial_patch <- "patch_1"
     return(list(metadata = metadata, replicate_column = "spatial_patch"))
   }
   
   set.seed(42)
-  km <- stats::kmeans(xy, centers = n_centers, nstart = 25)
+  km <- tryCatch(
+    stats::kmeans(xy, centers = n_centers, nstart = 25),
+    error = function(e) {
+      warning(
+        "Spatial patch clustering failed (", conditionMessage(e),
+        "). Using a single spatial patch."
+      )
+      NULL
+    }
+  )
+  if (is.null(km)) {
+    metadata$spatial_patch <- "patch_1"
+    return(list(metadata = metadata, replicate_column = "spatial_patch"))
+  }
   metadata$spatial_patch <- paste0("patch_", km$cluster)
   list(metadata = metadata, replicate_column = "spatial_patch")
 }
@@ -805,24 +1400,19 @@ save_niche_plots <- function(metadata,
     ggplot2::geom_point(size = 0.35, alpha = 0.8) +
     ggplot2::coord_fixed() +
     ggplot2::labs(
-      title = paste(run_label, "- Spatial niche assignments"),
-      x = "x",
-      y = "y",
-      colour = "Spatial niche"
+      title = sample_plot_title(run_label, "Spatial Niche Assignments"),
+      subtitle = "Cells colored by their inferred neighborhood niche",
+      x = "Global X Coordinate",
+      y = "Global Y Coordinate",
+      colour = "Spatial\nNiche"
     ) +
-    ggplot2::theme_classic() +
-    ggplot2::theme(
-      plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
-      legend.position = "right"
-    )
+    presentation_theme(base_size = 12, legend_position = "right")
   
-  ggplot2::ggsave(
-    filename = file.path(output_dir, paste0(run_label, "_spatial_niches.png")),
+  save_presentation_plot(
     plot = p1,
+    filename = file.path(output_dir, paste0(run_label, "_spatial_niches.png")),
     width = 13,
-    height = 10,
-    dpi = 300,
-    bg = "white"
+    height = 10
   )
   
   niche_comp <- as.data.frame(table(metadata$spatial_niche, metadata[[annotation_column]]), stringsAsFactors = FALSE)
@@ -833,25 +1423,26 @@ save_niche_plots <- function(metadata,
     ggplot2::aes(x = spatial_niche, y = n_cells, fill = annotation)
   ) +
     ggplot2::geom_bar(stat = "identity", position = "fill") +
-    ggplot2::labs(
-      title = paste(run_label, "- Cell-type composition per spatial niche"),
-      x = "Spatial niche",
-      y = "Proportion",
-      fill = "Annotation"
+    ggplot2::scale_fill_discrete(
+      labels = function(x) pretty_plot_label(x, width = 18)
     ) +
-    ggplot2::theme_classic() +
+    ggplot2::labs(
+      title = sample_plot_title(run_label, "Cell-Type Composition per Spatial Niche"),
+      subtitle = "Relative cell-type abundance within each inferred spatial niche",
+      x = "Spatial Niche",
+      y = "Proportion",
+      fill = "Cell Type"
+    ) +
+    presentation_theme(base_size = 12, x_angle = 35) +
     ggplot2::theme(
-      plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
-      axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
+      axis.text.x = ggplot2::element_text(angle = 35, hjust = 1, vjust = 1)
     )
   
-  ggplot2::ggsave(
-    filename = file.path(output_dir, paste0(run_label, "_niche_composition.png")),
+  save_presentation_plot(
     plot = p2,
+    filename = file.path(output_dir, paste0(run_label, "_niche_composition.png")),
     width = 12,
-    height = 8,
-    dpi = 300,
-    bg = "white"
+    height = 8
   )
 }
 
@@ -1230,6 +1821,14 @@ run_spatial_differential_expression <- function(gobj,
                                                 smide_radius = 0.05,
                                                 smide_ncores = 1,
                                                 smide_overlap_threshold = NULL,
+                                                smide_annotation_subset = NULL,
+                                                smide_min_detection_fraction = 0.05,
+                                                smide_custom_predictor = NULL,
+                                                smide_partner_celltypes = NULL,
+                                                smide_partner_source = c("none", "cell_proximity_auto"),
+                                                smide_partner_top_n = 3,
+                                                smide_partner_padj_threshold = 0.05,
+                                                smide_include_self_partner = FALSE,
                                                 smide_save_raw = TRUE,
                                                 save_object = FALSE) {
   analysis_scope <- match.arg(analysis_scope)
@@ -1246,7 +1845,7 @@ run_spatial_differential_expression <- function(gobj,
     if (file.exists(manifest_path)) {
       gobj <- load_giotto_checkpoint(gobj)
     } else {
-      gobj <- loadGiotto(gobj)
+      gobj <- .giotto_load(gobj)
     }
   }
   
@@ -1254,7 +1853,7 @@ run_spatial_differential_expression <- function(gobj,
   tables_dir <- ensure_dir(file.path(results_dir, "tables"))
   plots_dir <- ensure_dir(file.path(results_dir, "plots"))
   
-  metadata <- as.data.frame(pDataDT(gobj), stringsAsFactors = FALSE)
+  metadata <- as.data.frame(.giotto_pdata_dt(gobj), stringsAsFactors = FALSE)
   if (!"cell_ID" %in% names(metadata)) {
     stop("Cell metadata must contain a cell_ID column.")
   }
@@ -1314,6 +1913,7 @@ run_spatial_differential_expression <- function(gobj,
   )
   niche_props <- normalise_rows(niche_counts)
   metadata$spatial_niche <- assign_spatial_niches(niche_props, n_niches = n_niches)
+  cat("Spatial niches identified:", length(unique(metadata$spatial_niche)), "\n\n")
   
   spatial_locations <- get_spatial_locations_df(gobj)
   save_niche_plots(
@@ -1332,7 +1932,7 @@ run_spatial_differential_expression <- function(gobj,
     row.names = FALSE
   )
   
-  expr_mat <- getExpression(gobj, values = "raw", output = "matrix")
+  expr_mat <- .giotto_get_expression(gobj, values = "raw", output = "matrix")
   
   scope_out <- if (analysis_scope == "sample") {
     if (backend == "smiDE") {
@@ -1348,9 +1948,20 @@ run_spatial_differential_expression <- function(gobj,
         spatial_locations = spatial_locations,
         smide_family = smide_family,
         smide_radius = smide_radius,
+        output_dir = output_dir,
         smide_ncores = smide_ncores,
         smide_overlap_threshold = smide_overlap_threshold,
-        smide_save_raw = smide_save_raw
+        smide_annotation_subset = smide_annotation_subset,
+        smide_min_detection_fraction = smide_min_detection_fraction,
+        smide_custom_predictor = smide_custom_predictor,
+        smide_partner_celltypes = smide_partner_celltypes,
+        smide_partner_source = smide_partner_source,
+        smide_partner_top_n = smide_partner_top_n,
+        smide_partner_padj_threshold = smide_partner_padj_threshold,
+        smide_include_self_partner = smide_include_self_partner,
+        smide_save_raw = smide_save_raw,
+        spatial_network_name = spatial_network_name,
+        neighbor_counts = niche_counts
       )
     } else {
       run_sample_scope_spatial_de(

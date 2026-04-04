@@ -134,19 +134,18 @@ inspect_nn_network <- function(gobject,
     edge_ranks <- rep(NA, length(edge_weights))
   }
   
-  # Create edge data frame
-  edge_data <- data.frame(
-    weight = edge_weights,
-    distance = edge_distances,
-    shared = edge_shared,
-    rank = edge_ranks
+  edge_attr_data <- data.frame(
+    weight = suppressWarnings(as.numeric(edge_weights)),
+    distance = suppressWarnings(as.numeric(edge_distances)),
+    shared = suppressWarnings(as.numeric(edge_shared)),
+    rank = suppressWarnings(as.numeric(edge_ranks))
   )
   
-  # Remove rows with all NAs (if any attribute was completely missing)
-  edge_data_complete <- edge_data[complete.cases(edge_data), ]
+  # Keep any edge with at least one usable attribute; ggplot will drop column-wise NAs.
+  edge_data_complete <- edge_attr_data[rowSums(!is.na(edge_attr_data)) > 0, , drop = FALSE]
   
-  if (nrow(edge_data_complete) < nrow(edge_data) && verbose) {
-    message(paste("  - Warning: Removed", nrow(edge_data) - nrow(edge_data_complete), 
+  if (nrow(edge_data_complete) < nrow(edge_attr_data) && verbose) {
+    message(paste("  - Warning: Removed", nrow(edge_attr_data) - nrow(edge_data_complete), 
                   "edges with missing attributes"))
   }
   
@@ -159,30 +158,30 @@ inspect_nn_network <- function(gobject,
   # Edge attribute summaries (use complete data for statistics)
   edge_summaries <- data.frame(
     Attribute = c("Weight", "Distance", "Shared Neighbors", "Rank"),
-    Min = c(min(edge_data$weight, na.rm = TRUE),
-            min(edge_data$distance, na.rm = TRUE),
-            min(edge_data$shared, na.rm = TRUE),
-            min(edge_data$rank, na.rm = TRUE)),
-    Q1 = c(quantile(edge_data$weight, 0.25, na.rm = TRUE),
-           quantile(edge_data$distance, 0.25, na.rm = TRUE),
-           quantile(edge_data$shared, 0.25, na.rm = TRUE),
-           quantile(edge_data$rank, 0.25, na.rm = TRUE)),
-    Median = c(median(edge_data$weight, na.rm = TRUE),
-               median(edge_data$distance, na.rm = TRUE),
-               median(edge_data$shared, na.rm = TRUE),
-               median(edge_data$rank, na.rm = TRUE)),
-    Mean = c(mean(edge_data$weight, na.rm = TRUE),
-             mean(edge_data$distance, na.rm = TRUE),
-             mean(edge_data$shared, na.rm = TRUE),
-             mean(edge_data$rank, na.rm = TRUE)),
-    Q3 = c(quantile(edge_data$weight, 0.75, na.rm = TRUE),
-           quantile(edge_data$distance, 0.75, na.rm = TRUE),
-           quantile(edge_data$shared, 0.75, na.rm = TRUE),
-           quantile(edge_data$rank, 0.75, na.rm = TRUE)),
-    Max = c(max(edge_data$weight, na.rm = TRUE),
-            max(edge_data$distance, na.rm = TRUE),
-            max(edge_data$shared, na.rm = TRUE),
-            max(edge_data$rank, na.rm = TRUE))
+    Min = c(min(edge_attr_data$weight, na.rm = TRUE),
+            min(edge_attr_data$distance, na.rm = TRUE),
+            min(edge_attr_data$shared, na.rm = TRUE),
+            min(edge_attr_data$rank, na.rm = TRUE)),
+    Q1 = c(quantile(edge_attr_data$weight, 0.25, na.rm = TRUE),
+           quantile(edge_attr_data$distance, 0.25, na.rm = TRUE),
+           quantile(edge_attr_data$shared, 0.25, na.rm = TRUE),
+           quantile(edge_attr_data$rank, 0.25, na.rm = TRUE)),
+    Median = c(median(edge_attr_data$weight, na.rm = TRUE),
+               median(edge_attr_data$distance, na.rm = TRUE),
+               median(edge_attr_data$shared, na.rm = TRUE),
+               median(edge_attr_data$rank, na.rm = TRUE)),
+    Mean = c(mean(edge_attr_data$weight, na.rm = TRUE),
+             mean(edge_attr_data$distance, na.rm = TRUE),
+             mean(edge_attr_data$shared, na.rm = TRUE),
+             mean(edge_attr_data$rank, na.rm = TRUE)),
+    Q3 = c(quantile(edge_attr_data$weight, 0.75, na.rm = TRUE),
+           quantile(edge_attr_data$distance, 0.75, na.rm = TRUE),
+           quantile(edge_attr_data$shared, 0.75, na.rm = TRUE),
+           quantile(edge_attr_data$rank, 0.75, na.rm = TRUE)),
+    Max = c(max(edge_attr_data$weight, na.rm = TRUE),
+            max(edge_attr_data$distance, na.rm = TRUE),
+            max(edge_attr_data$shared, na.rm = TRUE),
+            max(edge_attr_data$rank, na.rm = TRUE))
   )
   
   # Round numeric columns
@@ -256,15 +255,23 @@ inspect_nn_network <- function(gobject,
     theme_minimal() +
     theme(plot.title = element_text(hjust = 0.5, face = "bold"))
   
-  p4 <- ggplot(plot_data, aes(x = rank)) +
-    geom_histogram(bins = 15, fill = "mediumpurple", color = "black", alpha = 0.7) +
-    scale_x_continuous(breaks = seq(min(plot_data$rank, na.rm = TRUE), 
-                                    max(plot_data$rank, na.rm = TRUE), by = 1)) +
-    labs(title = "Neighbor Ranks", 
-         x = "Rank", 
-         y = "Frequency") +
-    theme_minimal() +
-    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  finite_rank_data <- plot_data[is.finite(plot_data$rank), , drop = FALSE]
+  if (nrow(finite_rank_data) > 0) {
+    p4 <- ggplot(finite_rank_data, aes(x = rank)) +
+      geom_histogram(bins = 15, fill = "mediumpurple", color = "black", alpha = 0.7) +
+      scale_x_continuous(breaks = seq(min(finite_rank_data$rank), max(finite_rank_data$rank), by = 1)) +
+      labs(title = "Neighbor Ranks",
+           x = "Rank",
+           y = "Frequency") +
+      theme_minimal() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  } else {
+    p4 <- ggplot(data.frame(x = 0, y = 0), aes(x = x, y = y)) +
+      geom_text(label = "No rank data available") +
+      labs(title = "Neighbor Ranks", x = NULL, y = NULL) +
+      theme_void() +
+      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  }
   
   # Combine edge distribution plots
   combined_plot <- (p1 | p2) / (p3 | p4)
@@ -318,7 +325,7 @@ inspect_nn_network <- function(gobject,
   
   # Get edge list with coordinates
   edge_list <- igraph::as_edgelist(nn_subgraph, names = FALSE)
-  edge_data <- data.frame(
+  subgraph_edge_data <- data.frame(
     x = layout_coords[edge_list[, 1], 1],
     y = layout_coords[edge_list[, 1], 2],
     xend = layout_coords[edge_list[, 2], 1],
@@ -327,9 +334,9 @@ inspect_nn_network <- function(gobject,
   
   # Get edge weights if available
   if (!is.null(igraph::E(nn_subgraph)$weight)) {
-    edge_data$weight <- igraph::E(nn_subgraph)$weight
+    subgraph_edge_data$weight <- igraph::E(nn_subgraph)$weight
   } else {
-    edge_data$weight <- 1
+    subgraph_edge_data$weight <- 1
   }
   
   # Debug: Check layout coordinates
@@ -345,7 +352,7 @@ inspect_nn_network <- function(gobject,
   
   # Create ggplot version (more reliable)
   p_network <- ggplot() +
-    geom_segment(data = edge_data,
+    geom_segment(data = subgraph_edge_data,
                  aes(x = x, y = y, xend = xend, yend = yend),
                  alpha = 0.1,
                  color = "gray70",
@@ -432,7 +439,7 @@ inspect_nn_network <- function(gobject,
     
     # Safe rank table creation with error handling
     tryCatch({
-      rank_freq <- table(edge_data$rank, useNA = "ifany")
+      rank_freq <- table(edge_attr_data$rank, useNA = "ifany")
       
       if (length(rank_freq) > 0) {
         rank_table <- data.frame(
@@ -501,7 +508,7 @@ inspect_nn_network <- function(gobject,
     
     # Safe rank table save
     tryCatch({
-      rank_freq <- table(edge_data$rank, useNA = "ifany")
+      rank_freq <- table(edge_attr_data$rank, useNA = "ifany")
       
       if (length(rank_freq) > 0) {
         rank_table_save <- data.frame(
@@ -529,7 +536,7 @@ inspect_nn_network <- function(gobject,
   
   # Create rank table for return object (with error handling)
   rank_table <- tryCatch({
-    rank_freq <- table(edge_data$rank, useNA = "ifany")
+    rank_freq <- table(edge_attr_data$rank, useNA = "ifany")
     
     if (length(rank_freq) > 0) {
       data.frame(
@@ -551,6 +558,9 @@ inspect_nn_network <- function(gobject,
     edge_summaries = edge_summaries,
     rank_frequencies = rank_table,
     degree_distribution = degree_dist,
+    mean_degree = mean(degree_dist),
+    n_components = comp$no,
+    largest_component_size = max(comp$csize),
     plots = list(
       edge_distributions = combined_plot,
       degree_distribution = p_degree,

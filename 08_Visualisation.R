@@ -13,7 +13,35 @@
 #' @param celltype_columns Vector of cell type annotation columns
 #' @param cluster_column Clustering column name
 #' @param marker_genes Optional vector of marker genes to highlight
+#' @param max_cells_preview Optional cap for preview plotting on very large
+#'                          datasets. When set, Giotto plots are generated on a
+#'                          random cell subset while composition summaries still
+#'                          use the full object.
+#' @param preview_seed Random seed for preview-cell downsampling
 #' @return Giotto object (unchanged)
+
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
+     !exists("pretty_plot_label") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
 
 .muffle_known_giotto_plot_warnings <- function(expr) {
   withCallingHandlers(
@@ -43,7 +71,6 @@
   excluded_numeric_cols <- candidate_cols[
     vapply(candidate_cols, function(col) is.numeric(metadata[[col]]), logical(1))
   ]
-  
   filtered_cols <- setdiff(candidate_cols, excluded_numeric_cols)
   
   excluded_cols <- unique(c(excluded_score_cols, excluded_numeric_cols))
@@ -58,12 +85,37 @@
   filtered_cols
 }
 
+.prepare_preview_gobject <- function(gobj, max_cells_preview = NULL, preview_seed = 1) {
+  total_cells <- length(gobj@cell_ID$cell)
+  if (is.null(max_cells_preview)) {
+    return(list(gobj = gobj, is_preview = FALSE, total_cells = total_cells, preview_cells = total_cells))
+  }
+  
+  max_cells_preview <- suppressWarnings(as.integer(max_cells_preview)[1])
+  if (!is.finite(max_cells_preview) || max_cells_preview <= 0 || total_cells <= max_cells_preview) {
+    return(list(gobj = gobj, is_preview = FALSE, total_cells = total_cells, preview_cells = total_cells))
+  }
+  
+  set.seed(preview_seed)
+  preview_ids <- sample(gobj@cell_ID$cell, max_cells_preview)
+  preview_gobj <- subsetGiotto(gobject = gobj, cell_ids = preview_ids)
+  
+  list(
+    gobj = preview_gobj,
+    is_preview = TRUE,
+    total_cells = total_cells,
+    preview_cells = length(preview_ids)
+  )
+}
+
 create_visualizations <- function(gobj,
                                   sample_id,
                                   output_dir,
                                   celltype_columns = NULL,
                                   cluster_column = "leiden_clust",
-                                  marker_genes = NULL) {
+                                  marker_genes = NULL,
+                                  max_cells_preview = NULL,
+                                  preview_seed = 1) {
   
   cat("\n========================================\n")
   cat("STEP 08: Comprehensive visualization\n")
@@ -78,6 +130,20 @@ create_visualizations <- function(gobj,
   
   results_folder <- file.path(output_dir, "08_Visualization")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
+  
+  preview_info <- .prepare_preview_gobject(
+    gobj = gobj,
+    max_cells_preview = max_cells_preview,
+    preview_seed = preview_seed
+  )
+  plot_gobj <- preview_info$gobj
+  if (isTRUE(preview_info$is_preview)) {
+    cat(
+      "Using a ", preview_info$preview_cells,
+      "-cell preview subset for Giotto plot rendering (full object retained for summaries).\n\n",
+      sep = ""
+    )
+  }
   
   # Auto-detect cell type columns if not provided
   metadata <- pDataDT(gobj)
@@ -117,7 +183,7 @@ create_visualizations <- function(gobj,
   tryCatch({
     .muffle_known_giotto_plot_warnings(
       dimPlot2D(
-        gobject = gobj,
+        gobject = plot_gobj,
         dim_reduction_to_use = "umap",
         cell_color = cluster_column,
         point_size = 0.8,
@@ -141,7 +207,7 @@ create_visualizations <- function(gobj,
     tryCatch({
       .muffle_known_giotto_plot_warnings(
         dimPlot2D(
-          gobject = gobj,
+          gobject = plot_gobj,
           dim_reduction_to_use = "umap",
           cell_color = ct_col,
           point_size = 0.8,
@@ -165,7 +231,7 @@ create_visualizations <- function(gobj,
   tryCatch({
     .muffle_known_giotto_plot_warnings(
       dimPlot2D(
-        gobject = gobj,
+        gobject = plot_gobj,
         dim_reduction_to_use = "tsne",
         cell_color = cluster_column,
         point_size = 0.8,
@@ -198,7 +264,7 @@ create_visualizations <- function(gobj,
   tryCatch({
     .muffle_known_giotto_plot_warnings(
       spatPlot2D(
-        gobject = gobj,
+        gobject = plot_gobj,
         cell_color = cluster_column,
         point_size = 0.5,
         show_image = FALSE,
@@ -222,7 +288,7 @@ create_visualizations <- function(gobj,
     tryCatch({
       .muffle_known_giotto_plot_warnings(
         spatPlot2D(
-          gobject = gobj,
+          gobject = plot_gobj,
           cell_color = ct_col,
           point_size = 0.5,
           show_image = FALSE,
@@ -246,7 +312,7 @@ create_visualizations <- function(gobj,
   tryCatch({
     .muffle_known_giotto_plot_warnings(
       spatPlot2D(
-        gobject = gobj,
+        gobject = plot_gobj,
         cell_color = "nr_feats",
         color_as_factor = FALSE,
         gradient_style = "sequential",
@@ -283,7 +349,7 @@ create_visualizations <- function(gobj,
       tryCatch({
         .muffle_known_giotto_plot_warnings(
           spatFeatPlot2D(
-            gobject = gobj,
+            gobject = plot_gobj,
             expression_values = "normalized",
             feats = gene,
             point_size = 0.5,
@@ -324,22 +390,27 @@ create_visualizations <- function(gobj,
         dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
         dplyr::arrange(dplyr::desc(n))
       
-      p <- ggplot(type_counts, aes(x = reorder(!!rlang::sym(ct_col), n), y = n, fill = !!rlang::sym(ct_col))) +
-        geom_bar(stat = "identity") +
-        coord_flip() +
-        labs(title = paste(sample_id, "-", gsub("celltype_", "", ct_col)),
-             x = "Cell type",
-             y = "Number of cells") +
-        theme_classic() +
-        theme(
-          legend.position = "none",
-          plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-          axis.text = element_text(size = 10)
-        )
+      ct_display <- pretty_plot_label(gsub("celltype_", "", ct_col), width = 24)
+      type_counts$label <- factor(
+        pretty_plot_label(type_counts[[ct_col]], width = 24),
+        levels = pretty_plot_label(type_counts[[ct_col]], width = 24)
+      )
       
-      ggsave(
-        filename = file.path(summary_folder, paste0(sample_id, "_proportions_", ct_col, ".png")),
+      p <- ggplot(type_counts, aes(x = reorder(label, n), y = n, fill = label)) +
+        geom_col() +
+        coord_flip() +
+        labs(
+          title = sample_plot_title(sample_id, paste(ct_display, "Cell Type Composition")),
+          subtitle = "Cell counts ranked from most abundant to least abundant annotation.",
+          x = "Cell Type",
+          y = "Number of Cells"
+        ) +
+        presentation_theme(base_size = 12) +
+        theme(legend.position = "none")
+      
+      save_presentation_plot(
         plot = p,
+        filename = file.path(summary_folder, paste0(sample_id, "_proportions_", ct_col, ".png")),
         width = 10,
         height = max(6, nrow(type_counts) * 0.3),
         dpi = 300
@@ -363,23 +434,23 @@ create_visualizations <- function(gobj,
           dplyr::group_by(!!rlang::sym(cluster_column)) %>%
           dplyr::mutate(prop = n / sum(n))
         
-        p <- ggplot(composition, aes(x = !!rlang::sym(cluster_column), y = prop, fill = !!rlang::sym(ct_col))) +
-          geom_bar(stat = "identity", position = "fill") +
-          labs(title = paste(sample_id, "- Cluster composition"),
-               subtitle = gsub("celltype_", "", ct_col),
-               x = "Cluster",
-               y = "Proportion",
-               fill = "Cell type") +
-          theme_classic() +
-          theme(
-            plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
-            plot.subtitle = element_text(hjust = 0.5, size = 12),
-            axis.text.x = element_text(angle = 45, hjust = 1)
-          )
+        ct_display <- pretty_plot_label(gsub("celltype_", "", ct_col), width = 24)
+        composition$celltype_label <- pretty_plot_label(composition[[ct_col]], width = 24)
         
-        ggsave(
-          filename = file.path(summary_folder, paste0(sample_id, "_composition_", ct_col, ".png")),
+        p <- ggplot(composition, aes(x = !!rlang::sym(cluster_column), y = prop, fill = celltype_label)) +
+          geom_bar(stat = "identity", position = "fill") +
+          labs(
+            title = sample_plot_title(sample_id, "Cluster Composition by Annotation"),
+            subtitle = ct_display,
+            x = "Cluster",
+            y = "Cell Type Proportion",
+            fill = "Cell Type"
+          ) +
+          presentation_theme(base_size = 12, x_angle = 45)
+        
+        save_presentation_plot(
           plot = p,
+          filename = file.path(summary_folder, paste0(sample_id, "_composition_", ct_col, ".png")),
           width = 12,
           height = 8,
           dpi = 300

@@ -1,6 +1,28 @@
 # Functions for creating clustering visualization dataframes and plots --------
 # Designed to work with any clustering method stored in Giotto metadata
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 
 # Function 1: Extract and prepare visualization dataframes ----------------
 prepare_clustering_dataframes <- function(gobject, 
@@ -158,17 +180,7 @@ create_clustering_plots <- function(umap_df,
       x = "UMAP Dimension 1",
       y = "UMAP Dimension 2"
     ) +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-      axis.title = element_text(size = 13, face = "bold"),
-      axis.text = element_text(size = 11),
-      legend.title = element_text(size = 12, face = "bold"),
-      legend.text = element_text(size = 10),
-      legend.position = "right",
-      panel.background = element_rect(fill = "white"),
-      plot.background = element_rect(fill = "white")
-    ) +
+    presentation_theme(base_size = 12, legend_position = "right") +
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
   
   cat("Creating tSNE plot...\n")
@@ -183,17 +195,7 @@ create_clustering_plots <- function(umap_df,
       x = "t-SNE Dimension 1",
       y = "t-SNE Dimension 2"
     ) +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-      axis.title = element_text(size = 13, face = "bold"),
-      axis.text = element_text(size = 11),
-      legend.title = element_text(size = 12, face = "bold"),
-      legend.text = element_text(size = 10),
-      legend.position = "right",
-      panel.background = element_rect(fill = "white"),
-      plot.background = element_rect(fill = "white")
-    ) +
+    presentation_theme(base_size = 12, legend_position = "right") +
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
   
   cat("Creating spatial plot...\n")
@@ -209,17 +211,7 @@ create_clustering_plots <- function(umap_df,
       y = "Spatial Y (microns)"
     ) +
     coord_fixed() +
-    theme_classic() +
-    theme(
-      plot.title = element_text(hjust = 0.5, face = "bold", size = 16),
-      axis.title = element_text(size = 13, face = "bold"),
-      axis.text = element_text(size = 11),
-      legend.title = element_text(size = 12, face = "bold"),
-      legend.text = element_text(size = 10),
-      legend.position = "right",
-      panel.background = element_rect(fill = "white"),
-      plot.background = element_rect(fill = "white")
-    ) +
+    presentation_theme(base_size = 12, legend_position = "right") +
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
   
   cat("Creating combined plot...\n")
@@ -291,36 +283,36 @@ create_clustering_visualization <- function(gobject,
   if (save_plots && !is.null(save_dir)) {
     dir.create(save_dir, recursive = TRUE, showWarnings = FALSE)
     
-    ggsave(
-      filename = file.path(save_dir, paste0(prefix, "_umap.png")),
+    save_presentation_plot(
       plot = plots_list$custom_umap,
+      filename = file.path(save_dir, paste0(prefix, "_umap.png")),
       width = 11,
       height = 8,
       dpi = 300,
       bg = "white"
     )
     
-    ggsave(
-      filename = file.path(save_dir, paste0(prefix, "_tsne.png")),
+    save_presentation_plot(
       plot = plots_list$custom_tsne,
+      filename = file.path(save_dir, paste0(prefix, "_tsne.png")),
       width = 11,
       height = 8,
       dpi = 300,
       bg = "white"
     )
     
-    ggsave(
-      filename = file.path(save_dir, paste0(prefix, "_spatial.png")),
+    save_presentation_plot(
       plot = plots_list$custom_spatial,
+      filename = file.path(save_dir, paste0(prefix, "_spatial.png")),
       width = 14,
       height = 12,
       dpi = 300,
       bg = "white"
     )
     
-    ggsave(
-      filename = file.path(save_dir, paste0(prefix, "_combined.png")),
+    save_presentation_plot(
       plot = plots_list$combined_plot,
+      filename = file.path(save_dir, paste0(prefix, "_combined.png")),
       width = 24,
       height = 8,
       dpi = 300,

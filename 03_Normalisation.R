@@ -15,6 +15,28 @@
 #' @param log_transform Apply log transformation
 #' @return Normalized Giotto object
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 .run_known_giotto_warning_safe <- function(expr) {
   withCallingHandlers(
     expr,
@@ -193,15 +215,17 @@ normalize_expression <- function(gobj,
       geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
       scale_x_log10() +
       scale_y_log10() +
-      labs(title = paste(sample_id, "- Raw vs normalized expression"),
-           x = "Raw mean expression (log10)",
-           y = "Normalized mean expression (log10)") +
-      theme_classic() +
-      theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+      labs(
+        title = sample_plot_title(sample_id, "Raw Vs Normalized Gene Expression"),
+        subtitle = "Each point represents one gene. The dashed line marks equal mean expression before and after normalization.",
+        x = log10_axis_label("Raw Mean Expression"),
+        y = log10_axis_label("Normalized Mean Expression")
+      ) +
+      presentation_theme(base_size = 12)
     
-    ggsave(
-      filename = file.path(results_folder, paste0(sample_id, "_raw_vs_normalized.png")),
+    save_presentation_plot(
       plot = p,
+      filename = file.path(results_folder, paste0(sample_id, "_raw_vs_normalized.png")),
       width = 8,
       height = 8,
       dpi = 300,
@@ -227,7 +251,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       source(bootstrap_script, local = .GlobalEnv)
       bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
     }
-    
+
     sample_id <- args[1]
     input_path <- args[2]
     output_dir <- args[3]

@@ -28,6 +28,10 @@
 #'                            (default: TRUE)
 #' @param n_cells_subgraph    Maximum cells to subsample for the subgraph plot
 #'                            inside inspect_nn_network() (default: 100000)
+#' @param leiden_n_iterations Number of Leiden iterations for the primary
+#'                            clustering run (default: 200)
+#' @param resolution_sweep    Optional numeric vector of extra Leiden
+#'                            resolutions to save as additional metadata columns
 #' @return Clustered Giotto object
 
 perform_clustering <- function(gobj,
@@ -42,7 +46,9 @@ perform_clustering <- function(gobj,
                                python_path          = NULL,
                                scripts_dir          = NULL,
                                inspect_snn          = TRUE,
-                               n_cells_subgraph     = 100000) {
+                               n_cells_subgraph     = 100000,
+                               leiden_n_iterations  = 200,
+                               resolution_sweep     = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 05: Clustering\n")
@@ -151,9 +157,25 @@ perform_clustering <- function(gobj,
         )
         
         cat("\u2713 sNN inspection complete\n")
-        cat("  Mean degree:         ", round(nn_results$mean_degree, 2), "\n")
-        cat("  Connected components:", nn_results$n_components, "\n")
-        cat("  Largest component:   ", nn_results$largest_component_size,
+        mean_degree <- nn_results$mean_degree
+        if (is.null(mean_degree) && !is.null(nn_results$degree_distribution)) {
+          mean_degree <- mean(nn_results$degree_distribution)
+        }
+        n_components <- nn_results$n_components
+        if (is.null(n_components) && !is.null(nn_results$network_metrics)) {
+          n_components <- nn_results$network_metrics$Value[
+            nn_results$network_metrics$Metric == "Number of Components"
+          ][1]
+        }
+        largest_component_size <- nn_results$largest_component_size
+        if (is.null(largest_component_size) && !is.null(nn_results$network_metrics)) {
+          largest_component_size <- nn_results$network_metrics$Value[
+            nn_results$network_metrics$Metric == "Largest Component Size"
+          ][1]
+        }
+        cat("  Mean degree:         ", round(as.numeric(mean_degree), 2), "\n")
+        cat("  Connected components:", as.character(n_components), "\n")
+        cat("  Largest component:   ", as.character(largest_component_size),
             "cells\n\n")
         
       }, error = function(e) {
@@ -171,17 +193,52 @@ perform_clustering <- function(gobj,
   # ── Leiden clustering ────────────────────────────────────────────────────────
   cat("Running Leiden clustering...\n")
   cat("  Resolution:", resolution, "\n")
+  cat("  Iterations:", leiden_n_iterations, "\n")
   
   gobj <- doLeidenCluster(
     gobject      = gobj,
     python_path  = if (nzchar(python_path)) python_path else NULL,
     resolution   = resolution,
-    n_iterations = 1000,
+    n_iterations = leiden_n_iterations,
     name         = "leiden_clust"
   )
   
   n_clusters <- length(unique(pDataDT(gobj)$leiden_clust))
   cat("✓ Clustering complete:", n_clusters, "clusters\n\n")
+  
+  resolution_sweep <- unique(as.numeric(resolution_sweep))
+  resolution_sweep <- resolution_sweep[is.finite(resolution_sweep) & resolution_sweep > 0]
+  resolution_sweep <- setdiff(resolution_sweep, resolution)
+  sweep_summary <- list()
+  
+  if (length(resolution_sweep) > 0) {
+    cat("Running auxiliary Leiden resolution sweep...\n")
+    for (res in resolution_sweep) {
+      sweep_name <- paste0(
+        "leiden_clust_res_",
+        gsub("(^_+|_+$)", "", gsub("[^A-Za-z0-9]+", "_", format(res, trim = TRUE, scientific = FALSE)))
+      )
+      gobj <- doLeidenCluster(
+        gobject = gobj,
+        python_path = if (nzchar(python_path)) python_path else NULL,
+        resolution = res,
+        n_iterations = leiden_n_iterations,
+        name = sweep_name
+      )
+      sweep_summary[[length(sweep_summary) + 1L]] <- data.frame(
+        cluster_column = sweep_name,
+        resolution = res,
+        n_clusters = length(unique(pDataDT(gobj)[[sweep_name]])),
+        stringsAsFactors = FALSE
+      )
+      cat("  ✓ Saved", sweep_name, "(", tail(sweep_summary, 1)[[1]]$n_clusters, "clusters)\n")
+    }
+    readr::write_csv(
+      dplyr::bind_rows(sweep_summary),
+      file.path(results_folder, paste0(sample_id, "_resolution_sweep_summary.csv"))
+    )
+    cat("\n")
+  }
   
   # ── Clustering visualisations ────────────────────────────────────────────────
   cat("Creating clustering plots...\n")
@@ -234,6 +291,32 @@ perform_clustering <- function(gobj,
   )
   
   cat("✓ Plots saved\n\n")
+  
+  cluster_script_base <- if (is.null(scripts_dir)) getwd() else scripts_dir
+  cluster_vis_candidates <- c(
+    file.path(cluster_script_base, "Helper_Scripts", "Cluster_Visualisations.R"),
+    file.path(cluster_script_base, "Scripts", "Helper_Scripts", "Cluster_Visualisations.R"),
+    file.path(dirname(cluster_script_base), "Helper_Scripts", "Cluster_Visualisations.R")
+  )
+  cluster_vis_candidates <- unique(cluster_vis_candidates)
+  cluster_vis_script <- cluster_vis_candidates[file.exists(cluster_vis_candidates)][1]
+  
+  if (!is.na(cluster_vis_script) && nzchar(cluster_vis_script) && file.exists(cluster_vis_script)) {
+    source(cluster_vis_script)
+    tryCatch({
+      create_clustering_visualization(
+        gobject = gobj,
+        cluster_column = "leiden_clust",
+        title_suffix = paste0(" - ", sample_id, " Leiden Clusters"),
+        save_plots = TRUE,
+        save_dir = results_folder,
+        prefix = paste0(sample_id, "_custom_clusters")
+      )
+      cat("✓ Custom presentation clustering plots saved\n\n")
+    }, error = function(e) {
+      cat("⚠ Custom clustering visualizations failed:", conditionMessage(e), "\n\n")
+    })
+  }
   
   # ── Cluster statistics ───────────────────────────────────────────────────────
   cluster_stats <- pDataDT(gobj) %>%

@@ -3,6 +3,29 @@
 #!/usr/bin/env Rscript
 # 07_Annotation.R
 
+current_script_dir <- function() {
+  args <- commandArgs(trailingOnly = FALSE)
+  file_arg <- grep("^--file=", args, value = TRUE)
+  if (length(file_arg) > 0) {
+    return(dirname(normalizePath(sub("^--file=", "", file_arg[1]), winslash = "/", mustWork = FALSE)))
+  }
+  ofiles <- vapply(sys.frames(), function(frame) {
+    if (is.null(frame$ofile)) "" else frame$ofile
+  }, character(1))
+  ofiles <- ofiles[nzchar(ofiles)]
+  if (length(ofiles) > 0) {
+    return(dirname(normalizePath(tail(ofiles, 1), winslash = "/", mustWork = FALSE)))
+  }
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+pipeline_utils <- file.path(current_script_dir(), "Helper_Scripts", "Pipeline_Utils.R")
+if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
+     !exists("pretty_plot_label") || !exists("save_presentation_plot")) &&
+    file.exists(pipeline_utils)) {
+  source(pipeline_utils)
+}
+
 
 # Colour palette ----------------------------------------------------------
 
@@ -190,26 +213,38 @@ plot_giotto_umap <- function(gobj,
     return(invisible(NULL))
   }
   
+  wrapped_levels <- pretty_plot_label(names(colour_map), width = 24)
+  wrapped_colour_map <- stats::setNames(unname(colour_map), wrapped_levels)
+  plot_df <- plot_df %>%
+    dplyr::mutate(
+      CellType_label = factor(
+        pretty_plot_label(as.character(CellType), width = 24),
+        levels = wrapped_levels
+      )
+    )
+  
   centroids <- plot_df %>%
-    dplyr::filter(!is.na(CellType)) %>%
-    dplyr::group_by(CellType) %>%
+    dplyr::filter(!is.na(CellType_label)) %>%
+    dplyr::group_by(CellType_label) %>%
     dplyr::summarise(
       UMAP_1 = stats::median(UMAP_1, na.rm = TRUE),
       UMAP_2 = stats::median(UMAP_2, na.rm = TRUE),
       .groups = "drop"
     )
   
-  title_txt <- paste0("UMAP projection: ", sample_id,
-                      " \u2014 ", profile_name, " ", ann_type, " annotation")
+  title_txt <- sample_plot_title(
+    sample_id,
+    paste("UMAP Projection -", profile_name, ann_type, "Annotation")
+  )
   
   p <- ggplot2::ggplot(
     plot_df,
-    ggplot2::aes(x = UMAP_1, y = UMAP_2, colour = CellType)) +
+    ggplot2::aes(x = UMAP_1, y = UMAP_2, colour = CellType_label)) +
     ggplot2::geom_point(size = point_size, alpha = point_alpha) +
-    ggplot2::scale_colour_manual(values = colour_map, drop = FALSE) +
+    ggplot2::scale_colour_manual(values = wrapped_colour_map, drop = FALSE) +
     ggrepel::geom_label_repel(
       data         = centroids,
-      ggplot2::aes(x = UMAP_1, y = UMAP_2, label = CellType),
+      ggplot2::aes(x = UMAP_1, y = UMAP_2, label = CellType_label),
       colour       = "black",
       fill         = ggplot2::alpha("white", label_alpha),
       size         = label_size,
@@ -221,22 +256,28 @@ plot_giotto_umap <- function(gobj,
       max.overlaps = Inf,
       inherit.aes  = FALSE
     ) +
-    ggplot2::labs(title = title_txt, x = "UMAP 1", y = "UMAP 2",
-                  colour = "Cell type") +
+    ggplot2::labs(
+      title = title_txt,
+      subtitle = "Cells are colored by annotation, with median cluster labels shown for readability.",
+      x = embedding_axis_label("UMAP", 1),
+      y = embedding_axis_label("UMAP", 2),
+      colour = "Cell Type") +
     ggplot2::guides(colour = ggplot2::guide_legend(
       ncol = 1, override.aes = list(size = 3, alpha = 1))) +
-    ggplot2::theme_minimal(base_size = 12) +
+    presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
-      plot.title      = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
-      axis.title      = ggplot2::element_text(face = "bold"),
-      legend.title    = ggplot2::element_text(face = "bold", size = 11),
-      legend.text     = ggplot2::element_text(size = 9),
-      legend.position = "right"
+      legend.text = ggplot2::element_text(lineheight = 0.9),
+      legend.key.height = grid::unit(0.42, "cm")
     )
   
   fname <- paste0(sample_id, "_umap_", profile_name, "_", ann_type, "_custom.png")
-  ggplot2::ggsave(file.path(out_dir, fname), p,
-                  width = width, height = height, dpi = dpi, device = "png")
+  save_presentation_plot(
+    plot = p,
+    filename = file.path(out_dir, fname),
+    width = width,
+    height = height,
+    dpi = dpi
+  )
   cat("  \u2713 Custom UMAP saved:", fname, "\n")
   invisible(p)
 }
@@ -313,11 +354,14 @@ plot_custom_flightpath <- function(insitu_result,
         dplyr::if_else(is.na(mean_conf), 0, mean_conf)
       )
     ) %>%
+    dplyr::mutate(
+      Cluster_lab_pretty = pretty_plot_label(Cluster_lab, width = 24)
+    ) %>%
     dplyr::arrange(dplyr::desc(n_cells))
   
   lab_colour_map <- stats::setNames(
     colour_map[as.character(Cluster_stats$Cluster)],
-    Cluster_stats$Cluster_lab
+    Cluster_stats$Cluster_lab_pretty
   )
   
   cells_df <- as.data.frame(flight$cellpos) %>%
@@ -326,45 +370,61 @@ plot_custom_flightpath <- function(insitu_result,
     ) %>%
     dplyr::left_join(Cluster_stats, by = "Cluster") %>%
     dplyr::mutate(
-      Cluster_lab = factor(Cluster_lab, levels = Cluster_stats$Cluster_lab)
+      Cluster_lab_pretty = factor(
+        pretty_plot_label(Cluster_lab, width = 24),
+        levels = Cluster_stats$Cluster_lab_pretty
+      )
     )
   
   clustpos_df <- as.data.frame(flight$clustpos) %>%
     tibble::rownames_to_column("Cluster") %>%
     dplyr::mutate(Cluster = factor(Cluster, levels = names(colour_map))) %>%
-    dplyr::left_join(Cluster_stats, by = "Cluster")
+    dplyr::left_join(Cluster_stats, by = "Cluster") %>%
+    dplyr::mutate(Cluster_pretty = pretty_plot_label(Cluster, width = 18))
   
-  title_txt <- paste0("InSituType Flightpath: ", sample_id,
-                      " \u2014 ", profile_name, " ", ann_type)
+  title_txt <- sample_plot_title(
+    sample_id,
+    paste("InSituType Flightpath -", profile_name, ann_type)
+  )
   set.seed(plot_seed)
   
   p <- ggplot2::ggplot(
     cells_df,
-    ggplot2::aes(x = x, y = y, colour = Cluster_lab)) +
+    ggplot2::aes(x = x, y = y, colour = Cluster_lab_pretty)) +
     ggplot2::geom_point(size = point_size, alpha = point_alpha) +
     ggplot2::scale_colour_manual(values = lab_colour_map, drop = FALSE) +
     ggrepel::geom_label_repel(
       data         = clustpos_df,
-      ggplot2::aes(x = x, y = y, label = Cluster),
+      ggplot2::aes(x = x, y = y, label = Cluster_pretty),
       colour = "black", fill = "white", label.size = 0.2,
       fontface = "bold", label.r = grid::unit(0.1, "lines"),
       size = label_size, show.legend = FALSE,
       max.overlaps = Inf, inherit.aes = FALSE
     ) +
-    ggplot2::theme_void(base_size = 12) +
-    ggplot2::labs(title = title_txt, colour = "InSituType Clusters") +
+    ggplot2::labs(
+      title = title_txt,
+      subtitle = "Cells are positioned in the InSituType flightpath layout and colored by inferred annotation.",
+      colour = "Cluster\n(n cells, confidence)"
+    ) +
     ggplot2::guides(colour = ggplot2::guide_legend(
       override.aes = list(size = 4), ncol = 1)) +
+    presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
-      legend.position = "right",
-      plot.title   = ggplot2::element_text(face = "bold", hjust = 0.5, size = 13),
-      legend.title = ggplot2::element_text(face = "bold", size = 11),
-      legend.text  = ggplot2::element_text(size = 8)
+      axis.title = ggplot2::element_blank(),
+      axis.text = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      panel.grid = ggplot2::element_blank(),
+      legend.key.height = grid::unit(0.42, "cm")
     )
   
   fname <- paste0(sample_id, "_flightpath_", profile_name, "_", ann_type, "_custom.png")
-  ggplot2::ggsave(file.path(out_dir, fname), p,
-                  width = width, height = height, dpi = dpi, device = "png")
+  save_presentation_plot(
+    plot = p,
+    filename = file.path(out_dir, fname),
+    width = width,
+    height = height,
+    dpi = dpi
+  )
   cat("  \u2713 Custom flightpath saved:", fname, "\n")
   invisible(p)
 }
@@ -409,18 +469,20 @@ plot_custom_flightpath <- function(insitu_result,
     ggplot2::scale_y_continuous(
       expand = ggplot2::expansion(mult = c(0, 0.12))
     ) +
-    ggplot2::labs(title = title, x = "Cell Type", y = "Cells") +
-    ggplot2::theme_classic() +
-    ggplot2::theme(
-      legend.position = "none",
-      plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold")
-    )
+    ggplot2::labs(
+      title = title,
+      x = "Cell Type",
+      y = "Number of cells"
+    ) +
+    presentation_theme(base_size = 12) +
+    ggplot2::theme(legend.position = "none")
   
-  ggplot2::ggsave(
-    out_path, p,
-    width  = 16,
+  save_presentation_plot(
+    plot = p,
+    filename = out_path,
+    width = 16,
     height = max(6, nrow(summary_df) * 0.4),
-    dpi    = dpi
+    dpi = dpi
   )
   invisible(p)
 }
@@ -622,8 +684,10 @@ plot_custom_flightpath <- function(insitu_result,
   dot_df$CellType <- factor(dot_df$CellType, levels = rev(ct_ordered))
   dot_df$Gene     <- factor(dot_df$Gene,     levels = sel_genes)
   
-  title_txt <- paste0(sample_id, " \u2014 ", profile_name,
-                      " ", ann_type, " \u2014 marker gene dot plot")
+  title_txt <- sample_plot_title(
+    sample_id,
+    paste(profile_name, ann_type, "Marker Gene Dot Plot")
+  )
   
   p <- ggplot2::ggplot(
     dot_df,
@@ -640,19 +704,23 @@ plot_custom_flightpath <- function(insitu_result,
       name    = "Mean log-norm\nexpression",
       colours = c("#2166AC", "#F7F7F7", "#B2182B")
     ) +
-    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
-    ggplot2::theme_classic(base_size = 11) +
-    ggplot2::theme(
-      plot.title   = ggplot2::element_text(face = "bold", hjust = 0.5, size = 12),
-      axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, size = 8),
-      axis.text.y  = ggplot2::element_text(size = 9),
-      legend.title = ggplot2::element_text(size = 9),
-      legend.text  = ggplot2::element_text(size = 8)
-    )
+    ggplot2::labs(
+      title = title_txt,
+      subtitle = "Point size reflects the fraction of cells expressing each marker within a cell type.",
+      x = "Marker gene",
+      y = "Cell Type"
+    ) +
+    presentation_theme(base_size = 11, x_angle = 45) +
+    ggplot2::theme(legend.position = "right")
   
   fname <- paste0(sample_id, "_dotplot_", profile_name, "_", ann_type, ".png")
-  ggplot2::ggsave(file.path(out_dir, fname), p,
-                  width = width, height = height, dpi = dpi, device = "png")
+  save_presentation_plot(
+    plot = p,
+    filename = file.path(out_dir, fname),
+    width = width,
+    height = height,
+    dpi = dpi
+  )
   cat("  \u2713 Dot plot saved:", fname, "\n")
   invisible(p)
 }
@@ -1000,6 +1068,24 @@ if (!exists("%||%")) {
   }
 }
 
+.profile_set_has_immune_reference <- function(profiles) {
+  if (is.null(profiles) || length(profiles) == 0) {
+    return(FALSE)
+  }
+  
+  profile_text <- vapply(profiles, function(profile) {
+    paste(
+      profile$name %||% "",
+      profile$type %||% "",
+      profile$source %||% "",
+      profile$matrixname %||% "",
+      collapse = " "
+    )
+  }, character(1))
+  
+  any(grepl("immune|pbmc|lymph|lupus|bcell|tcell|myeloid", profile_text, ignore.case = TRUE))
+}
+
 annotate_cells <- function(gobj,
                            sample_id,
                            output_dir,
@@ -1073,6 +1159,14 @@ annotate_cells <- function(gobj,
   }
   
   cat("Default profile:", profiles[[default_idx]]$name, "\n\n")
+  
+  if (!.profile_set_has_immune_reference(profiles)) {
+    cat(
+      "⚠ The configured annotation profiles look kidney-centric and may coarsely label infiltrating immune cells.\n",
+      "  For lupus nephritis work, consider adding a PBMC, immune atlas, or custom LN immune reference.\n\n",
+      sep = ""
+    )
+  }
   
   # Cohort vector aligned to cell_order -----------------------------------
   metadata_dt <- as.data.frame(pDataDT(gobj))

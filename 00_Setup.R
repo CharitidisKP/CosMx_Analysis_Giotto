@@ -36,14 +36,23 @@ setup_environment <- function(verbose = TRUE) {
   project_dir <- Sys.getenv("COSMX_PROJECT_DIR", unset = current_setup_dir())
   project_dir <- normalizePath(project_dir, winslash = "/", mustWork = FALSE)
   
+  python_candidates <- unique(c(
+    getOption("cosmx.python_path", NULL),
+    Sys.which("python3"),
+    Sys.which("python")
+  ))
+  python_candidates <- python_candidates[
+    nzchar(python_candidates) & vapply(
+      python_candidates,
+      function(path) file.exists(path) || nzchar(Sys.which(path)),
+      logical(1)
+    )
+  ]
+  
   python_path <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")
   if (!nzchar(python_path)) {
-    python_path <- getOption(
-      "cosmx.python_path",
-      "/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3"
-    )
+    python_path <- if (length(python_candidates) > 0) python_candidates[[1]] else "python3"
   }
-  
   Sys.setenv(
     COSMX_PYTHON_PATH = python_path,
     RETICULATE_PYTHON = python_path
@@ -58,7 +67,7 @@ setup_environment <- function(verbose = TRUE) {
     "igraph", "tidygraph", "ggraph", "scran", "SingleR",
     "celldex", "InSituType", "reticulate", "SpatialDecon", "Giotto",
     "yaml", "optparse", "readxl", "jsonlite", "processx", "ggrepel",
-    "edgeR",
+    "edgeR", "smiDE",
     "harmony", "shiny", "bslib", "DT"
   )
   
@@ -83,6 +92,8 @@ setup_environment <- function(verbose = TRUE) {
   allow_install <- tolower(Sys.getenv("COSMX_ALLOW_INSTALL", unset = "false")) %in%
     c("1", "true", "yes", "y")
   
+  manual_install_packages <- c("InSituType", "SpatialDecon", "smiDE", "liana", "nichenetr", "mistyR")
+  
   # Function to safely load package
   load_package <- function(pkg) {
     # First check if already loaded
@@ -92,13 +103,19 @@ setup_environment <- function(verbose = TRUE) {
     
     # Check if installed
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      if (allow_install) {
+      if (allow_install && !pkg %in% manual_install_packages) {
         if (verbose) cat("  Installing", pkg, "...\n")
         suppressWarnings(
           install.packages(pkg, repos = "https://cloud.r-project.org", quiet = TRUE)
         )
       } else {
-        if (verbose) cat("  ✗", pkg, "- not installed\n")
+        if (verbose) {
+          if (pkg %in% manual_install_packages) {
+            cat("  ✗", pkg, "- not installed (install manually; non-CRAN dependency)\n")
+          } else {
+            cat("  ✗", pkg, "- not installed\n")
+          }
+        }
         return(FALSE)
       }
     }
@@ -213,7 +230,7 @@ setup_environment <- function(verbose = TRUE) {
     "Remove_HVF_duplicates.R",
     "Cluster_Visualisations.R",
     "Arrange_Feature_plots.R",
-    "Feature_plots_panel.R", 
+    "Feature_plots_panel.R",
     "CCI_Summary.R"
   )
   
