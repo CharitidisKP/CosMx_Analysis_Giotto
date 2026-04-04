@@ -92,10 +92,23 @@ spatial_de:
   min_replicates_per_group: 2
   n_spatial_patches: 8
   smide_family: "nbinom2"
+  # FIX #12c: Verify coordinate units. CosMx coordinates are typically in
+  # microns (range ~10,000-50,000). If your coordinates ARE in microns,
+  # change this to 50 (50 um cell-cell proximity). If Giotto has normalized
+  # coordinates to [0,1], 0.05 is appropriate. The script now auto-detects
+  # and warns if the value looks inconsistent with the coordinate range.
   smide_radius: 0.05
   smide_ncores: 4
-  smide_overlap_threshold: 1
-  smide_annotation_subset: null
+  # FIX #12d: Changed from 1 (disabled) to 0.7 to filter genes with high
+  # cross-cell transcript contamination. CosMx has known transcript diffusion
+  # between adjacent cells; a threshold of 0.7 removes genes where >70% of
+  # expression is attributable to neighboring cells.
+  smide_overlap_threshold: 0.7
+  # FIX #12a: CRITICAL — restrict smiDE to B-cell types only.
+  # With null, smiDE iterates over ALL ~20 cell types × 200k cells which
+  # takes hours to days. Restricting to B cells reduces runtime to ~10-30 min.
+  # Add more types as needed: ["B.cell", "Plasma.cell", "CD4.T.cell"]
+  smide_annotation_subset: ["B.cell"]
   smide_min_detection_fraction: 0.05
   smide_custom_predictor: null
   smide_partner_celltypes: null

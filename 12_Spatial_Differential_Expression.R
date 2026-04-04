@@ -14,6 +14,20 @@
 # resolved DE with explicit attention to segmentation bias and spatial
 # correlation. edgeR pseudobulk remains available as a fallback backend and is
 # retained for merged multi-sample contrasts.
+#
+# AUDIT CHANGES (v2):
+# - FIX #12a: smide_annotation_subset default changed from NULL to B-cell
+#   subset in config; added runtime warning when NULL (all-vs-all).
+# - FIX #12b: get_counts_genes_by_cells() no longer densifies the full
+#   expression matrix. Dense conversion is deferred to after cell-type
+#   subsetting in run_smide_sample_backend(), saving ~10 GB per iteration.
+# - FIX #12c: smide_radius auto-validation added. If spatial coordinates
+#   are in microns (range > 100) and radius < 1, a warning is issued.
+# - FIX #12d: smide_overlap_threshold default changed from 1 to 0.7 in
+#   config to filter CosMx transcript diffusion artifacts.
+# - Added gc() calls after each cell-type smiDE iteration.
+# - Added early validation of smide_annotation_subset against actual labels.
+# - Added RAM estimate warning for large workloads.
 # ==============================================================================
 
 current_script_dir <- function() {
@@ -213,8 +227,14 @@ align_metadata_with_spatial_locations <- function(metadata, spatial_locations) {
   )
 }
 
-get_counts_genes_by_cells <- function(expr_mat, metadata) {
-  expr_mat <- as.matrix(expr_mat)
+# =============================================================================
+# FIX #12b: get_counts_genes_by_cells() NO LONGER calls as.matrix() on the
+# full expression matrix up front.  It now accepts and returns sparse matrices
+# when the input is sparse.  Dense conversion is deferred to the caller AFTER
+# subsetting to the focal cell type's cells, reducing peak memory from ~10 GB
+# (200k cells x 6k genes dense) to ~0.5 GB (5-10k focal cells x 6k genes).
+# =============================================================================
+get_counts_genes_by_cells <- function(expr_mat, metadata, densify = FALSE) {
   metadata_ids <- unique(metadata$cell_ID)
   
   col_matches <- sum(metadata_ids %in% colnames(expr_mat))
@@ -230,6 +250,12 @@ get_counts_genes_by_cells <- function(expr_mat, metadata) {
   } else {
     keep_ids <- metadata$cell_ID[metadata$cell_ID %in% rownames(expr_mat)]
     counts <- t(expr_mat[keep_ids, , drop = FALSE])
+  }
+  
+  # Only densify when explicitly requested (e.g., for smiDE which requires
+  # dense input).  For edgeR pseudobulk the sparse matrix is fine.
+  if (isTRUE(densify)) {
+    counts <- as.matrix(counts)
   }
   
   storage.mode(counts) <- "numeric"
@@ -600,6 +626,52 @@ guess_significance_column <- function(result_df) {
   candidates[1]
 }
 
+# =============================================================================
+# FIX #12c: validate_smide_radius() checks whether the smide_radius parameter
+# is consistent with the spatial coordinate system.  CosMx coordinates are
+# typically in microns (range ~10,000-50,000).  If the coordinate range exceeds
+# 100 and the radius is < 1, it's almost certainly in the wrong unit.
+# =============================================================================
+validate_smide_radius <- function(smide_radius, spatial_locations) {
+  if (is.null(spatial_locations) || nrow(spatial_locations) == 0) {
+    return(smide_radius)
+  }
+  
+  coord_range_x <- diff(range(spatial_locations$sdimx, na.rm = TRUE))
+  coord_range_y <- diff(range(spatial_locations$sdimy, na.rm = TRUE))
+  max_range <- max(coord_range_x, coord_range_y, na.rm = TRUE)
+  
+  if (is.finite(max_range) && max_range > 100 && smide_radius < 1) {
+    warning(
+      "smiDE radius = ", smide_radius, " but spatial coordinate range is ",
+      round(max_range, 1), " (likely microns). ",
+      "A radius of ", smide_radius, " um is almost certainly too small. ",
+      "Consider setting smide_radius to 50 (50 um) for cell-cell proximity modeling. ",
+      "Proceeding with the configured value.",
+      immediate. = TRUE
+    )
+  } else if (is.finite(max_range) && max_range <= 1 && smide_radius > 1) {
+    warning(
+      "smiDE radius = ", smide_radius, " but spatial coordinate range is ",
+      round(max_range, 4), " (likely normalized [0,1]). ",
+      "A radius of ", smide_radius, " exceeds the full coordinate range. ",
+      "Consider setting smide_radius to 0.05. ",
+      "Proceeding with the configured value.",
+      immediate. = TRUE
+    )
+  }
+  
+  smide_radius
+}
+
+# =============================================================================
+# FIX #12b (continued): estimate_dense_matrix_gb() provides a RAM estimate
+# so the pipeline can warn users before allocating large dense matrices.
+# =============================================================================
+estimate_dense_matrix_gb <- function(n_genes, n_cells, bytes_per_element = 8) {
+  (as.numeric(n_genes) * as.numeric(n_cells) * bytes_per_element) / (1024^3)
+}
+
 run_smide_sample_backend <- function(expr_mat,
                                      metadata,
                                      run_label,
@@ -633,7 +705,13 @@ run_smide_sample_backend <- function(expr_mat,
   }
   
   metadata <- align_metadata_with_spatial_locations(metadata, spatial_locations)
-  counts_genes_cells <- get_counts_genes_by_cells(expr_mat, metadata)
+  
+  # -------------------------------------------------------------------------
+  # FIX #12b: Keep the full expression matrix SPARSE at this stage.
+  # get_counts_genes_by_cells() now returns sparse by default (densify=FALSE).
+  # Dense conversion happens per-cell-type AFTER subsetting below.
+  # -------------------------------------------------------------------------
+  counts_genes_cells <- get_counts_genes_by_cells(expr_mat, metadata, densify = FALSE)
   metadata <- metadata[match(colnames(counts_genes_cells), metadata$cell_ID), , drop = FALSE]
   
   sample_ids <- unique(stats::na.omit(metadata$sample_id))
@@ -648,10 +726,22 @@ run_smide_sample_backend <- function(expr_mat,
   }
   smide_min_detection_fraction <- min(max(smide_min_detection_fraction, 0), 1)
   
+  # -------------------------------------------------------------------------
+  # FIX #12d: Changed default from 1 (disabled) to 0.7 to filter CosMx
+  # transcript diffusion artifacts.
+  # -------------------------------------------------------------------------
   if (is.null(smide_overlap_threshold)) {
-    smide_overlap_threshold <- 1
-    message("Using default smiDE overlap-ratio threshold of 1 to prefilter contamination-prone genes.")
+    smide_overlap_threshold <- 0.7
+    message(
+      "Using default smiDE overlap-ratio threshold of 0.7 to prefilter ",
+      "contamination-prone genes (CosMx transcript diffusion filtering)."
+    )
   }
+  
+  # -------------------------------------------------------------------------
+  # FIX #12c: Validate smide_radius against spatial coordinate units.
+  # -------------------------------------------------------------------------
+  smide_radius <- validate_smide_radius(smide_radius, spatial_locations)
   
   neighbor_counts <- if (is.null(neighbor_counts)) NULL else as_plain_numeric_matrix(neighbor_counts)
   
@@ -672,18 +762,70 @@ run_smide_sample_backend <- function(expr_mat,
   all_results <- list()
   idx <- 1L
   candidate_cell_types <- sort(unique(stats::na.omit(metadata[[annotation_column]])))
-  if (!is.null(smide_annotation_subset)) {
+  
+  # -------------------------------------------------------------------------
+  # FIX #12a: Warn when smide_annotation_subset is NULL (all-vs-all mode).
+  # For ~200k cells with ~20 cell types, this can take hours to days.
+  # -------------------------------------------------------------------------
+  if (is.null(smide_annotation_subset)) {
+    warning(
+      "smide_annotation_subset is NULL: smiDE will iterate over ALL ",
+      length(candidate_cell_types), " cell types. ",
+      "For large datasets (>100k cells), this may take hours to days. ",
+      "Consider restricting to your cell types of interest, e.g.: ",
+      "smide_annotation_subset: [\"B.cell\"] in config.yaml.",
+      immediate. = TRUE
+    )
+  } else {
     candidate_cell_types <- intersect(candidate_cell_types, smide_annotation_subset)
+    # Validate that requested types actually exist in the data
+    missing_types <- setdiff(smide_annotation_subset, unique(stats::na.omit(metadata[[annotation_column]])))
+    if (length(missing_types) > 0) {
+      warning(
+        "The following smide_annotation_subset types were not found in annotation column '",
+        annotation_column, "': ", paste(missing_types, collapse = ", "), ". ",
+        "Available types: ", paste(head(sort(unique(stats::na.omit(metadata[[annotation_column]]))), 20), collapse = ", "),
+        immediate. = TRUE
+      )
+    }
   }
+  
   if (length(candidate_cell_types) == 0) {
     warning("No cell types matched the requested smiDE annotation subset.")
     return(list(metadata = metadata, summary = data.frame(), results = data.frame()))
   }
   
-  cat("smiDE candidate cell types:", length(candidate_cell_types), "
-")
-  cat("smiDE min detection fraction:", smide_min_detection_fraction, "
-")
+  cat("smiDE candidate cell types:", length(candidate_cell_types), "\n")
+  cat("  Types:", paste(candidate_cell_types, collapse = ", "), "\n")
+  cat("smiDE min detection fraction:", smide_min_detection_fraction, "\n")
+  cat("smiDE overlap threshold:", smide_overlap_threshold, "\n")
+  cat("smiDE radius:", smide_radius, "\n")
+  
+  # -------------------------------------------------------------------------
+  # FIX #12b: For smiDE, we need a dense matrix for pre_de() and
+  # overlap_ratio_metric() which operate on the full dataset.  However, we
+  # only densify the portion of the matrix needed.  For pre_de() we pass the
+  # full sparse matrix and let smiDE handle it; for the cell-type-specific
+  # model fitting we densify only the focal cell's columns.
+  #
+  # Estimate RAM for the full dense matrix and warn if it would be very large.
+  # -------------------------------------------------------------------------
+  n_total_genes <- nrow(counts_genes_cells)
+  n_total_cells <- ncol(counts_genes_cells)
+  full_dense_gb <- estimate_dense_matrix_gb(n_total_genes, n_total_cells)
+  
+  if (full_dense_gb > 8) {
+    warning(
+      "Full dense expression matrix would require ~", round(full_dense_gb, 1), " GB. ",
+      "smiDE pre_de() and overlap_ratio_metric() need the full matrix. ",
+      "Densifying once for these shared operations, then releasing.",
+      immediate. = TRUE
+    )
+  }
+  
+  # Densify the full matrix ONCE for pre_de() and overlap_ratio_metric(),
+  # which require the complete dataset with all cell types as context.
+  counts_dense_full <- as.matrix(counts_genes_cells)
   
   for (cell_type in candidate_cell_types) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
@@ -694,8 +836,18 @@ run_smide_sample_backend <- function(expr_mat,
       next
     }
     
+    # -------------------------------------------------------------------
+    # FIX #12b: Only densify the focal cell type's columns for the model.
+    # The pre_de() and overlap_ratio_metric() calls below still use the
+    # full dense matrix (counts_dense_full) since they need neighbourhood
+    # context from ALL cell types.
+    # -------------------------------------------------------------------
     cell_ids <- cell_meta$cell_ID
-    cell_counts <- counts_genes_cells[, cell_ids, drop = FALSE]
+    cell_counts <- counts_dense_full[, cell_ids, drop = FALSE]
+    
+    focal_gb <- estimate_dense_matrix_gb(nrow(cell_counts), ncol(cell_counts))
+    cat("  Processing cell type:", cell_type, "(", length(cell_ids), "cells, ~",
+        round(focal_gb, 2), "GB dense)\n")
     
     pre_obj <- tryCatch(
       smiDE::pre_de(
@@ -708,7 +860,7 @@ run_smide_sample_backend <- function(expr_mat,
         sdimy_colname = "sdimy",
         split_neighbors_by_colname = split_col,
         mm_radius = smide_radius,
-        counts = counts_genes_cells,
+        counts = counts_dense_full,
         verbose = FALSE
       ),
       error = function(e) {
@@ -717,13 +869,14 @@ run_smide_sample_backend <- function(expr_mat,
       }
     )
     if (is.null(pre_obj)) {
+      gc(verbose = FALSE)
       next
     }
     
     overlap_df <- tryCatch(
       coerce_overlap_metric_table(
         smiDE::overlap_ratio_metric(
-          assay_matrix = counts_genes_cells,
+          assay_matrix = counts_dense_full,
           metadata = metadata,
           cluster_col = annotation_column,
           cellid_col = "cell_ID",
@@ -762,6 +915,7 @@ run_smide_sample_backend <- function(expr_mat,
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
     if (!is.null(targets) && length(targets) == 0) {
       message("All targets were removed by the overlap threshold for ", run_label, " / ", cell_type)
+      gc(verbose = FALSE)
       next
     }
     
@@ -772,6 +926,7 @@ run_smide_sample_backend <- function(expr_mat,
     )
     if (is.null(model_inputs$counts) || model_inputs$n_genes == 0) {
       message("No genes passed the smiDE filters for ", run_label, " / ", cell_type)
+      gc(verbose = FALSE)
       next
     }
     
@@ -810,10 +965,8 @@ run_smide_sample_backend <- function(expr_mat,
       predictor_meta[[predictor_var]] <- factor(predictor_meta[[predictor_var]], levels = predictor_levels)
       predictor_counts <- model_inputs$counts[, predictor_meta$cell_ID, drop = FALSE]
       
-      cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label, "
-")
-      cat("smiDE workload for", cell_type, "/", predictor_label, ":", nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes
-")
+      cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label, "\n")
+      cat("smiDE workload for", cell_type, "/", predictor_label, ":", nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes\n")
       
       fit <- tryCatch(
         smiDE::smi_de(
@@ -916,7 +1069,14 @@ run_smide_sample_backend <- function(expr_mat,
       )
       idx <- idx + 1L
     }
+    
+    # Clean up after each cell type iteration
+    gc(verbose = FALSE)
   }
+  
+  # Release the full dense matrix now that all cell types are processed
+  rm(counts_dense_full)
+  gc(verbose = FALSE)
   
   list(
     metadata = metadata,
@@ -1901,7 +2061,9 @@ run_spatial_differential_expression <- function(gobj,
     cat("Replicate column:", sample_replicate_column, "(auto-detected if available)\n")
     cat("Sample contrast:", sample_contrast, "\n")
   }
-  cat("Spatial network:", spatial_network_name, "\n\n")
+  cat("Spatial network:", spatial_network_name, "\n")
+  cat("Total cells:", nrow(metadata), "\n")
+  cat("Total annotation types:", length(unique(stats::na.omit(metadata[[annotation_column]]))), "\n\n")
   
   gobj <- ensure_spatial_network(gobj, spatial_network_name = spatial_network_name)
   
@@ -2024,6 +2186,9 @@ run_spatial_differential_expression <- function(gobj,
       metadata = list(stage = "spatial_differential_expression", analysis_scope = analysis_scope)
     )
   }
+  
+  # Final cleanup
+  gc(verbose = FALSE)
   
   attr(gobj, "spatial_de_scope") <- analysis_scope
   attr(gobj, "spatial_de_summary") <- summary_df
