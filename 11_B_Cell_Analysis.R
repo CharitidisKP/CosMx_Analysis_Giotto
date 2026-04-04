@@ -1,7 +1,11 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
 # 11_B_Cell_Analysis.R
-# B-cell focused spatial interaction summaries
+# Focused cell-type spatial interaction summaries
+#
+# By default this targets B cells and related subtypes for lupus nephritis
+# analysis, but the bcell_regex parameter can be set to any cell type pattern
+# via config.yaml (interaction.focus_celltype_regex).
 # ==============================================================================
 
 current_script_dir <- function() {
@@ -175,7 +179,7 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
   candidates <- unique(candidates[candidates %in% names(metadata)])
   
   if (length(candidates) == 0) {
-    stop("No annotation column was found for B-cell analysis.")
+    stop("No annotation column was found for focused cell-type analysis.")
   }
   
   candidates[1]
@@ -458,8 +462,9 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 number_of_simulations = 250,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
-  cat("STEP 11: B-Cell Microenvironment\n")
+  cat("STEP 11: Focused Cell-Type Microenvironment\n")
   cat("Sample:", sample_id, "\n")
+  cat("Focus regex:", bcell_regex, "\n")
   cat("========================================\n\n")
   
   if (is.character(gobj)) {
@@ -486,7 +491,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
   abundance_table <- dplyr::mutate(
     abundance_table,
     sample_id = sample_id,
-    is_bcell = grepl(bcell_regex, annotation, ignore.case = TRUE)
+    is_focus_celltype = grepl(bcell_regex, annotation, ignore.case = TRUE)
   )
   
   readr::write_csv(
@@ -520,7 +525,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
     file.path(results_dir, paste0(sample_id, "_bcell_interactions.csv"))
   )
   
-  # Bring forward B-cell focused CCI outputs from step 10 when available.
+  # Bring forward focused-celltype CCI outputs from step 10 when available.
   liana_path <- file.path(
     output_dir,
     "10_CCI_Analysis",
@@ -538,7 +543,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         )
       }
     }, error = function(e) {
-      message("B-cell LIANA summary skipped: ", conditionMessage(e))
+      message("Focused cell-type LIANA summary skipped: ", conditionMessage(e))
     })
   }
   
@@ -573,7 +578,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         )
       }
     }, error = function(e) {
-      message("B-cell NicheNet summary skipped: ", conditionMessage(e))
+      message("Focused cell-type NicheNet summary skipped: ", conditionMessage(e))
     })
   }
   
@@ -609,12 +614,15 @@ run_bcell_microenvironment_analysis <- function(gobj,
     )
   }
   
-  invisible(
-    list(
-      annotation_column = annotation_column,
-      abundance_table = abundance_table,
-      enrichment_table = enrichment_table,
-      bcell_table = bcell_table
-    )
+  # FIX #1: Attach summary results as attributes so they travel with the
+  # object, then return the (possibly modified) gobj for pipeline checkpoint
+  # consistency.  Previously this returned a list, causing the pipeline to
+  # lose any object modifications (e.g. spatial network creation).
+  attr(gobj, "bcell_analysis") <- list(
+    annotation_column = annotation_column,
+    abundance_table = abundance_table,
+    enrichment_table = enrichment_table,
+    bcell_table = bcell_table
   )
+  invisible(gobj)
 }

@@ -39,7 +39,18 @@ merged:
   run_label: null
 
 interaction:
-  annotation_column: null
+  # FIX #3: Set annotation column explicitly instead of relying on fragile
+  # auto-detection. Must match the column produced by step 07_Annotation.
+  annotation_column: "celltype_HCA_Kidney_supervised"
+  # FIX #10: Generalised cell-type focus regex. Change this to target
+  # different populations for the focused analysis in step 11.
+  # Examples:
+  #   B cells:    '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+  #   T cells:    '^(CD4\.T\.cell|CD8\.T\.cell|Treg|NK\.cell)$'
+  #   Myeloid:    '^(Macrophage|Monocyte|Dendritic\.cell|cDC|pDC)$'
+  focus_celltype_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+  # Kept for backwards compatibility — if focus_celltype_regex is null,
+  # the pipeline falls back to bcell_regex.
   bcell_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
@@ -115,9 +126,15 @@ parameters:
 
   clustering:
     k_nn: 15
-    resolution: 0.3
+    # FIX #9: Increased from 0.3. For ~200k cells from heterogeneous LN
+    # tissue, 0.3 merges distinct immune subsets (e.g. naive B, memory B,
+    # plasmablasts all collapse). 0.8 provides better separation of immune
+    # subtypes while keeping structural clusters coherent.
+    resolution: 0.8
     n_iterations: 200
-    resolution_sweep: null
+    # FIX #9: Enable resolution sweep so you can compare cluster granularity
+    # across a range and pick the best resolution per sample.
+    resolution_sweep: [0.3, 0.5, 0.8, 1.0, 1.5]
     dimensions_to_use: "1:30"
 
   markers:
@@ -153,10 +170,18 @@ parameters:
     celltype_columns: null
     cluster_column: "leiden_clust"
     marker_genes:
+      # FIX #12: Expanded marker gene panels for lupus nephritis B-cell
+      # biology. Genes not present on the CosMx panel will be silently
+      # skipped by step 08.
       b_cells: ["CD19", "MS4A1", "CD79A", "CD79B", "IGHM", "IGHG1"]
+      b_cell_subtypes: ["IGHD", "CD27", "AICDA", "BCL6", "PRDM1", "IRF4", "TBX21", "ITGAX", "MKI67"]
       t_cells: ["CD3D", "CD3E", "CD4", "CD8A", "CD8B"]
+      t_cell_subtypes: ["CXCR5", "PDCD1", "FOXP3", "IL21", "IFNG", "TBX21"]
       myeloid: ["CD14", "CD68", "LYZ", "CSF1R"]
       nk_cells: ["NCAM1", "KLRF1", "GNLY", "NKG7"]
       kidney: ["NPHS1", "NPHS2", "PODXL", "SLC12A1", "UMOD", "CDH1", "KRT8"]
+      tls_markers: ["CXCL13", "CCL19", "CCL21", "CR2", "FDCSP"]
+      complement_fc: ["C1QA", "C1QB", "C3", "C4A", "FCGR1A", "FCGR2A", "FCGR3A"]
+      lupus_relevant: ["BAFF", "TNFSF13", "TNFRSF13B", "TNFRSF13C", "ISG15", "IFI44", "MX1"]
     max_cells_preview: 50000
     preview_seed: 1

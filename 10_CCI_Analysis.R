@@ -411,13 +411,17 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("s
 #' @param output_dir    Root output directory
 #' @param celltype_col  Cell type annotation column
 #' @param n_cores       Parallel cores (default: 4)
+#' @param expr_cache    Optional pre-extracted expression cache list with
+#'                      $raw and $normalized matrices (genes x cells).
+#'                      Avoids redundant dense materializations.
 #' @return List with insitucor results; gobj unchanged
 
 run_insitucor <- function(gobj,
                           sample_id,
                           output_dir,
                           celltype_col = NULL,
-                          n_cores      = 4) {
+                          n_cores      = 4,
+                          expr_cache   = NULL) {
   
   if (!requireNamespace("InSituCor", quietly = TRUE))
     stop("InSituCor not installed.\n",
@@ -437,9 +441,14 @@ run_insitucor <- function(gobj,
   
   # Expression matrix (cells x genes)
   # InSituCor models neighborhood expression from count-like data, so use raw counts.
-  counts <- t(as.matrix(
+  # FIX #6: Use pre-extracted cache when available to avoid repeated ~10 GB
+  # dense materializations across CCI sections.
+  raw_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$raw)) {
+    expr_cache$raw
+  } else {
     .giotto_get_expression(gobj, values = "raw", output = "matrix")
-  ))
+  }
+  counts <- t(as.matrix(raw_mat))
   
   # Spatial coordinates
   spat <- as.data.frame(
@@ -555,13 +564,15 @@ run_insitucor <- function(gobj,
 #' @param output_dir    Root output directory
 #' @param celltype_col  Cell type annotation column
 #' @param methods       LIANA methods to run (NULL = all available)
+#' @param expr_cache    Optional pre-extracted expression cache list.
 #' @return liana_result data frame
 
 run_liana <- function(gobj,
                       sample_id,
                       output_dir,
                       celltype_col = NULL,
-                      methods      = NULL) {
+                      methods      = NULL,
+                      expr_cache   = NULL) {
   
   if (!requireNamespace("liana", quietly = TRUE))
     stop("liana not installed.\n  Install: remotes::install_github('saezlab/liana')")
@@ -585,8 +596,17 @@ run_liana <- function(gobj,
     if (!requireNamespace("S4Vectors", quietly = TRUE))
       stop("S4Vectors required for LIANA conversion.")
     
-    counts_mat <- .giotto_get_expression(gobj, values = "raw", output = "matrix")
-    logcounts_mat <- .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+    # FIX #6: Use pre-extracted cache when available.
+    counts_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$raw)) {
+      expr_cache$raw
+    } else {
+      .giotto_get_expression(gobj, values = "raw", output = "matrix")
+    }
+    logcounts_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+      expr_cache$normalized
+    } else {
+      .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+    }
     cell_meta <- meta[match(colnames(counts_mat), meta$cell_ID), , drop = FALSE]
     
     sce <- SingleCellExperiment::SingleCellExperiment(
@@ -710,6 +730,7 @@ run_liana <- function(gobj,
 #' @param sender_celltypes  Character vector of sender cell types
 #' @param receiver_celltype Single receiver cell type
 #' @param top_n_ligands     Number of top ligands to report (default: 20)
+#' @param expr_cache    Optional pre-extracted expression cache list.
 #' @return NicheNet results list
 
 run_nichenet <- function(gobj,
@@ -721,7 +742,8 @@ run_nichenet <- function(gobj,
                          target_genes       = NULL,
                          top_n_ligands      = 20,
                          network_dir        = NULL,
-                         result_root_dir    = NULL) {
+                         result_root_dir    = NULL,
+                         expr_cache         = NULL) {
   
   if (!requireNamespace("nichenetr", quietly = TRUE))
     stop("nichenetr not installed.\n",
@@ -796,8 +818,12 @@ run_nichenet <- function(gobj,
   weighted_networks     <- readRDS(
     prior_files$paths[["weighted_networks"]])
   
-  # Expression matrix
-  expr_mat <- .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  # FIX #6: Use pre-extracted cache when available.
+  expr_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+    expr_cache$normalized
+  } else {
+    .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  }
   
   # Sender / receiver cell IDs
   sender_ids   <- meta$cell_ID[meta[[celltype_col]] %in% sender_celltypes]
@@ -834,29 +860,32 @@ run_nichenet <- function(gobj,
     expressed_ligands %in% lr_network$from[lr_network$to %in% expressed_receptors]
   ]
   
-  # DE genes in receiver as target genes.
-  # Prefer an explicit target gene set; otherwise fall back to a placeholder proxy.
+  # FIX #4: Removed kidney-specific HAVCR1 proxy. NicheNet requires explicit
+  # target genes — a tissue-specific proxy like HAVCR1 fails silently for
+  # immune cell receivers (B cells, T cells, etc.) and produces misleading
+  # "insufficient DE genes" warnings. Users must supply target genes via
+  # config.yaml cci.target_genes or cci.target_genes_by_receiver.
   receiver_de <- if (!is.null(target_genes) && length(target_genes) > 0) {
     intersect(unique(as.character(target_genes)), rownames(expr_mat))
   } else {
-    tryCatch({
-      if (!"HAVCR1" %in% rownames(expr_mat)) {
-        character(0)
-      } else {
-        high_cells <- receiver_ids[expr_mat["HAVCR1", receiver_ids] > 0]
-        low_cells  <- setdiff(receiver_ids, high_cells)
-        if (length(high_cells) < 5 || length(low_cells) < 5) character(0) else {
-          fc <- rowMeans(expr_mat[, high_cells, drop = FALSE]) -
-            rowMeans(expr_mat[, low_cells,  drop = FALSE])
-          names(fc)[fc > 0.5]
-        }
-      }
-    }, error = function(e) character(0))
+    # No target genes supplied. Rather than using a tissue-specific proxy
+    # that would fail silently for immune cell types, we require explicit
+    # target genes. These can be derived from step 06 (cluster markers) or
+    # step 12 (spatial DE) and configured via cci.target_genes or
+    # cci.target_genes_by_receiver in config.yaml.
+    cat("\u26A0 No target genes provided for NicheNet receiver '",
+        receiver_celltype, "'.\n", sep = "")
+    cat("  NicheNet requires a set of DE/response genes in the receiver.\n")
+    cat("  Options:\n")
+    cat("    1. Set cci.target_genes in config.yaml (applies to all receivers)\n")
+    cat("    2. Set cci.target_genes_by_receiver.<celltype> in config.yaml\n")
+    cat("    3. Use marker genes from step 06_Differential_Expression.R\n\n")
+    character(0)
   }
   
   if (length(receiver_de) < 10) {
-    cat("\u26A0 Insufficient DE genes for NicheNet target gene set (<10).\n")
-    cat("  Supply target_genes from 06_Differential_Expression.R for best results.\n\n")
+    cat("\u26A0 Insufficient target genes for NicheNet (<10 after intersection with expression matrix).\n")
+    cat("  Skipping NicheNet for receiver '", receiver_celltype, "'.\n\n", sep = "")
     return(invisible(NULL))
   }
   
@@ -903,7 +932,8 @@ run_nichenet_batch <- function(gobj,
                                spatial_padj_threshold   = 0.05,
                                min_cells_per_celltype   = 5,
                                include_self_pairs       = FALSE,
-                               result_root_dir          = NULL) {
+                               result_root_dir          = NULL,
+                               expr_cache               = NULL) {
   mode <- match.arg(mode)
   cat("NicheNet batch mode:", mode, "\n")
   
@@ -1012,7 +1042,8 @@ run_nichenet_batch <- function(gobj,
         receiver_celltype = receiver_label,
         target_genes = receiver_targets,
         network_dir = network_dir,
-        result_root_dir = nichenet_root
+        result_root_dir = nichenet_root,
+        expr_cache = expr_cache
       ),
       error = function(e) {
         cat("\u26A0 NicheNet comparison failed for", sender_label, "->", receiver_label, ":", conditionMessage(e), "\n")
@@ -1076,6 +1107,7 @@ run_nichenet_batch <- function(gobj,
 #' @param juxta_radius  Radius for juxtaview (in coordinate units, default: 50)
 #' @param para_radius   Radius for paraview (in coordinate units, default: 200)
 #' @param n_cores       Parallel cores (default: 4)
+#' @param expr_cache    Optional pre-extracted expression cache list.
 #' @return MISTy results list
 
 run_misty <- function(gobj,
@@ -1084,14 +1116,15 @@ run_misty <- function(gobj,
                       target_genes  = NULL,
                       juxta_radius  = 50,
                       para_radius   = 200,
-                      n_cores       = 4) {
+                      n_cores       = 4,
+                      expr_cache    = NULL) {
   
   if (!requireNamespace("mistyR", quietly = TRUE))
     stop("mistyR not installed.\n",
          'Install: BiocManager::install("mistyR")')
   ridge_ready <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
   if (!isTRUE(ridge_ready)) {
-    cat("⚠ MISTy skipped: ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27).\n")
+    cat("\u26A0 MISTy skipped: ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27).\n")
     return(invisible(NULL))
   }
   
@@ -1101,9 +1134,13 @@ run_misty <- function(gobj,
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   # Expression matrix (cells x genes) — log-normalised
-  expr_mat <- t(as.matrix(
+  # FIX #6: Use pre-extracted cache when available.
+  norm_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+    expr_cache$normalized
+  } else {
     .giotto_get_expression(gobj, values = "normalized", output = "matrix")
-  ))
+  }
+  expr_mat <- t(as.matrix(norm_mat))
   
   # Target genes: use HVGs if available, else top variable genes
   if (is.null(target_genes)) {
@@ -1137,6 +1174,21 @@ run_misty <- function(gobj,
   spat <- as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table"))
   rownames(spat) <- spat$cell_ID
   xy <- spat[rownames(expr_mat), c("sdimx", "sdimy")]
+  
+  # FIX #8: Guard against running MISTy on datasets too large for pairwise
+  # distance computation. add_juxtaview() and add_paraview() build O(n^2)
+  # distance matrices which at 200k cells would require ~300 GB of RAM.
+  MAX_CELLS_MISTY <- 50000
+  if (nrow(expr_mat) > MAX_CELLS_MISTY) {
+    cat("\u26A0 MISTy: Dataset has", nrow(expr_mat), "cells, which exceeds the",
+        MAX_CELLS_MISTY, "cell limit for pairwise distance computation.\n")
+    cat("  Downsampling to", MAX_CELLS_MISTY, "cells.\n")
+    set.seed(42)
+    keep_idx <- sample(nrow(expr_mat), MAX_CELLS_MISTY)
+    expr_mat <- expr_mat[keep_idx, , drop = FALSE]
+    xy <- xy[keep_idx, , drop = FALSE]
+    cat("  Cells after downsampling:", nrow(expr_mat), "\n\n")
+  }
   
   cat("  Cells:", nrow(expr_mat), "  Targets:", length(target_genes), "\n")
   cat("  Juxtaview radius:", juxta_radius, "  Paraview radius:", para_radius, "\n\n")
@@ -1202,13 +1254,15 @@ run_misty <- function(gobj,
 #' @param output_dir    Root output directory
 #' @param n_top_svgs    Number of top SVGs to report (default: 100)
 #' @param n_cores       Parallel cores (default: 4)
+#' @param expr_cache    Optional pre-extracted expression cache list.
 #' @return nnSVG results data frame
 
 run_nnsvg <- function(gobj,
                       sample_id,
                       output_dir,
                       n_top_svgs = 100,
-                      n_cores    = 4) {
+                      n_cores    = 4,
+                      expr_cache = NULL) {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
     stop("nnSVG not installed.\n",
@@ -1220,7 +1274,12 @@ run_nnsvg <- function(gobj,
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   # Build SpatialExperiment from Giotto
-  counts_mat <- .giotto_get_expression(gobj, values = "raw", output = "matrix")
+  # FIX #6: Use pre-extracted cache when available.
+  counts_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$raw)) {
+    expr_cache$raw
+  } else {
+    .giotto_get_expression(gobj, values = "raw", output = "matrix")
+  }
   if (inherits(counts_mat, "data.frame")) {
     counts_mat <- as.matrix(counts_mat)
   }
@@ -1238,7 +1297,11 @@ run_nnsvg <- function(gobj,
     stop("No overlapping cell IDs between raw expression and spatial coordinates for nnSVG.")
   }
   counts_mat <- counts_mat[, matched_cells, drop = FALSE]
-  logcounts_mat <- .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  logcounts_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+    expr_cache$normalized
+  } else {
+    .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  }
   if (inherits(logcounts_mat, "data.frame")) {
     logcounts_mat <- as.matrix(logcounts_mat)
   }
@@ -1285,6 +1348,21 @@ run_nnsvg <- function(gobj,
   })
   
   if (is.null(spe)) return(invisible(NULL))
+  
+  # FIX #7: Guard against running nnSVG on datasets too large for GP-based
+  # SVG detection. nnSVG was designed for Visium-scale data (~5k spots); at
+  # >50k cells the nearest-neighbor GP approximation becomes prohibitively
+  # slow (hours to days).
+  MAX_CELLS_NNSVG <- 50000
+  if (ncol(spe) > MAX_CELLS_NNSVG) {
+    cat("\u26A0 nnSVG: Dataset has", ncol(spe), "cells, which exceeds the recommended",
+        MAX_CELLS_NNSVG, "cell limit for GP-based SVG detection.\n")
+    cat("  Downsampling to", MAX_CELLS_NNSVG, "cells (random subsample).\n")
+    set.seed(42)
+    keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
+    spe <- spe[, keep_idx]
+    cat("  Cells after downsampling:", ncol(spe), "\n\n")
+  }
   
   cat("  Genes after filtering:", nrow(spe), "\n")
   cat("  Cells:", ncol(spe), "\n\n")
@@ -1483,6 +1561,18 @@ run_cci_analysis <- function(gobj,
     cat("\u2713 Loaded\n\n")
   }
   
+  # FIX #6: Pre-extract expression matrices ONCE to avoid repeated dense
+  # materializations across CCI sections. At ~200k cells x ~6k genes, each
+  # call to getExpression() + as.matrix() allocates ~10 GB. Extracting once
+  # and passing as expr_cache saves ~50% peak memory for step 10.
+  cat("Pre-extracting expression matrices for CCI sections...\n")
+  .cci_expr_cache <- list(
+    raw = .giotto_get_expression(gobj, values = "raw", output = "matrix"),
+    normalized = .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  )
+  cat("\u2713 Expression cache ready (raw:", paste(dim(.cci_expr_cache$raw), collapse = "x"),
+      ", normalized:", paste(dim(.cci_expr_cache$normalized), collapse = "x"), ")\n\n")
+  
   results <- list()
   section_status <- setNames(rep("disabled", length(run_sections)), names(run_sections))
   section_messages <- setNames(as.list(rep(NA_character_, length(run_sections))), names(run_sections))
@@ -1496,7 +1586,8 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["insitucor"])) {
     section_out <- .run_cci_section(
       "InSituCor",
-      function() run_insitucor(gobj, sample_id, output_dir, celltype_col)
+      function() run_insitucor(gobj, sample_id, output_dir, celltype_col,
+                               expr_cache = .cci_expr_cache)
     )
     results$insitucor <- section_out$result
     section_status["insitucor"] <- section_out$status
@@ -1507,7 +1598,8 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["liana"])) {
     section_out <- .run_cci_section(
       "LIANA",
-      function() run_liana(gobj, sample_id, output_dir, celltype_col)
+      function() run_liana(gobj, sample_id, output_dir, celltype_col,
+                           expr_cache = .cci_expr_cache)
     )
     results$liana <- section_out$result
     section_status["liana"] <- section_out$status
@@ -1518,7 +1610,7 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nichenet"])) {
     nichenet_ready <- .nichenet_section_ready(nichenet_mode, sender_celltypes, receiver_celltype)
     if (!isTRUE(nichenet_ready$ok)) {
-      cat("⚠ Skipping NicheNet:", nichenet_ready$reason, "\n")
+      cat("\u26A0 Skipping NicheNet:", nichenet_ready$reason, "\n")
       section_status["nichenet"] <- "skipped"
       section_messages[["nichenet"]] <- nichenet_ready$reason
     } else {
@@ -1543,7 +1635,8 @@ run_cci_analysis <- function(gobj,
                 spatial_padj_threshold = nichenet_spatial_padj_threshold,
                 min_cells_per_celltype = nichenet_min_cells_per_celltype,
                 include_self_pairs = nichenet_include_self_pairs,
-                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "unfiltered")
+                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "unfiltered"),
+                expr_cache = .cci_expr_cache
               ),
               spatial_filtered = run_nichenet_batch(
                 gobj,
@@ -1561,7 +1654,8 @@ run_cci_analysis <- function(gobj,
                 spatial_padj_threshold = nichenet_spatial_padj_threshold,
                 min_cells_per_celltype = nichenet_min_cells_per_celltype,
                 include_self_pairs = nichenet_include_self_pairs,
-                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "spatial_filtered")
+                result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet", "spatial_filtered"),
+                expr_cache = .cci_expr_cache
               )
             )
           } else {
@@ -1581,7 +1675,8 @@ run_cci_analysis <- function(gobj,
               spatial_padj_threshold = nichenet_spatial_padj_threshold,
               min_cells_per_celltype = nichenet_min_cells_per_celltype,
               include_self_pairs = nichenet_include_self_pairs,
-              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet")
+              result_root_dir = file.path(output_dir, "10_CCI_Analysis", "nichenet"),
+              expr_cache = .cci_expr_cache
             )
           }
         }
@@ -1596,13 +1691,14 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["misty"])) {
     misty_ready <- .misty_runtime_ready()
     if (!isTRUE(misty_ready$ok)) {
-      cat("⚠ Skipping MISTy:", misty_ready$reason, "\n")
+      cat("\u26A0 Skipping MISTy:", misty_ready$reason, "\n")
       section_status["misty"] <- "skipped"
       section_messages[["misty"]] <- misty_ready$reason
     } else {
       section_out <- .run_cci_section(
         "MISTy",
-        function() run_misty(gobj, sample_id, output_dir)
+        function() run_misty(gobj, sample_id, output_dir,
+                             expr_cache = .cci_expr_cache)
       )
       results$misty <- section_out$result
       section_status["misty"] <- section_out$status
@@ -1614,13 +1710,19 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nnsvg"])) {
     section_out <- .run_cci_section(
       "nnSVG",
-      function() run_nnsvg(gobj, sample_id, output_dir)
+      function() run_nnsvg(gobj, sample_id, output_dir,
+                           expr_cache = .cci_expr_cache)
     )
     results$nnsvg <- section_out$result
     section_status["nnsvg"] <- section_out$status
     section_messages[["nnsvg"]] <- section_out$message
     .maybe_cleanup_between_cci_sections(cleanup_between_sections, "nnSVG")
   }
+  
+  # Release the expression cache now that all sections are done.
+  rm(.cci_expr_cache)
+  gc(verbose = FALSE)
+  
   attr(results, "section_status") <- section_status
   attr(results, "section_messages") <- section_messages
   
@@ -1647,8 +1749,8 @@ run_cci_analysis <- function(gobj,
   for (section_name in names(section_status)) {
     icon <- switch(
       section_status[[section_name]],
-      ok = "✓",
-      error = "⚠",
+      ok = "\u2713",
+      error = "\u26A0",
       skipped = "-",
       disabled = "-",
       "-"

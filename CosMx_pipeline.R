@@ -171,7 +171,7 @@ step_label <- function(step_id) {
     "09_spatial" = "09 Spatial network analysis",
     "10_cci" = "10 CCI analysis",
     "merge_batch" = "Merge batch correction",
-    "11_bcell" = "11 B-cell microenvironment",
+    "11_bcell" = "11 Focused cell-type microenvironment",
     "12_spatial_de" = "12 Spatial differential expression",
     "merge" = "Merge sample objects"
   )
@@ -515,6 +515,7 @@ save_step_checkpoint <- function(gobj, root_dir, step_id, metadata = list()) {
   )
 }
 
+# FIX #5: Replaced eval(parse(...)) with safe range/comma parsing.
 coerce_dimension_vector <- function(x) {
   if (is.null(x)) {
     return(1:30)
@@ -522,7 +523,18 @@ coerce_dimension_vector <- function(x) {
   if (is.numeric(x)) {
     return(as.integer(x))
   }
-  eval(parse(text = as.character(x)))
+  # Parse "start:end" range notation safely without eval(parse(...))
+  txt <- trimws(as.character(x))
+  if (grepl("^\\d+:\\d+$", txt)) {
+    bounds <- as.integer(strsplit(txt, ":")[[1]])
+    return(seq.int(bounds[1], bounds[2]))
+  }
+  # Parse comma-separated integers: "1,2,3,10,15"
+  if (grepl("^[\\d,\\s]+$", txt, perl = TRUE)) {
+    return(as.integer(trimws(strsplit(txt, ",")[[1]])))
+  }
+  stop("Cannot parse dimension vector: '", txt,
+       "'. Use 'start:end' (e.g. '1:30') or comma-separated integers (e.g. '1,2,3').")
 }
 
 flatten_marker_genes <- function(marker_cfg) {
@@ -662,6 +674,11 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       celltype_col = cfg$interaction$annotation_column %||% NULL,
       n_simulations = cfg$interaction$number_of_simulations %||% 250
     ),
+    # FIX #2: run_cci_analysis() does NOT mutate the Giotto object.  All CCI
+    # outputs (InSituCor modules, LIANA tables, NicheNet ligand activities,
+    # MISTy models, nnSVG SVGs) are written to disk under
+    # output_dir/10_CCI_Analysis/.  We intentionally return the unchanged
+    # gobj so the pipeline checkpoint chain is unaffected.
     "10_cci" = {
       cci_cfg <- cfg$cci %||% list()
       runtime_env$run_cci_analysis(
@@ -689,20 +706,26 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         )),
         cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE
       )
-      gobj
+      gobj  # CCI is file-based; gobj passes through unchanged
     },
+    # FIX #1 + FIX #10: run_bcell_microenvironment_analysis() now returns the
+    # (possibly modified) gobj directly, so the pipeline checkpoint chain
+    # carries it forward.  focus_celltype_regex allows switching the focused
+    # cell type via config without touching code.
     "11_bcell" = {
+      focus_regex <- cfg$interaction$focus_celltype_regex %||%
+        cfg$interaction$bcell_regex %||%
+        "^B\\.cell$"
       runtime_env$run_bcell_microenvironment_analysis(
         gobj = gobj,
         sample_id = sample_id,
         output_dir = output_dir,
         annotation_column = cfg$interaction$annotation_column %||% NULL,
-        bcell_regex = cfg$interaction$bcell_regex %||% "^B\\.cell$",
+        bcell_regex = focus_regex,
         spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
         number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
         save_object = TRUE
       )
-      gobj
     },
     "12_spatial_de" = {
       spatial_de_cfg <- cfg$spatial_de %||% list()
