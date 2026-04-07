@@ -1,0 +1,7 @@
+sample_id,directory_name,slide_num,patient_id,pair_id,group_id,treatment,timepoint,include,split_after_load,split_plan,notes
+1979_8769_6063_4320,MCFASCIST1250Slide11979876960634322,1,,,CART,Both?,Both?,TRUE,TRUE,Split after loading by ROI/FOV/coordinate bounds,Composite slide containing four biopsies on one raw slide
+1281,MCFASCIST1250Slide21281,2,,,Control,T0,T0,TRUE,FALSE,,Single raw sample directory
+19H28111,MCFASCLST1196Slide3119H28111,31,,,Conventional,T0,T0,TRUE,FALSE,,Single raw sample directory
+17H13349,MCFASCLST1196_Slide317H13349,3,,,Conventional,T0,T0,TRUE,FALSE,,Single raw sample directory
+20H24159,MCFASCLST1196Slide3220H24159,32,,,Conventional,T12,T12,TRUE,FALSE,,Single raw sample directory
+18H12037,MCFASCLST1196_Slide418H12037,4,,,Conventional,T12,T12,TRUE,FALSE,,Single raw sample directory
