@@ -541,7 +541,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     gobj <- setPolygonInfo(
       gobject = gobj,
       x = list(cell = gpolygon),
-      centroids_to_spatlocs = TRUE
+      centroids_to_spatlocs = FALSE
     )
   } else {
     gobj <- addGiottoPolygons(
