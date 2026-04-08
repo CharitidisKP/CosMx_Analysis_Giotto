@@ -450,24 +450,7 @@ Output/
 ### `No samples matched the selected filters`
 
 The `--samples` argument must match `sample_id` values in `sample_sheet.csv`
-exactly.  The old composite ID `1979_8769_6063_4320` no longer exists — it has
-been replaced by `CART_T0_S1`, `CART_T12_S1`, `CART_T0_S2`, `CART_T12_S2`.
 Use `--groups CART` to select all four at once.
-
-### `incomplete final line found on config.yaml`
-
-The `config.yaml` file is missing a trailing newline.  Open it and add a blank
-line at the very end, or run:
-
-```bash
-echo "" >> Scripts/Parameters/config.yaml
-```
-
-### `Batch column 'slide_num' is not present in merged metadata`
-
-The merged Giotto object does not carry a `slide_num` column in its cell
-metadata.  Ensure `batch_column` in `config.yaml` is set to `"slide_id"` and
-that the `slide_id` column is populated in `sample_sheet.csv`.
 
 ### `No genes passed the smiDE filters`
 
@@ -477,13 +460,3 @@ Two common causes:
    not `0.05`.
 2. **Filters too strict for small populations** — for B cells (~100–200 cells),
    set `smide_overlap_threshold: 0.85` and `smide_min_detection_fraction: 0.01`.
-
-### `renv` out-of-sync warning
-
-```
-The project is out-of-sync -- use `renv::status()` for details.
-```
-
-This is a non-fatal warning from the container's `renv` lockfile.  The pipeline
-will still run.  To resolve, enter the container interactively and run
-`renv::restore()`.
