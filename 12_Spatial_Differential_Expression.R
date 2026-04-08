@@ -252,13 +252,15 @@ get_counts_genes_by_cells <- function(expr_mat, metadata, densify = FALSE) {
     counts <- t(expr_mat[keep_ids, , drop = FALSE])
   }
   
-  # Only densify when explicitly requested (e.g., for smiDE which requires
-  # dense input).  For edgeR pseudobulk the sparse matrix is fine.
   if (isTRUE(densify)) {
     counts <- as.matrix(counts)
   }
   
-  storage.mode(counts) <- "numeric"
+  # Only set storage.mode on base R matrices/vectors, not S4 sparse objects
+  if (!isS4(counts)) {
+    storage.mode(counts) <- "numeric"
+  }
+  
   counts
 }
 
