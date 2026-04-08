@@ -313,6 +313,9 @@ normalize_sample_table <- function(sample_df, cfg) {
     }
   }
   
+  if (!"subsample_id" %in% names(sample_df)) {
+    sample_df$subsample_id <- NA_character_
+  }
   if (!"slide_num" %in% names(sample_df)) {
     sample_df$slide_num <- NA_character_
   }
@@ -334,6 +337,12 @@ normalize_sample_table <- function(sample_df, cfg) {
   if (!"notes" %in% names(sample_df)) {
     sample_df$notes <- NA_character_
   }
+  if (!"fov_min" %in% names(sample_df)) {
+    sample_df$fov_min <- NA_character_
+  }
+  if (!"fov_max" %in% names(sample_df)) {
+    sample_df$fov_max <- NA_character_
+  }
   
   if (!"data_dir" %in% names(sample_df)) {
     sample_df$data_dir <- file.path(cfg$paths$raw_data_dir, sample_df$directory_name)
@@ -346,7 +355,26 @@ normalize_sample_table <- function(sample_df, cfg) {
   sample_df$output_dir <- vapply(sample_df$output_dir, resolve_path, character(1), base_dir = cfg$paths$output_dir, mustWork = FALSE)
   sample_df$include <- vapply(sample_df$include, coerce_bool, logical(1), default = TRUE)
   
-  sample_df[sample_df$include, , drop = FALSE]
+  sample_df <- sample_df[sample_df$include, , drop = FALSE]
+  
+  # Deduplicate composite-slide rows: when multiple rows share the same sample_id
+  # (e.g. four CART biopsies on one slide each having a distinct subsample_id),
+  # keep only the FIRST row per sample_id and clear fov_min/fov_max so the
+  # whole slide is loaded in default (non-split) mode.
+  # The full per-subsample rows are preserved in attr(, "split_rows") so that
+  # run_pipeline() can restore them when --split is requested.
+  dup_ids <- unique(sample_df$sample_id[duplicated(sample_df$sample_id)])
+  if (length(dup_ids) > 0) {
+    attr(sample_df, "split_rows") <- sample_df[sample_df$sample_id %in% dup_ids, , drop = FALSE]
+    sample_df <- sample_df[!duplicated(sample_df$sample_id), , drop = FALSE]
+    is_dup <- sample_df$sample_id %in% dup_ids
+    sample_df$fov_min[is_dup] <- NA_character_
+    sample_df$fov_max[is_dup] <- NA_character_
+    sample_df$subsample_id[is_dup] <- NA_character_
+  }
+  
+  rownames(sample_df) <- NULL
+  sample_df
 }
 
 auto_detect_sample_table <- function(cfg) {
@@ -394,6 +422,34 @@ select_samples <- function(samples,
   
   rownames(selected) <- NULL
   selected
+}
+
+expand_split_samples <- function(samples, cfg) {
+  # Replace rows that have a subsample_id with their per-subsample version:
+  # sample_id  <- subsample_id
+  # output_dir <- Sample_<subsample_id>
+  # fov_min / fov_max are kept as-is (already set in the split_rows)
+  if (!"subsample_id" %in% names(samples)) {
+    return(samples)
+  }
+  has_sub <- !is.na(samples$subsample_id) & nzchar(as.character(samples$subsample_id))
+  if (!any(has_sub)) {
+    return(samples)
+  }
+  samples$sample_id[has_sub] <- as.character(samples$subsample_id[has_sub])
+  samples$output_dir[has_sub] <- file.path(
+    cfg$paths$output_dir,
+    paste0("Sample_", samples$sample_id[has_sub])
+  )
+  samples$output_dir[has_sub] <- vapply(
+    samples$output_dir[has_sub],
+    resolve_path,
+    character(1),
+    base_dir = cfg$paths$output_dir,
+    mustWork = FALSE
+  )
+  rownames(samples) <- NULL
+  samples
 }
 
 compute_steps <- function(order, selected_steps = NULL, from_step = NULL) {
@@ -929,7 +985,7 @@ run_merged_pipeline <- function(runtime_env,
           gobj = current_gobj,
           sample_id = merged_name,
           output_dir = output_dir,
-          batch_column = cfg$merged$batch_column %||% "slide_num",
+          batch_column = cfg$merged$batch_column %||% "slide_id",
           dimensions_to_use = cfg$merged$dimensions_to_use %||% "1:30",
           umap_n_neighbors = cfg$merged$umap_n_neighbors %||% 30,
           umap_min_dist = cfg$merged$umap_min_dist %||% 0.3,
@@ -1009,7 +1065,8 @@ parse_cli_args <- function(args) {
     from_step = NULL,
     merged_from_step = NULL,
     run_label = NULL,
-    dry_run = FALSE
+    dry_run = FALSE,
+    split = FALSE
   )
   
   i <- 1L
@@ -1021,6 +1078,11 @@ parse_cli_args <- function(args) {
     key <- sub("^--", "", arg)
     if (key == "dry-run") {
       opts$dry_run <- TRUE
+      i <- i + 1L
+      next
+    }
+    if (key == "split") {
+      opts$split <- TRUE
       i <- i + 1L
       next
     }
@@ -1073,6 +1135,24 @@ run_pipeline <- function(cli_opts) {
   
   if (nrow(selected_samples) == 0) {
     stop("No samples matched the selected filters.")
+  }
+  
+  # When --split is requested, expand composite-slide rows (those with a
+  # subsample_id) into per-subsample rows, each with its own sample_id and
+  # output_dir.  The full split_rows were preserved by normalize_sample_table()
+  # as an attribute; we recover them here and re-select to honour --samples /
+  # --groups / --pairs filters.
+  if (isTRUE(cli_opts$split)) {
+    split_rows <- attr(sample_table, "split_rows")
+    if (!is.null(split_rows) && nrow(split_rows) > 0) {
+      # Rows from split_rows whose parent sample_id was selected
+      selected_split <- split_rows[split_rows$sample_id %in% selected_samples$sample_id, , drop = FALSE]
+      # Rows that had no sub-splitting (no entry in split_rows)
+      non_split <- selected_samples[!selected_samples$sample_id %in% split_rows$sample_id, , drop = FALSE]
+      selected_samples <- rbind(non_split, selected_split)
+      rownames(selected_samples) <- NULL
+    }
+    selected_samples <- expand_split_samples(selected_samples, cfg)
   }
   
   sample_steps <- compute_steps(
