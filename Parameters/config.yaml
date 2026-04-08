@@ -28,7 +28,17 @@ merged:
   input_step: "07_annotate"
   join_method: "shift"
   x_padding: 1000
-  batch_column: "slide_num"
+  # batch_column controls what Harmony corrects for.
+  # "slide_id" = the physical run/preparation batch:
+  #   batch_CART     → all 4 CART sub-samples (same slide, same run)
+  #   batch_Control  → the single Control slide
+  #   batch_Conv_1   → Conventional Slides 3 + 4 (run together)
+  #   batch_Conv_2   → Conventional Slides 31 + 32 (run together)
+  # This is preferred over "group_id" (which would risk Harmony collapsing
+  # real biological treatment differences) and over "slide_num" (which
+  # would over-correct by treating slides 3 and 4 as independent batches
+  # when they were prepared and run simultaneously).
+  batch_column: "slide_id"
   dimensions_to_use: "1:30"
   umap_n_neighbors: 30
   umap_min_dist: 0.3
@@ -38,11 +48,22 @@ merged:
   cohort_column: "leiden_clust"
   run_label: null
 
+# FOV subsetting for composite slides (multiple biopsies on one raw slide).
+# Each sample_id listed here will have its Giotto object subset to cells
+# whose FOV falls within [fov_min, fov_max] immediately after loading.
+# The fov_min/fov_max values are read from the sample_sheet columns of
+# the same name. Rows with empty fov_min/fov_max are loaded in full.
+fov_split:
+  enabled: true
+  fov_column: "fov"        # column in CosMx metadata containing the FOV number
+  fov_min_col: "fov_min"   # sample_sheet column with the lower FOV bound
+  fov_max_col: "fov_max"   # sample_sheet column with the upper FOV bound
+
 interaction:
-  # FIX #3: Set annotation column explicitly instead of relying on fragile
+  # Set annotation column explicitly instead of relying on fragile
   # auto-detection. Must match the column produced by step 07_Annotation.
   annotation_column: "celltype_HCA_Kidney_supervised"
-  # FIX #10: Generalised cell-type focus regex. Change this to target
+  # Generalised cell-type focus regex. Change this to target
   # different populations for the focused analysis in step 11.
   # Examples:
   #   B cells:    '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
@@ -92,28 +113,30 @@ spatial_de:
   min_replicates_per_group: 2
   n_spatial_patches: 8
   smide_family: "nbinom2"
-  # FIX #12c: Verify coordinate units. CosMx coordinates are typically in
-  # microns (range ~10,000-50,000). If your coordinates ARE in microns,
-  # change this to 50 (50 um cell-cell proximity). If Giotto has normalized
+  # Verify coordinate units. CosMx coordinates are typically in
+  # microns (range ~10,000-50,000). If the coordinates are in microns,
+  # this needs to be 50 (50 um cell-cell proximity). If Giotto has normalized
   # coordinates to [0,1], 0.05 is appropriate. The script now auto-detects
   # and warns if the value looks inconsistent with the coordinate range.
-  smide_radius: 0.05
+  smide_radius: 50
   smide_ncores: 4
-  # FIX #12d: Changed from 1 (disabled) to 0.7 to filter genes with high
-  # cross-cell transcript contamination. CosMx has known transcript diffusion
-  # between adjacent cells; a threshold of 0.7 removes genes where >70% of
+  # Having an overlap threshold of 1 means its disabled. Changed from 0.7 to 
+  # 0.8 to be more laxed filter genes with high cross-cell transcript 
+  # contamination. CosMx has known transcript diffusion
+  # between adjacent cells; a threshold of 0.8 removes genes where >80% of
   # expression is attributable to neighboring cells.
-  smide_overlap_threshold: 0.7
-  # FIX #12a: CRITICAL — restrict smiDE to B-cell types only.
+  smide_overlap_threshold: 0.8
+  # Restrict smiDE to B-cell types only.
   # With null, smiDE iterates over ALL ~20 cell types × 200k cells which
   # takes hours to days. Restricting to B cells reduces runtime to ~10-30 min.
   # Add more types as needed: ["B.cell", "Plasma.cell", "CD4.T.cell"]
   smide_annotation_subset: ["B.cell"]
-  smide_min_detection_fraction: 0.05
+  # Reduced the lower minimum detection threshold since B cells are rare 
+  smide_min_detection_fraction: 0.01
   smide_custom_predictor: null
   smide_partner_celltypes: null
   smide_partner_source: "none"
-  smide_partner_top_n: 3
+  smide_partner_top_n: 5
   smide_partner_padj_threshold: 0.05
   smide_include_self_partner: false
   smide_save_raw: true
@@ -139,13 +162,13 @@ parameters:
 
   clustering:
     k_nn: 15
-    # FIX #9: Increased from 0.3. For ~200k cells from heterogeneous LN
+    # Increased from 0.3. For ~200k cells from heterogeneous LN
     # tissue, 0.3 merges distinct immune subsets (e.g. naive B, memory B,
     # plasmablasts all collapse). 0.8 provides better separation of immune
     # subtypes while keeping structural clusters coherent.
     resolution: 0.8
     n_iterations: 200
-    # FIX #9: Enable resolution sweep so you can compare cluster granularity
+    # Enable resolution sweep so you can compare cluster granularity
     # across a range and pick the best resolution per sample.
     resolution_sweep: [0.3, 0.5, 0.8, 1.0, 1.5]
     dimensions_to_use: "1:30"
@@ -183,7 +206,7 @@ parameters:
     celltype_columns: null
     cluster_column: "leiden_clust"
     marker_genes:
-      # FIX #12: Expanded marker gene panels for lupus nephritis B-cell
+      # Expanded marker gene panels for lupus nephritis B-cell
       # biology. Genes not present on the CosMx panel will be silently
       # skipped by step 08.
       b_cells: ["CD19", "MS4A1", "CD79A", "CD79B", "IGHM", "IGHG1"]

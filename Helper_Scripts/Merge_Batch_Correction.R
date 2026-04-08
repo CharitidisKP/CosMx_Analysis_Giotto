@@ -354,7 +354,9 @@ batch_correct_merged_object <- function(gobj,
   
   metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
   if (!batch_column %in% names(metadata)) {
-    fallback_column <- c("slide_num", "list_ID", "sample_id")[c("slide_num", "list_ID", "sample_id") %in% names(metadata)][1]
+    fallback_column <- c("slide_id", "slide_num", "list_ID", "sample_id")[
+      c("slide_id", "slide_num", "list_ID", "sample_id") %in% names(metadata)
+    ][1]
     if (is.na(fallback_column) || !nzchar(fallback_column)) {
       stop("Batch column '", batch_column, "' is not present in merged metadata.")
     }

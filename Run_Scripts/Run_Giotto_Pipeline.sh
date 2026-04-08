@@ -49,6 +49,8 @@ apptainer exec --cleanenv \
   --env LOGNAME=koncha \
   --env R_LIBS_USER="$HOME/Rlibs_giotto" \
   --env R_LIBS= \
+  --env COSMX_PYTHON_PATH="/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3" \
+  --env RETICULATE_PYTHON="/mnt/home/koncha/anaconda3/envs/giotto_Py_3_11/bin/python3" \
   --env VROOM_TEMP_PATH="/mnt/home/koncha/P_lab/CosMx_analysis/tmp" \
   --env TMPDIR="/mnt/home/koncha/P_lab/CosMx_analysis/tmp" \
   --bind ~/rs-nss/passwd:/etc/passwd:ro \
@@ -59,8 +61,6 @@ apptainer exec --cleanenv \
   Rscript /mnt/home/koncha/P_lab/CosMx_analysis/Scripts/CosMx_pipeline.R \
     --config /mnt/home/koncha/P_lab/CosMx_analysis/Scripts/Parameters/config.yaml \
     "$@" \
-  2>&1 | tee "$LOG_FILE"
-  
   2>&1 | tee "$LOG_FILE"
 
 # Clean up temp files after pipeline completes or fails

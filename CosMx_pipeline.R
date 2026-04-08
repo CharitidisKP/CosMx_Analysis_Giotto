@@ -592,11 +592,52 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
   
   switch(
     step_id,
-    "01_load" = runtime_env$load_cosmx_sample(
-      sample_id = sample_id,
-      data_dir = sample_row$data_dir,
-      output_dir = output_dir
-    ),
+    ## Changed 01_load after adding the subsampling information to the sample_sheet ##
+    "01_load" = {
+      gobj <- runtime_env$load_cosmx_sample(
+        sample_id = sample_id,
+        data_dir  = sample_row$data_dir,
+        output_dir = output_dir
+      )
+      
+      # FOV subsetting for composite slides (e.g. 4 biopsies on one CART slide)
+      fov_cfg <- cfg$fov_split %||% list()
+      if (isTRUE(fov_cfg$enabled %||% FALSE)) {
+        fov_min_col <- fov_cfg$fov_min_col %||% "fov_min"
+        fov_max_col <- fov_cfg$fov_max_col %||% "fov_max"
+        fov_col     <- fov_cfg$fov_column  %||% "fov"
+        fov_min_val <- suppressWarnings(as.integer(sample_row[[fov_min_col]]))
+        fov_max_val <- suppressWarnings(as.integer(sample_row[[fov_max_col]]))
+        
+        if (!is.na(fov_min_val) && !is.na(fov_max_val)) {
+          message(
+            "FOV subsetting: keeping FOV ", fov_min_val, "-", fov_max_val,
+            " for sample ", sample_id
+          )
+          meta <- as.data.frame(
+            get("pDataDT", envir = asNamespace("Giotto"))(gobj),
+            stringsAsFactors = FALSE
+          )
+          keep_fovs <- suppressWarnings(as.integer(meta[[fov_col]]))
+          keep_ids  <- meta$cell_ID[
+            !is.na(keep_fovs) & keep_fovs >= fov_min_val & keep_fovs <= fov_max_val
+          ]
+          if (length(keep_ids) == 0) {
+            stop(
+              "FOV subsetting removed all cells for sample '", sample_id,
+              "'. Check fov_min/fov_max in sample_sheet.csv ",
+              "(fov_min=", fov_min_val, ", fov_max=", fov_max_val, ")."
+            )
+          }
+          gobj <- get("subsetGiotto", envir = asNamespace("Giotto"))(
+            gobject  = gobj,
+            cell_ids = keep_ids
+          )
+          message("  Retained ", length(keep_ids), " cells after FOV subsetting.")
+        }
+      }
+      gobj
+    },
     "02_qc" = runtime_env$quality_control(
       gobj = gobj,
       sample_id = sample_id,
