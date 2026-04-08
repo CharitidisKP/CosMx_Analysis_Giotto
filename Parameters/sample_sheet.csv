@@ -1,10 +1,11 @@
 sample_id,subsample_id,directory_name,slide_num,slide_id,patient_id,pair_id,group_id,treatment,timepoint,include,fov_min,fov_max,notes
-1979_8769_6063_4320,CART_T0_S1,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S1,CART,CAR-T,T0,TRUE,55,71,CART biopsy T0 replicate 1 (FOV 55-71)
-1979_8769_6063_4320,CART_T12_S1,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S1,CART,CAR-T,T12,TRUE,42,54,CART biopsy T12 replicate 1 (FOV 42-54)
-1979_8769_6063_4320,CART_T0_S2,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S2,CART,CAR-T,T0,TRUE,29,41,CART biopsy T0 replicate 2 (FOV 29-41)
-1979_8769_6063_4320,CART_T12_S2,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S2,CART,CAR-T,T12,TRUE,1,28,CART biopsy T12 replicate 2 (FOV 1-28)
+1979_8769_6063_4320,,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_whole,CART,CAR-T,,TRUE,,,CART composite slide - single-sample processing (steps 01-11 done)
 1281,,MCFASCIST1250Slide21281,2,batch_Control,,,Control,Control,T0,TRUE,,,Single raw sample directory
 19H28111,,MCFASCLST1196Slide3119H28111,31,batch_Conv_2,,pair_Conv_2,Conventional,Conventional,T0,TRUE,,,
 17H13349,,MCFASCLST1196_Slide317H13349,3,batch_Conv_1,,pair_Conv_1,Conventional,Conventional,T0,TRUE,,,
 20H24159,,MCFASCLST1196Slide3220H24159,32,batch_Conv_2,,pair_Conv_2,Conventional,Conventional,T12,TRUE,,,
 18H12037,,MCFASCLST1196_Slide418H12037,4,batch_Conv_1,,pair_Conv_1,Conventional,Conventional,T12,TRUE,,,
+1979_8769_6063_4320,CART_T0_S1,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S1,CART,CAR-T,T0,FALSE,55,71,CART T0 replicate 1 - activate when reprocessing from step 01
+1979_8769_6063_4320,CART_T12_S1,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S1,CART,CAR-T,T12,FALSE,42,54,CART T12 replicate 1 - activate when reprocessing from step 01
+1979_8769_6063_4320,CART_T0_S2,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S2,CART,CAR-T,T0,FALSE,29,41,CART T0 replicate 2 - activate when reprocessing from step 01
+1979_8769_6063_4320,CART_T12_S2,MCFASCIST1250Slide11979876960634322,1,batch_CART,,pair_CART_S2,CART,CAR-T,T12,FALSE,1,28,CART T12 replicate 2 - activate when reprocessing from step 01
