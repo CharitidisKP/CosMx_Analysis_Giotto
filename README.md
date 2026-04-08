@@ -61,17 +61,26 @@ CosMx_analysis/
 ## The sample sheet
 
 `Scripts/Parameters/sample_sheet.csv` defines every logical sample the
-pipeline will process.  **One row = one independently processed sample.**
-For composite slides containing multiple biopsies (e.g. the CART slide with
-four tissue sections), add one row per biopsy and use `fov_min`/`fov_max` to
-subset the FOV range after loading.
+pipeline will process.
+
+**Default mode (no `--split`)**: one row per `sample_id` is processed as a
+whole slide.  When multiple rows share the same `sample_id` (composite slides
+with distinct `subsample_id` values), `normalize_sample_table()` deduplicates
+them to a single representative row and clears `fov_min`/`fov_max` so the
+entire slide is loaded.
+
+**Split mode (`--split`)**: each row that has a `subsample_id` is expanded into
+its own independent run — `sample_id` is replaced by `subsample_id`, output is
+written to `Sample_<subsample_id>/`, and the `fov_min`/`fov_max` range is
+applied at load time.
 
 ### Columns
 
 | Column | Required | Description |
 |---|---|---|
-| `sample_id` | ✅ | Unique identifier used for all output files and checkpoint directories |
-| `directory_name` | ✅ | Name of the raw data folder under `raw_data_dir`; multiple rows may share the same `directory_name` for composite slides |
+| `sample_id` | ✅ | Physical slide / directory identifier; multiple rows may share this value for composite slides |
+| `subsample_id` | — | Logical sub-sample name (e.g. `CART_T0_S1`); used by `--split` to give each biopsy its own run |
+| `directory_name` | ✅ | Name of the raw data folder under `raw_data_dir`; rows sharing a `sample_id` also share their `directory_name` |
 | `slide_num` | ✅ | Physical slide number (integer) |
 | `slide_id` | ✅ | **Run/batch identifier for Harmony batch correction** — samples prepared and sequenced together share the same `slide_id` (see [Batch correction](#batch-correction)) |
 | `patient_id` | — | Patient identifier for paired/repeated-measures analysis |
@@ -80,28 +89,29 @@ subset the FOV range after loading.
 | `treatment` | — | Treatment label passed through to the merged spatial DE step |
 | `timepoint` | — | Biopsy timepoint (`T0`, `T12`) — informational |
 | `include` | — | `TRUE`/`FALSE` — set to `FALSE` to exclude a sample without deleting the row |
-| `fov_min` | — | Minimum FOV number to retain (inclusive). Leave blank to keep all FOVs |
-| `fov_max` | — | Maximum FOV number to retain (inclusive). Leave blank to keep all FOVs |
+| `fov_min` | — | Minimum FOV number to retain (inclusive). Used when `--split` is active |
+| `fov_max` | — | Maximum FOV number to retain (inclusive). Used when `--split` is active |
 | `notes` | — | Free-text notes |
 
 ### Current sample manifest
 
-| sample_id | directory_name | slide_num | slide_id | group_id | timepoint | fov_min | fov_max |
-|---|---|---|---|---|---|---|---|
-| CART_T0_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 55 | 71 |
-| CART_T12_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 42 | 54 |
-| CART_T0_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 29 | 41 |
-| CART_T12_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 1 | 28 |
-| 1281 | MCFASCIST1250Slide2… | 2 | batch_Control | Control | T0 | — | — |
-| 19H28111 | MCFASCLST1196Slide31… | 31 | batch_Conv_2 | Conventional | T0 | — | — |
-| 17H13349 | MCFASCLST1196_Slide3… | 3 | batch_Conv_1 | Conventional | T0 | — | — |
-| 20H24159 | MCFASCLST1196Slide32… | 32 | batch_Conv_2 | Conventional | T12 | — | — |
-| 18H12037 | MCFASCLST1196_Slide4… | 4 | batch_Conv_1 | Conventional | T12 | — | — |
+| sample_id | subsample_id | directory_name | slide_num | slide_id | group_id | timepoint | fov_min | fov_max |
+|---|---|---|---|---|---|---|---|---|
+| 1979_8769_6063_4320 | CART_T0_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 55 | 71 |
+| 1979_8769_6063_4320 | CART_T12_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 42 | 54 |
+| 1979_8769_6063_4320 | CART_T0_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 29 | 41 |
+| 1979_8769_6063_4320 | CART_T12_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 1 | 28 |
+| 1281 | — | MCFASCIST1250Slide2… | 2 | batch_Control | Control | T0 | — | — |
+| 19H28111 | — | MCFASCLST1196Slide31… | 31 | batch_Conv_2 | Conventional | T0 | — | — |
+| 17H13349 | — | MCFASCLST1196_Slide3… | 3 | batch_Conv_1 | Conventional | T0 | — | — |
+| 20H24159 | — | MCFASCLST1196Slide32… | 32 | batch_Conv_2 | Conventional | T12 | — | — |
+| 18H12037 | — | MCFASCLST1196_Slide4… | 4 | batch_Conv_1 | Conventional | T12 | — | — |
 
-> **CART pairing**: `CART_T0_S1` ↔ `CART_T12_S1` (pair_id `pair_CART_T12_S1`) and
-> `CART_T0_S2` ↔ `CART_T12_S2` (pair_id `pair_CART_T12_S2`).  Both T0/T12 pairs
-> derive from the same physical slide (`MCFASCIST1250Slide11979876960634322`);
-> they are separated at load time by their FOV ranges.
+> **CART composite slide**: the four CART rows all share `sample_id=1979_8769_6063_4320`
+> (the same physical slide directory).  Without `--split` the pipeline processes
+> it as a single whole-slide sample.  With `--split` it expands to four
+> independent runs: `CART_T0_S1`, `CART_T12_S1`, `CART_T0_S2`, `CART_T12_S2`,
+> each restricted to its FOV range.
 
 ---
 
@@ -259,6 +269,7 @@ All examples use the Apptainer wrapper:
 | `--merged-from-step` | `merge_batch` | Start merged pipeline from this step (resume) |
 | `--run-label` | `my_run` | Custom label for the merged output directory |
 | `--dry-run` | *(flag)* | Print what would run without executing |
+| `--split` | *(flag)* | Expand composite-slide rows (those with a `subsample_id`) into per-subsample runs, each with its own `sample_id` and output directory |
 
 ---
 
@@ -316,30 +327,52 @@ Or run only specific steps explicitly:
 
 ---
 
-### 4 — Rerun spatial DE for all CART sub-samples
+### 4 — Run the CART slide split into its four sub-samples
 
-The CART slide is split into four logical samples.  To rerun step 12 for all
-four simultaneously:
+By default, `1979_8769_6063_4320` is processed as one whole-slide sample.
+To reprocess it as four separate FOV-ranged sub-samples (e.g. to rerun step
+12 per biopsy):
+
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
+  --samples 1979_8769_6063_4320 \
+  --sample-steps 12_spatial_de \
+  --mode separate \
+  --split
+```
+
+This expands the single `1979_8769_6063_4320` row into four rows:
+`CART_T0_S1`, `CART_T12_S1`, `CART_T0_S2`, `CART_T12_S2`, each loading
+from the same raw directory but restricted to its FOV range, and writing to
+`Output/Sample_CART_T0_S1/` etc.
+
+You can also select by group:
+
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
+  --groups CART \
+  --mode separate \
+  --split
+```
+
+---
+
+### 5 — Rerun spatial DE for all CART sub-samples (legacy whole-slide IDs)
+
+If checkpoints already exist under the old per-subsample output directories
+(`Sample_CART_T0_S1/` etc.), use `--split` to resume from step 12:
 
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
   --groups CART \
   --sample-steps 12_spatial_de \
-  --mode separate
-```
-
-Or by listing individual sample IDs:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --samples CART_T0_S1,CART_T12_S1,CART_T0_S2,CART_T12_S2 \
-  --sample-steps 12_spatial_de \
-  --mode separate
+  --mode separate \
+  --split
 ```
 
 ---
 
-### 5 — Run the merged pipeline only (all merge steps)
+### 6 — Run the merged pipeline only (all merge steps)
 
 Assumes per-sample step 07 checkpoints already exist.
 
@@ -357,7 +390,7 @@ With a custom run label:
 
 ---
 
-### 6 — Rerun batch correction and merged spatial DE only (skip re-merging)
+### 7 — Rerun batch correction and merged spatial DE only (skip re-merging)
 
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
@@ -367,24 +400,26 @@ With a custom run label:
 
 ---
 
-### 7 — Paired CART analysis (T0 vs T12)
+### 8 — Paired CART analysis (T0 vs T12)
 
 The CART biopsies are linked by `pair_id`:
 
-- `pair_CART_T0` → `CART_T0_S1` + `CART_T0_S2`  
-- `pair_CART_T12` → `CART_T12_S1` + `CART_T12_S2`
+- `pair_CART_S1` → `CART_T0_S1` + `CART_T12_S1`
+- `pair_CART_S2` → `CART_T0_S2` + `CART_T12_S2`
 
 Within-slide pairings for longitudinal comparison:
 
 - **Pair A**: `CART_T0_S1` ↔ `CART_T12_S1` (FOV 55–71 and 42–54)
 - **Pair B**: `CART_T0_S2` ↔ `CART_T12_S2` (FOV 29–41 and 1–28)
 
-To process only the CART paired samples through the full per-sample pipeline:
+To process only the CART paired samples through the full per-sample pipeline
+(using `--split` to expand into sub-samples):
 
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
   --groups CART \
-  --mode separate
+  --mode separate \
+  --split
 ```
 
 Then run a targeted merged analysis for the CART group only with a dedicated
@@ -394,7 +429,8 @@ run label:
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
   --groups CART \
   --mode merged \
-  --run-label CART_paired
+  --run-label CART_paired \
+  --split
 ```
 
 The merged spatial DE step (`12_spatial_de` in merged mode) will use the
@@ -403,7 +439,7 @@ within each CART biopsy pair using edgeR pseudobulk.
 
 ---
 
-### 8 — Preview any run without executing (`--dry-run`)
+### 9 — Preview any run without executing (`--dry-run`)
 
 Prints the resolved config path, selected samples, and step order without
 running anything:
@@ -422,7 +458,12 @@ running anything:
 
 ```
 Output/
-├── Sample_CART_T0_S1/
+├── Sample_1979_8769_6063_4320/     # Default (no --split): whole slide
+├── Sample_CART_T0_S1/              # With --split: per-subsample
+├── Sample_CART_T12_S1/
+├── Sample_CART_T0_S2/
+├── Sample_CART_T12_S2/
+├── Sample_1281/
 │   ├── 01_Data_Loading/
 │   ├── 02_Quality_Control/
 │   ├── ...
@@ -431,8 +472,6 @@ Output/
 │   │   └── plots/
 │   ├── Giotto_Object_Annotated/     # Step 07 checkpoint
 │   └── pipeline_checkpoints/        # Per-step checkpoints
-├── Sample_CART_T12_S1/
-├── Sample_1281/
 ├── Merged/
 │   └── <run_label>/
 │       ├── 10_Merged/
