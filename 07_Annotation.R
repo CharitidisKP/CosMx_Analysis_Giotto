@@ -817,10 +817,19 @@ refine_annotation <- function(gobj,
   cat("  Cluster types to delete (mean conf <", conf_threshold, "):\n")
   cat("   ", paste(to_delete, collapse = ", "), "\n")
   cat("  Retained types:", length(remaining), "\n\n")
-  
+
   # 3. Run refineClusters() ------------------------------------------------
+  # refineClusters() requires a matrix with ≥2 columns; a single retained
+  # type collapses the logliks subset to a vector and causes a dimension error.
+  if (length(remaining) < 2) {
+    message("  \u26A0 Skipping refineClusters(): only ", length(remaining),
+            " cell type retained after confidence filtering",
+            " \u2014 refinement requires \u22652 types")
+    return(invisible(gobj))
+  }
+
   cat("  Running InSituType::refineClusters()...\n")
-  
+
   insitu_refined <- tryCatch({
     InSituType::refineClusters(
       logliks   = insitu_result$logliks,
@@ -1343,10 +1352,42 @@ annotate_cells <- function(gobj,
             n_starts           = n_starts
           )
         }, error = function(e) {
-          cat("\u26A0 Semi-supervised failed for", profile_name,
-              "- skipping (supervised outputs still produced):\n")
-          cat("  ", conditionMessage(e), "\n\n")
-          NULL
+          err_msg <- conditionMessage(e)
+          n_cells <- nrow(counts_mat)
+          message(
+            "\u26A0 Semi-supervised annotation failed for profile '", profile_name, "'",
+            " (sample: ", sample_id, ", cells: ", n_cells, ").\n",
+            "  Error: ", err_msg, "\n",
+            if (grepl("anchor", err_msg, ignore.case = TRUE)) {
+              paste0(
+                "  Likely cause: sample is too small (", n_cells, " cells) or",
+                " confidence scores are too uniform to select anchor cells.\n",
+                "  Tip: try lowering the anchor confidence threshold,",
+                " increasing n_clusts_semi, or using refinement = FALSE.\n"
+              )
+            } else "",
+            "  Continuing with supervised-only annotations."
+          )
+
+          # Fallback: retry with refinement = FALSE to bypass anchor selection
+          message("  \u21B3 Retrying semi-supervised with refinement = FALSE ...")
+          fallback_result <- tryCatch({
+            InSituType::insitutype(
+              x                  = counts_mat,
+              neg                = bg_per_cell,
+              reference_profiles = ref_profiles,
+              n_clusts           = n_clusts_semi,
+              cohort             = cohort_vec,
+              align_genes        = align_genes,
+              n_starts           = n_starts,
+              refinement         = FALSE
+            )
+          }, error = function(e2) {
+            message("  \u21B3 Retry also failed: ", conditionMessage(e2))
+            message("  \u21B3 Using supervised-only annotations.")
+            NULL
+          })
+          fallback_result
         })
         
         if (!is.null(insitu_semi)) {

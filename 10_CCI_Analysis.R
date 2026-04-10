@@ -1122,9 +1122,13 @@ run_misty <- function(gobj,
   if (!requireNamespace("mistyR", quietly = TRUE))
     stop("mistyR not installed.\n",
          'Install: BiocManager::install("mistyR")')
+  # Guard: .misty_runtime_ready() should have already checked this, but we
+  # verify here in case run_misty() is called directly.  The full diagnostic
+  # message (with remediation steps) is printed by .misty_runtime_ready().
   ridge_ready <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
   if (!isTRUE(ridge_ready)) {
-    cat("\u26A0 MISTy skipped: ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27).\n")
+    misty_check <- .misty_runtime_ready()
+    cat("\u26A0", misty_check$reason, "\n")
     return(invisible(NULL))
   }
   
@@ -1489,15 +1493,62 @@ run_nnsvg <- function(gobj,
   if (!requireNamespace("mistyR", quietly = TRUE)) {
     return(list(ok = FALSE, reason = "mistyR is not installed."))
   }
-  
+
   ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
+
   if (!isTRUE(ridge_ok)) {
-    return(list(
-      ok = FALSE,
-      reason = "ridge could not be loaded. On Linux this usually means the GSL runtime library is missing (e.g. libgsl.so.27)."
+    # ── Auto-detection: try to locate libgsl on common cluster / conda paths ──
+    # The pipeline runs inside an Apptainer image so system paths inside the
+    # container are checked first, then the conda env that supplies Python.
+    conda_prefix <- Sys.getenv("CONDA_PREFIX", unset = "")
+    conda_python  <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")   # set by Run_Giotto_Pipeline.sh
+    # Derive conda env lib dir from COSMX_PYTHON_PATH if CONDA_PREFIX is unset
+    conda_lib_from_python <- if (nzchar(conda_python)) {
+      file.path(dirname(dirname(conda_python)), "lib")
+    } else ""
+
+    gsl_candidates <- unique(c(
+      "/usr/lib", "/usr/lib/x86_64-linux-gnu", "/usr/local/lib",
+      conda_lib_from_python,
+      if (nzchar(conda_prefix)) conda_prefix else "",
+      if (nzchar(conda_prefix)) file.path(conda_prefix, "lib") else ""
     ))
+    gsl_found <- Filter(function(p) {
+      nzchar(p) && file.exists(p) &&
+        any(grepl("libgsl\\.so", list.files(p, full.names = FALSE)))
+    }, gsl_candidates)
+
+    if (length(gsl_found) > 0) {
+      existing_ldpath <- Sys.getenv("LD_LIBRARY_PATH", unset = "")
+      Sys.setenv(LD_LIBRARY_PATH = paste(
+        c(gsl_found, existing_ldpath)[nzchar(c(gsl_found, existing_ldpath))],
+        collapse = ":"
+      ))
+      message("  \u2139 Found libgsl in: ", paste(gsl_found, collapse = ", "),
+              " \u2014 updated LD_LIBRARY_PATH, retrying ridge load...")
+      ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
+    }
   }
-  
+
+  if (!isTRUE(ridge_ok)) {
+    skip_msg <- paste0(
+      "MISTy skipped: the 'ridge' package requires libgsl.so.27 (GNU Scientific Library).\n",
+      "  To fix (no sudo required):\n",
+      "    Option 1 \u2014 conda env used by this pipeline:\n",
+      "        conda activate giotto_Py_3_11\n",
+      "        conda install -c conda-forge gsl\n",
+      "      then add to Run_Giotto_Pipeline.sh:\n",
+      "        --env LD_LIBRARY_PATH=\"$CONDA_PREFIX/lib\"\n",
+      "    Option 2 \u2014 bind host GSL libs into Apptainer:\n",
+      "        --bind /path/to/gsl/lib:/usr/local/lib:ro\n",
+      "      (add to the 'apptainer exec' call in Run_Giotto_Pipeline.sh)\n",
+      "    Option 3 \u2014 rebuild the .sif image with GSL included\n",
+      "    Option 4 \u2014 ask sysadmin to install libgsl27 / libgsl-dev on the host\n",
+      "  MISTy outputs will be absent from this run."
+    )
+    return(list(ok = FALSE, reason = skip_msg))
+  }
+
   list(ok = TRUE, reason = NULL)
 }
 .run_cci_section <- function(label, runner) {

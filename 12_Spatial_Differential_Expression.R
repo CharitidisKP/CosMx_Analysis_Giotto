@@ -831,10 +831,15 @@ run_smide_sample_backend <- function(expr_mat,
   
   for (cell_type in candidate_cell_types) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
+    n_cells_total <- nrow(cell_meta)
     niche_sizes <- table(cell_meta$spatial_niche)
     valid_niches <- names(niche_sizes[niche_sizes >= min_cells_per_niche])
     cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
     if (nrow(cell_meta) < min_cells_per_niche || length(valid_niches) < 2) {
+      message(sprintf(
+        "  \u26a0 smiDE skipped for '%s': %d total cells found, %d spatial niche(s) with \u2265%d cells (requires \u22652 qualifying niches with \u2265%d cells each)",
+        cell_type, n_cells_total, length(valid_niches), min_cells_per_niche, min_cells_per_niche
+      ))
       next
     }
     
@@ -1648,10 +1653,15 @@ run_sample_scope_spatial_de <- function(expr_mat,
   
   for (cell_type in sort(unique(stats::na.omit(metadata[[annotation_column]])))) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
-    if (nrow(cell_meta) < min_cells_per_niche) {
+    n_cells_raw <- nrow(cell_meta)
+    if (n_cells_raw < min_cells_per_niche) {
+      message(sprintf(
+        "  \u26a0 edgeR spatial DE skipped for '%s': only %d cells found (requires \u2265%d)",
+        cell_type, n_cells_raw, min_cells_per_niche
+      ))
       next
     }
-    
+
     replicate_counts <- as.data.frame(
       table(cell_meta$spatial_niche, cell_meta[[replicate_column]]),
       stringsAsFactors = FALSE
@@ -1659,20 +1669,32 @@ run_sample_scope_spatial_de <- function(expr_mat,
     names(replicate_counts) <- c("spatial_niche", replicate_column, "n_cells")
     keep_groups <- replicate_counts[replicate_counts$n_cells >= min_cells_per_replicate, , drop = FALSE]
     if (nrow(keep_groups) == 0) {
+      message(sprintf(
+        "  \u26a0 edgeR spatial DE skipped for '%s': no replicate (%s) has \u2265%d cells in any niche (min_cells_per_replicate=%d)",
+        cell_type, replicate_column, min_cells_per_replicate, min_cells_per_replicate
+      ))
       next
     }
-    
+
     keep_keys <- paste(keep_groups$spatial_niche, keep_groups[[replicate_column]], sep = "__")
     cell_meta$keep_key <- paste(cell_meta$spatial_niche, cell_meta[[replicate_column]], sep = "__")
     cell_meta <- cell_meta[cell_meta$keep_key %in% keep_keys, , drop = FALSE]
     if (nrow(cell_meta) < min_cells_per_niche) {
+      message(sprintf(
+        "  \u26a0 edgeR spatial DE skipped for '%s': after replicate filtering only %d cells remain (requires \u2265%d)",
+        cell_type, nrow(cell_meta), min_cells_per_niche
+      ))
       next
     }
-    
+
     niche_sizes <- table(cell_meta$spatial_niche)
     valid_niches <- names(niche_sizes[niche_sizes >= min_cells_per_niche])
     cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
     if (length(valid_niches) < 2) {
+      message(sprintf(
+        "  \u26a0 edgeR spatial DE skipped for '%s': only %d niche(s) with \u2265%d cells (requires \u22652)",
+        cell_type, length(valid_niches), min_cells_per_niche
+      ))
       next
     }
     
@@ -1694,6 +1716,12 @@ run_sample_scope_spatial_de <- function(expr_mat,
         group_vector <- ifelse(pb_meta$spatial_niche == niche, niche, "other_niches")
         group_sizes <- table(group_vector)
         if (length(group_sizes) != 2 || any(group_sizes < min_replicates_per_group)) {
+          message(sprintf(
+            "  \u26a0 edgeR one_vs_rest skipped for '%s' / niche '%s': group sizes [%s] do not meet min_replicates_per_group=%d",
+            cell_type, niche,
+            paste(names(group_sizes), group_sizes, sep = "=", collapse = ", "),
+            min_replicates_per_group
+          ))
           next
         }
         
@@ -1757,15 +1785,25 @@ run_sample_scope_spatial_de <- function(expr_mat,
     } else {
       niche_levels <- names(which(table(pb_meta$spatial_niche) >= min_replicates_per_group))
       if (length(niche_levels) < 2) {
+        message(sprintf(
+          "  \u26a0 edgeR pairwise skipped for '%s': only %d niche(s) with \u2265%d replicates (requires \u22652)",
+          cell_type, length(niche_levels), min_replicates_per_group
+        ))
         next
       }
-      
+
       for (pair in combn(sort(niche_levels), 2, simplify = FALSE)) {
         keep_idx <- pb_meta$spatial_niche %in% pair
         pair_meta <- pb_meta[keep_idx, , drop = FALSE]
         pair_counts <- pb$counts[, keep_idx, drop = FALSE]
         group_sizes <- table(pair_meta$spatial_niche)
         if (any(group_sizes < min_replicates_per_group)) {
+          message(sprintf(
+            "  \u26a0 edgeR pairwise skipped for '%s' / pair '%s': group sizes [%s] do not meet min_replicates_per_group=%d",
+            cell_type, paste(pair, collapse = "_vs_"),
+            paste(names(group_sizes), group_sizes, sep = "=", collapse = ", "),
+            min_replicates_per_group
+          ))
           next
         }
         

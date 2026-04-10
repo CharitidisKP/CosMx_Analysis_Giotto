@@ -341,6 +341,11 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
     stringsAsFactors = FALSE
   )
   
+  # Build edge data frame with explicit source/target coordinate columns.
+  # Two separate lookups are used (instead of two merge() calls) because
+  # back-to-back merge() on the same coordinate columns (x, y) causes R to
+  # append .x/.y suffixes on the second pass, leaving no plain "x"/"y" columns
+  # for ggplot to find — the original source of the "object 'x' not found" crash.
   edge_df <- data.frame(
     source = plot_df$source,
     target = plot_df$target,
@@ -348,10 +353,13 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
     edge_weight = plot_df$edge_weight,
     stringsAsFactors = FALSE
   )
-  edge_df <- merge(edge_df, node_df[, c("node", "x", "y")], by.x = "source", by.y = "node", all.x = TRUE)
-  names(edge_df)[names(edge_df) %in% c("x", "y")] <- c("x", "y")
-  edge_df <- merge(edge_df, node_df[, c("node", "x", "y")], by.x = "target", by.y = "node", all.x = TRUE)
-  names(edge_df)[names(edge_df) %in% c("x", "y")][3:4] <- c("xend", "yend")
+  # Explicit index-matched lookup avoids merge() suffix collisions entirely.
+  src_idx <- match(edge_df$source, node_df$node)
+  tgt_idx <- match(edge_df$target, node_df$node)
+  edge_df$x    <- node_df$x[src_idx]
+  edge_df$y    <- node_df$y[src_idx]
+  edge_df$xend <- node_df$x[tgt_idx]
+  edge_df$yend <- node_df$y[tgt_idx]
   edge_df$linewidth <- scales::rescale(edge_df$edge_weight, to = c(0.3, 1.8))
   
   palette <- setNames(grDevices::hcl.colors(length(node_names), palette = "Dynamic"), node_names)
@@ -604,6 +612,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
     )
   }, error = function(e) {
     message("cellProximityNetwork() skipped: ", conditionMessage(e))
+    # Diagnostic: show available columns in enrichment_table to aid future debugging.
+    message(
+      "  [debug] enrichment_table columns: ",
+      paste(names(enrichment_table), collapse = ", ")
+    )
   })
   
   if (save_object) {
