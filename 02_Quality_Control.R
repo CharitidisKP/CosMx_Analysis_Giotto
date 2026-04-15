@@ -228,7 +228,8 @@ quality_control <- function(gobj,
       point_size = 0.5,
       cell_color = "nr_feats",
       color_as_factor = FALSE,
-      gradient_style = "sequential",
+      ## Check if this is a thing in one of the packages ##
+      # gradient_style = "sequential",
       save_plot = TRUE,
       save_param = list(
         save_name = paste0(sample_id, "_spatial_genes_per_cell"),
@@ -245,7 +246,8 @@ quality_control <- function(gobj,
       point_size = 0.5,
       cell_color = "total_expr",
       color_as_factor = FALSE,
-      gradient_style = "sequential",
+      ## Check if this is a thing in one of the packages ##
+      # gradient_style = "sequential",
       save_plot = TRUE,
       save_param = list(
         save_name = paste0(sample_id, "_spatial_total_counts"),
@@ -263,7 +265,8 @@ quality_control <- function(gobj,
         point_size = 0.5,
         cell_color = "mito_pct",
         color_as_factor = FALSE,
-        gradient_style = "sequential",
+        ## Check if this is a thing in one of the packages ##
+        # gradient_style = "sequential",
         save_plot = TRUE,
         save_param = list(
           save_name = paste0(sample_id, "_spatial_mito_pct"),

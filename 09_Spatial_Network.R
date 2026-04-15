@@ -656,7 +656,7 @@ build_spatial_network <- function(gobj,
                   base_height = 8
                 )
               )
-            }, error = function(e) NULL)
+            }, error = function(e) cat("  ⚠ PAGE plot failed for", ct, ":", conditionMessage(e), "\n"))
           }
           cat("  \u2713 Spatial enrichment plots saved\n")
         }

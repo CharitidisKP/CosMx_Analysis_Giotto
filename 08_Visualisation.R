@@ -86,7 +86,16 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
 }
 
 .prepare_preview_gobject <- function(gobj, max_cells_preview = NULL, preview_seed = 1) {
-  total_cells <- length(gobj@cell_ID$cell)
+  ## Changed from: ##
+  ## total_cells <- length(gobj@cell_ID$cell) ##
+  cell_ids_slot <- tryCatch(gobj@cell_ID$cell, error = function(e) NULL)
+  all_cell_ids  <- if (!is.null(cell_ids_slot) && length(cell_ids_slot) > 0) {
+    cell_ids_slot
+  } else {
+    GiottoClass::getCellID(gobj)   # Giotto Suite accessor
+  }
+  total_cells <- length(all_cell_ids)
+  
   if (is.null(max_cells_preview)) {
     return(list(gobj = gobj, is_preview = FALSE, total_cells = total_cells, preview_cells = total_cells))
   }
@@ -97,7 +106,17 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
   }
   
   set.seed(preview_seed)
-  preview_ids <- sample(gobj@cell_ID$cell, max_cells_preview)
+  
+  ## Changed from: ##
+  ## preview_ids <- sample(gobj@cell_ID$cell, max_cells_preview) ##
+  ## Check again ##
+  preview_ids_slot <- tryCatch(sample(gobj@cell_ID$cell, max_cells_preview), error = function(e) NULL)
+  all_cell_ids  <- if (!is.null(preview_ids_slot) && length(preview_ids_slot) > 0) {
+    preview_ids_slot
+  } else {
+    GiottoClass::getCellID(gobj)   # Giotto Suite accessor
+  }
+  preview_ids <- length(all_cell_ids)
   preview_gobj <- subsetGiotto(gobject = gobj, cell_ids = preview_ids)
   
   list(
@@ -199,8 +218,9 @@ create_visualizations <- function(gobj,
     )
     cat("  ✓ UMAP clusters\n")
   }, error = function(e) {
-    cat("  ⚠ UMAP clusters warning\n")
-  })
+    cat("  ⚠ UMAP clusters failed:", conditionMessage(e), "\n") 
+    }
+  )
   
   # UMAP - Cell types
   for (ct_col in celltype_columns) {
@@ -223,8 +243,9 @@ create_visualizations <- function(gobj,
       )
       cat("  ✓ UMAP", ct_col, "\n")
     }, error = function(e) {
-      cat("  ⚠", ct_col, "warning\n")
-    })
+      cat("  ⚠", ct_col, "warning", conditionMessage(e), "\n") 
+      }
+    )
   }
   
   # t-SNE - Clusters
@@ -247,8 +268,9 @@ create_visualizations <- function(gobj,
     )
     cat("  ✓ t-SNE clusters\n")
   }, error = function(e) {
-    cat("  ⚠ t-SNE warning\n")
-  })
+    cat("  ⚠ t-SNE failed:", conditionMessage(e), "\n") 
+    }
+  )
   
   cat("✓ Dimensionality reduction plots complete\n\n")
   
@@ -280,8 +302,9 @@ create_visualizations <- function(gobj,
     )
     cat("  ✓ Spatial clusters\n")
   }, error = function(e) {
-    cat("  ⚠ Spatial clusters warning\n")
-  })
+    cat("  ⚠ Spatial clusters failed:", conditionMessage(e), "\n") 
+    }
+  )
   
   # Spatial - Cell types
   for (ct_col in celltype_columns) {
@@ -304,9 +327,10 @@ create_visualizations <- function(gobj,
       )
       cat("  ✓ Spatial", ct_col, "\n")
     }, error = function(e) {
-      cat("  ⚠", ct_col, "warning\n")
-    })
-  }
+      cat("  ⚠", ct_col, " failed:", conditionMessage(e), "\n") 
+      }
+    )
+  
   
   # Spatial - QC metrics
   tryCatch({
@@ -315,7 +339,8 @@ create_visualizations <- function(gobj,
         gobject = plot_gobj,
         cell_color = "nr_feats",
         color_as_factor = FALSE,
-        gradient_style = "sequential",
+        ## Check if this is a thing in one of the packages ##
+        # gradient_style = "sequential",
         point_size = 0.5,
         show_image = FALSE,
         save_plot = TRUE,
@@ -329,8 +354,9 @@ create_visualizations <- function(gobj,
     )
     cat("  ✓ Spatial genes per cell\n")
   }, error = function(e) {
-    cat("  ⚠ Spatial QC warning\n")
-  })
+    cat("  ⚠ Spatial QC failed:", conditionMessage(e), "\n") 
+    }
+  )
   
   cat("✓ Spatial plots complete\n\n")
   
@@ -365,8 +391,9 @@ create_visualizations <- function(gobj,
         )
         cat("  ✓", gene, "\n")
       }, error = function(e) {
-        cat("  ⚠", gene, "warning\n")
-      })
+        cat("  ⚠", gene, " failed:", conditionMessage(e), "\n") 
+        }
+      )
     }
     
     cat("✓ Feature plots complete\n\n")
@@ -418,8 +445,9 @@ create_visualizations <- function(gobj,
       
       cat("  ✓ Proportions", ct_col, "\n")
     }, error = function(e) {
-      cat("  ⚠ Proportions", ct_col, "warning\n")
-    })
+      cat("  ⚠ Proportions", ct_col, "failed:", conditionMessage(e), "\n") 
+      }
+    )
   }
   
   # Cluster composition by cell type
@@ -458,8 +486,9 @@ create_visualizations <- function(gobj,
         
         cat("  ✓ Composition", ct_col, "\n")
       }, error = function(e) {
-        cat("  ⚠ Composition", ct_col, "warning\n")
-      })
+        cat("  ⚠ Composition", ct_col, "failed:", conditionMessage(e), "\n") 
+        }
+      )
     }
   }
   

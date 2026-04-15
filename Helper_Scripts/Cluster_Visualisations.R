@@ -23,6 +23,17 @@ if ((!exists("presentation_theme") || !exists("save_presentation_plot")) &&
   source(pipeline_utils)
 }
 
+## Make sure cell type annotations dont ##
+## convert characters to NA instead of numeric ##
+.make_cluster_factor <- function(vals) {
+  char_vals <- as.character(vals)
+  int_vals  <- suppressWarnings(as.integer(char_vals))
+  if (all(!is.na(int_vals))) {
+    factor(char_vals, levels = as.character(sort(unique(int_vals))))
+  } else {
+    factor(char_vals, levels = sort(unique(char_vals)))
+  }
+}
 
 # Function 1: Extract and prepare visualization dataframes ----------------
 prepare_clustering_dataframes <- function(gobject, 
@@ -76,12 +87,14 @@ prepare_clustering_dataframes <- function(gobject,
       metadata %>% select(cell_ID, all_of(cluster_column)),
       by = "cell_ID"
     ) %>%
-    mutate(
-      cluster = factor(
-        as.character(.data[[cluster_column]]),
-        levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
-      )
-    )
+    mutate(cluster = .make_cluster_factor(.data[[cluster_column]]))
+  ## Fixed from: ##
+    # mutate(
+    #   cluster = factor(
+    #     as.character(.data[[cluster_column]]),
+    #     levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
+    #   )
+    # )
   
   # Create tSNE dataframe with ordered factors
   tsne_df <- tsne_coords %>%
@@ -92,12 +105,14 @@ prepare_clustering_dataframes <- function(gobject,
       metadata %>% select(cell_ID, all_of(cluster_column)),
       by = "cell_ID"
     ) %>%
-    mutate(
-      cluster = factor(
-        as.character(.data[[cluster_column]]),
-        levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
-      )
-    )
+    mutate(cluster = .make_cluster_factor(.data[[cluster_column]]))
+  ## Fixed from: ##
+  # mutate(
+  #   cluster = factor(
+  #     as.character(.data[[cluster_column]]),
+  #     levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
+  #   )
+  # )
   
   # Create spatial dataframe with ordered factors
   spatial_df <- spat_locs %>%
@@ -107,12 +122,14 @@ prepare_clustering_dataframes <- function(gobject,
       metadata %>% select(cell_ID, all_of(cluster_column)),
       by = "cell_ID"
     ) %>%
-    mutate(
-      cluster = factor(
-        as.character(.data[[cluster_column]]),
-        levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
-      )
-    )
+    mutate(cluster = .make_cluster_factor(.data[[cluster_column]]))
+  ## Fixed from: ##
+  # mutate(
+  #   cluster = factor(
+  #     as.character(.data[[cluster_column]]),
+  #     levels = as.character(sort(unique(as.integer(.data[[cluster_column]]))))
+  #   )
+  # )
   
   # Get cluster information
   cluster_levels <- levels(umap_df$cluster)
@@ -141,7 +158,14 @@ generate_cluster_colors <- function(cluster_levels,
   if (!is.null(custom_colors) && length(custom_colors) >= n_clusters) {
     clus_colors <- custom_colors[1:n_clusters]
   } else {
-    clus_colors <- getColors(palette, n_clusters)
+    ## Check if this is properly running or if I need to change the syntax ##
+    if (requireNamespace("RColorBrewer", quietly = TRUE) &&
+        palette %in% rownames(RColorBrewer::brewer.pal.info)) {
+      max_n <- RColorBrewer::brewer.pal.info[palette, "maxcolors"]
+      clus_colors <- colorRampPalette(RColorBrewer::brewer.pal(max_n, palette))(n_clusters)
+    } else {
+      clus_colors <- scales::hue_pal()(n_clusters)   # scales is already used in the repo
+    }
   }
   
   names(clus_colors) <- as.character(cluster_levels)
