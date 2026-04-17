@@ -898,6 +898,38 @@ run_sample_pipeline <- function(runtime_env,
       for (step_id in steps_to_run) {
         message("Running ", step_label(step_id), " for ", sample_name)
         current_gobj <- invoke_sample_step(runtime_env, step_id, current_gobj, sample_row, cfg)
+
+        # After annotation: read auto-selection JSON and override annotation
+        # columns for all downstream steps of this sample. cfg is a local
+        # copy inside run_sample_pipeline(), so other samples are unaffected.
+        if (step_id == "07_annotate") {
+          selection_file <- file.path(
+            sample_output_dir, "07_Annotation", "annotation_selection.json"
+          )
+          if (file.exists(selection_file)) {
+            sel <- tryCatch(
+              jsonlite::read_json(selection_file),
+              error = function(e) {
+                message("  [Auto-annotation] Could not read selection JSON: ",
+                        conditionMessage(e))
+                NULL
+              }
+            )
+            if (!is.null(sel)) {
+              sel_col <- sel$selected_annotation_column
+              if (!is.null(sel_col) && nzchar(sel_col)) {
+                cfg$interaction$annotation_column <- sel_col
+                cfg$spatial_de$annotation_column  <- sel_col
+                message(
+                  "  [Auto-annotation] Downstream steps will use '", sel_col,
+                  "' (composite score: ",
+                  round(as.numeric(sel$composite_score), 3), ")"
+                )
+              }
+            }
+          }
+        }
+
         if (isTRUE(cfg$pipeline$save_intermediates)) {
           save_step_checkpoint(
             current_gobj,

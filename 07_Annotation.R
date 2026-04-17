@@ -165,6 +165,342 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
 }
 
 
+# ── Annotation quality scoring & auto-selection ───────────────────────────
+#
+# Expected cell-type composition for lupus nephritis / autoimmune kidney
+# disease.  Each category carries grepl patterns (case-insensitive) that
+# match the cell-type names produced by any of the supported reference
+# profiles, plus a biological target proportion and a plausible [min, max]
+# range derived from published LN single-cell and spatial studies (e.g.,
+# Arazi 2019 Nat Immunol, Monteagudo 2021 Nat Commun, Hinze 2022 ARD).
+
+.expected_composition_ln <- function() {
+  list(
+    proximal_tubule = list(
+      patterns = c("proximal.tubule", "proximal_tubule", "\\bPT\\b",
+                   "distinct.proximal", "\\bS1\\b", "\\bS2\\b", "\\bS3\\b"),
+      target = 0.35, min = 0.10, max = 0.55
+    ),
+    loop_henle_TAL = list(
+      patterns = c("thick.ascending", "loop.of.henle", "\\bTAL\\b",
+                   "henle"),
+      target = 0.08, min = 0.02, max = 0.20
+    ),
+    collecting_duct = list(
+      patterns = c("collecting.duct", "principal.cell", "intercalated",
+                   "connecting.tubule", "\\bDCT\\b", "\\bCNT\\b"),
+      target = 0.07, min = 0.01, max = 0.18
+    ),
+    endothelial = list(
+      patterns = c("endothel", "glomerular.endothel", "peritubular",
+                   "vasa.recta", "ascending.vasa", "descending.vasa"),
+      target = 0.08, min = 0.02, max = 0.18
+    ),
+    podocyte = list(
+      patterns = c("podocyte", "glomerular.visceral", "\\bPOD\\b"),
+      target = 0.03, min = 0.003, max = 0.10
+    ),
+    fibroblast_stromal = list(
+      patterns = c("fibroblast", "myofibroblast", "pericyte",
+                   "mesangial", "stromal"),
+      target = 0.05, min = 0.005, max = 0.15
+    ),
+    T_cell = list(
+      # elevated in LN
+      patterns = c("CD4.T", "CD8.T", "\\bT.cell\\b", "\\bNKT\\b",
+                   "T_cell", "regulatory.T"),
+      target = 0.09, min = 0.02, max = 0.22
+    ),
+    B_cell_plasma = list(
+      # especially elevated in LN (auto-antibody producers)
+      patterns = c("\\bB.cell\\b", "\\bB_cell\\b", "plasma.cell",
+                   "plasmablast", "plasmacyt"),
+      target = 0.06, min = 0.005, max = 0.18
+    ),
+    macrophage_MNP = list(
+      patterns = c("macrophage", "\\bMNP\\b", "monocyte", "dendritic",
+                   "myeloid"),
+      target = 0.08, min = 0.02, max = 0.20
+    ),
+    NK_other_immune = list(
+      patterns = c("\\bNK.cell\\b", "natural.killer", "mast.cell",
+                   "neutrophil", "plasmacytoid.DC",
+                   "plasmacytoid.dendritic"),
+      target = 0.02, min = 0.0, max = 0.08
+    ),
+    pelvic_urothelial = list(
+      patterns = c("pelvic", "urothelial", "transitional", "\\bUPK\\b"),
+      target = 0.01, min = 0.0, max = 0.06
+    )
+  )
+}
+
+
+#' Score a single annotation result on confidence and biological composition
+#'
+#' @param celltype_col   Name of the cell-type metadata column
+#' @param score_col      Name of the per-cell confidence score column
+#' @param metadata       data.frame / data.table of Giotto cell metadata
+#' @param expected_comp  Output of \code{.expected_composition_ln()}
+#' @param conf_threshold Threshold for "high-confidence" cells (default 0.8)
+#' @return Named list of per-metric and composite scores
+
+score_annotation_quality <- function(celltype_col,
+                                     score_col,
+                                     metadata,
+                                     expected_comp,
+                                     conf_threshold = 0.8) {
+
+  scores <- as.numeric(metadata[[score_col]])
+  scores <- scores[!is.na(scores)]
+
+  mean_conf      <- mean(scores)
+  median_conf    <- median(scores)
+  high_conf_frac <- mean(scores >= conf_threshold)
+
+  ct_counts <- table(as.character(metadata[[celltype_col]]))
+  ct_props  <- ct_counts / sum(ct_counts)
+  ct_names  <- names(ct_props)
+
+  # Map each cell type to expected LN categories via regex
+  category_proportions <- vapply(expected_comp, function(cat) {
+    matched <- vapply(cat$patterns, function(pat) {
+      hits <- grepl(pat, ct_names, ignore.case = TRUE, perl = TRUE)
+      sum(ct_props[hits])
+    }, numeric(1))
+    min(sum(matched), 1.0)
+  }, numeric(1))
+
+  # Score each category: full credit inside expected range, linear penalty outside
+  comp_scores <- vapply(names(expected_comp), function(cat_name) {
+    cat <- expected_comp[[cat_name]]
+    obs <- category_proportions[[cat_name]]
+    if (obs >= cat$min && obs <= cat$max) {
+      1.0 - abs(obs - cat$target) / max(cat$target, 0.01)
+    } else {
+      gap <- max(cat$min - obs, obs - cat$max, 0)
+      max(0.0, 1.0 - gap / max(cat$target, 0.01))
+    }
+  }, numeric(1))
+  composition_score <- mean(comp_scores)
+
+  # Fraction of expected categories with >= 0.5% cells present
+  coverage_score <- mean(category_proportions >= 0.005)
+
+  composite_score <- (
+    0.35 * mean_conf       +
+    0.25 * high_conf_frac  +
+    0.30 * composition_score +
+    0.10 * coverage_score
+  )
+
+  list(
+    annotation_column    = celltype_col,
+    score_column         = score_col,
+    mean_confidence      = round(mean_conf,         4),
+    median_confidence    = round(median_conf,       4),
+    high_conf_fraction   = round(high_conf_frac,    4),
+    composition_score    = round(composition_score, 4),
+    coverage_score       = round(coverage_score,    4),
+    composite_score      = round(composite_score,   4),
+    n_cell_types         = length(unique(as.character(metadata[[celltype_col]]))),
+    category_proportions = round(category_proportions, 4)
+  )
+}
+
+
+#' Score all supervised annotation columns and let the user pick one
+#'
+#' When a TTY is attached the user is shown a numbered table and prompted to
+#' choose.  In non-interactive / batch mode the column with the highest
+#' composite score is selected automatically.
+#'
+#' Writes \code{annotation_selection.json} and
+#' \code{{sample_id}_annotation_scores.csv} to \code{annotation_dir}.
+#'
+#' @param gobj           Giotto object with annotation metadata already added
+#' @param annotation_dir Path to the \code{07_Annotation/} output folder
+#' @param sample_id      Sample identifier string
+#' @param conf_threshold Threshold passed to \code{score_annotation_quality()}
+#' @return List with \code{selected_col} and \code{scores_df}, or NULL on failure
+
+select_best_annotation <- function(gobj,
+                                   annotation_dir,
+                                   sample_id,
+                                   conf_threshold = 0.8) {
+
+  dir.create(annotation_dir, recursive = TRUE, showWarnings = FALSE)
+
+  metadata      <- as.data.frame(pDataDT(gobj))
+  expected_comp <- .expected_composition_ln()
+  all_cols      <- names(metadata)
+
+  # Candidate columns: supervised or supervised_refined only (not semi)
+  ct_cols <- grep("^celltype_.*_(supervised|supervised_refined)$",
+                  all_cols, value = TRUE)
+
+  if (length(ct_cols) == 0) {
+    cat("  \u26A0 No supervised annotation columns found; skipping selection.\n")
+    return(NULL)
+  }
+
+  score_cols <- sub("^celltype_", "score_", ct_cols)
+  valid      <- score_cols %in% all_cols
+  ct_cols    <- ct_cols[valid]
+  score_cols <- score_cols[valid]
+
+  if (length(ct_cols) == 0) {
+    cat("  \u26A0 No matching confidence-score columns found; skipping selection.\n")
+    return(NULL)
+  }
+
+  scores_list <- mapply(function(ct_col, sc_col) {
+    tryCatch(
+      score_annotation_quality(ct_col, sc_col, metadata,
+                               expected_comp, conf_threshold),
+      error = function(e) {
+        cat("    \u26A0 Could not score '", ct_col, "': ",
+            conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
+  }, ct_cols, score_cols, SIMPLIFY = FALSE)
+
+  scores_list <- Filter(Negate(is.null), scores_list)
+
+  if (length(scores_list) == 0) {
+    cat("  \u26A0 All scoring attempts failed; skipping selection.\n")
+    return(NULL)
+  }
+
+  scores_df <- do.call(rbind, lapply(scores_list, function(s) {
+    data.frame(
+      annotation_column  = s$annotation_column,
+      score_column       = s$score_column,
+      mean_confidence    = s$mean_confidence,
+      median_confidence  = s$median_confidence,
+      high_conf_fraction = s$high_conf_fraction,
+      composition_score  = s$composition_score,
+      coverage_score     = s$coverage_score,
+      composite_score    = s$composite_score,
+      n_cell_types       = s$n_cell_types,
+      stringsAsFactors   = FALSE
+    )
+  }))
+  scores_df <- scores_df[order(-scores_df$composite_score), ]
+
+  # ── Display scored table ────────────────────────────────────────────────
+  cat(sprintf(
+    "\n=== Annotation Selection: %s ===\n", sample_id
+  ))
+  cat(sprintf(
+    "%-3s  %-45s  %9s  %6s  %9s  %11s  %7s\n",
+    "#", "Column", "composite", "conf", "high_conf", "composition", "n_types"
+  ))
+  cat(strrep("-", 95), "\n")
+  for (i in seq_len(nrow(scores_df))) {
+    r <- scores_df[i, ]
+    cat(sprintf(
+      "%-3d  %-45s  %9.3f  %6.3f  %9.3f  %11.3f  %7d\n",
+      i,
+      substr(r$annotation_column, 1, 45),
+      r$composite_score,
+      r$mean_confidence,
+      r$high_conf_fraction,
+      r$composition_score,
+      r$n_cell_types
+    ))
+  }
+  cat(strrep("-", 95), "\n\n")
+
+  # ── Interactive or auto selection ───────────────────────────────────────
+  use_interactive <- interactive() || isatty(stdin())
+
+  if (use_interactive && nrow(scores_df) > 1) {
+    choices <- sprintf(
+      "%s  [composite=%.3f, conf=%.3f, n_types=%d]",
+      scores_df$annotation_column,
+      scores_df$composite_score,
+      scores_df$mean_confidence,
+      scores_df$n_cell_types
+    )
+    chosen_idx <- menu(choices,
+                       title = paste0("Select annotation for ", sample_id,
+                                      " (0 = auto-select best):"))
+    if (chosen_idx == 0L) {
+      chosen_idx <- 1L
+      cat("  Auto-selecting row 1 (highest composite score).\n")
+    }
+  } else {
+    chosen_idx <- 1L
+    if (nrow(scores_df) > 1) {
+      cat("  [Non-interactive] Auto-selecting annotation with highest composite score.\n")
+    }
+  }
+
+  best     <- scores_df[chosen_idx, ]
+  best_col <- best$annotation_column
+
+  cat(sprintf(
+    "  \u2713 Selected: %s\n    composite=%.3f  conf=%.3f  high_conf_frac=%.3f  composition=%.3f\n",
+    best_col, best$composite_score, best$mean_confidence,
+    best$high_conf_fraction, best$composition_score
+  ))
+
+  # Write summary CSV
+  write.csv(
+    scores_df,
+    file.path(annotation_dir,
+              paste0(sample_id, "_annotation_scores.csv")),
+    row.names = FALSE
+  )
+
+  # Write machine-readable JSON for the pipeline orchestrator
+  selection_json <- list(
+    sample_id                  = sample_id,
+    selected_annotation_column = best_col,
+    selected_score_column      = as.character(best$score_column),
+    composite_score            = best$composite_score,
+    mean_confidence            = best$mean_confidence,
+    high_conf_fraction         = best$high_conf_fraction,
+    composition_score          = best$composition_score,
+    coverage_score             = best$coverage_score,
+    n_cell_types               = best$n_cell_types,
+    selection_reason           = paste0(
+      "Highest composite score (confidence x0.60 + LN-composition x0.30 ",
+      "+ coverage x0.10) across all supervised annotation results."
+    ),
+    expected_composition_ref   = paste0(
+      "Lupus nephritis / autoimmune kidney disease ",
+      "(Arazi 2019, Monteagudo 2021, Hinze 2022)"
+    ),
+    all_scores = lapply(scores_list, function(s) {
+      list(
+        annotation_column    = s$annotation_column,
+        composite_score      = s$composite_score,
+        mean_confidence      = s$mean_confidence,
+        high_conf_fraction   = s$high_conf_fraction,
+        composition_score    = s$composition_score,
+        coverage_score       = s$coverage_score,
+        n_cell_types         = s$n_cell_types,
+        category_proportions = as.list(s$category_proportions)
+      )
+    }),
+    selection_timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+  )
+
+  jsonlite::write_json(
+    selection_json,
+    path       = file.path(annotation_dir, "annotation_selection.json"),
+    pretty     = TRUE,
+    auto_unbox = TRUE
+  )
+  cat("  \u2713 Selection written to annotation_selection.json\n")
+
+  list(selected_col = best_col, scores_df = scores_df)
+}
+
+
 # Helper: custom UMAP plot ------------------------------------------------
 
 #' @param gobj          Giotto object (must have a umap reduction)
@@ -1681,7 +2017,45 @@ annotate_cells <- function(gobj,
   }  # end for loop over profiles
   
   cat("\u2713 All annotations complete for", sample_id, "\n\n")
-  
+
+  # ── Auto-select best annotation ──────────────────────────────────────────
+  cat("Selecting best annotation based on confidence and LN composition...\n")
+  annotation_selection <- tryCatch(
+    select_best_annotation(
+      gobj           = gobj,
+      annotation_dir = file.path(output_dir, "07_Annotation"),
+      sample_id      = sample_id,
+      conf_threshold = if (!is.null(conf_threshold) && conf_threshold > 0)
+                         conf_threshold else 0.8
+    ),
+    error = function(e) {
+      cat("  \u26A0 Annotation selection failed:", conditionMessage(e), "\n")
+      NULL
+    }
+  )
+
+  if (!is.null(annotation_selection)) {
+    best_col   <- annotation_selection$selected_col
+    best_score <- sub("^celltype_", "score_", best_col)
+    meta_now   <- as.data.frame(pDataDT(gobj))
+
+    if (best_col %in% names(meta_now) && best_score %in% names(meta_now)) {
+      update_df <- data.frame(
+        cell_ID        = meta_now$cell_ID,
+        celltype       = as.character(meta_now[[best_col]]),
+        celltype_score = as.numeric(meta_now[[best_score]]),
+        stringsAsFactors = FALSE
+      )
+      gobj <- addCellMetadata(
+        gobject        = gobj,
+        new_metadata   = update_df,
+        by_column      = TRUE,
+        column_cell_ID = "cell_ID"
+      )
+      cat("  \u2713 Generic 'celltype' column updated to selected annotation\n\n")
+    }
+  }
+
   # Save annotated Giotto object ------------------------------------------
   if (save_object) {
     cat("Saving annotated Giotto object to:",
