@@ -1129,6 +1129,302 @@ run_smide_sample_backend <- function(expr_mat,
   )
 }
 
+# ==============================================================================
+# Merged-scope smiDE backend
+#
+# Tests: do B-cells in a given spatial niche show different expression depending
+# on treatment group? Combines niche × treatment into a single predictor and
+# adds sample_id as a batch covariate to control for sample-to-sample variation.
+#
+# Spatial neighbourhoods are split by sample_id so that coordinates from
+# different samples (offset by x_padding at merge time) never share an edge.
+# ==============================================================================
+run_smide_merged_backend <- function(expr_mat,
+                                     metadata,
+                                     run_label,
+                                     output_dir,
+                                     annotation_column,
+                                     tables_dir,
+                                     treatment_column,
+                                     sample_column = "sample_id",
+                                     min_cells_per_niche = 30,
+                                     spatial_locations = NULL,
+                                     neighbor_counts = NULL,
+                                     smide_family = "nbinom2",
+                                     smide_radius = 0.05,
+                                     smide_ncores = 1,
+                                     smide_overlap_threshold = NULL,
+                                     smide_annotation_subset = NULL,
+                                     smide_min_detection_fraction = 0.05,
+                                     smide_save_raw = TRUE,
+                                     smide_adaptive_thresholds = TRUE) {
+  if (!requireNamespace("smiDE", quietly = TRUE)) {
+    stop("smiDE is not installed, but backend = 'smiDE' was requested.")
+  }
+  if (!treatment_column %in% names(metadata)) {
+    stop("treatment_column '", treatment_column, "' not found in metadata.")
+  }
+
+  metadata <- align_metadata_with_spatial_locations(metadata, spatial_locations)
+  counts_genes_cells <- get_counts_genes_by_cells(expr_mat, metadata, densify = FALSE)
+  metadata <- metadata[match(colnames(counts_genes_cells), metadata$cell_ID), , drop = FALSE]
+
+  sample_ids <- unique(stats::na.omit(metadata[[sample_column]]))
+  if (length(sample_ids) < 2) {
+    stop("run_smide_merged_backend() requires multiple samples. Use run_smide_sample_backend() for single-sample analysis.")
+  }
+
+  if (is.null(smide_overlap_threshold)) {
+    smide_overlap_threshold <- 0.7
+    message("Using default smiDE overlap-ratio threshold of 0.7.")
+  }
+  smide_radius <- validate_smide_radius(smide_radius, spatial_locations)
+  smide_min_detection_fraction <- min(max(as.numeric(smide_min_detection_fraction)[1], 0), 1)
+  if (!is.finite(smide_min_detection_fraction)) smide_min_detection_fraction <- 0.05
+  neighbor_counts <- if (is.null(neighbor_counts)) NULL else as_plain_numeric_matrix(neighbor_counts)
+
+  # Combined predictor: spatial_niche__treatment_group
+  metadata$smide_niche_treatment <- paste(
+    metadata$spatial_niche, metadata[[treatment_column]], sep = "__"
+  )
+
+  smide_annotation_subset <- normalize_annotation_subset(smide_annotation_subset)
+  candidate_cell_types <- sort(unique(stats::na.omit(metadata[[annotation_column]])))
+  if (!is.null(smide_annotation_subset)) {
+    missing_types <- setdiff(smide_annotation_subset, candidate_cell_types)
+    if (length(missing_types) > 0) {
+      warning("smide_annotation_subset types not found: ", paste(missing_types, collapse = ", "), immediate. = TRUE)
+    }
+    candidate_cell_types <- intersect(candidate_cell_types, smide_annotation_subset)
+  }
+  if (length(candidate_cell_types) == 0) {
+    warning("No cell types matched smide_annotation_subset.")
+    return(list(metadata = metadata, summary = data.frame(), results = data.frame(), skipped_cell_types = character(0)))
+  }
+
+  treatment_groups <- sort(unique(stats::na.omit(metadata[[treatment_column]])))
+  n_niches_effective <- length(unique(stats::na.omit(metadata$spatial_niche)))
+
+  cat("Merged smiDE — candidate cell types:", length(candidate_cell_types), "\n")
+  cat("  Types:", paste(candidate_cell_types, collapse = ", "), "\n")
+  cat("  Samples:", length(sample_ids), " | Treatment groups:", paste(treatment_groups, collapse = ", "), "\n")
+  cat("  Neighborhood split by:", sample_column, "\n")
+  cat("  smiDE radius:", smide_radius, " | Overlap threshold:", smide_overlap_threshold, "\n\n")
+
+  full_dense_gb <- estimate_dense_matrix_gb(nrow(counts_genes_cells), ncol(counts_genes_cells))
+  if (full_dense_gb > 8) {
+    warning("Full dense matrix ~", round(full_dense_gb, 1), " GB.", immediate. = TRUE)
+  }
+  counts_dense_full <- as.matrix(counts_genes_cells)
+
+  summary_rows <- list()
+  all_results  <- list()
+  skipped_cell_types <- character(0)
+  idx <- 1L
+
+  for (cell_type in candidate_cell_types) {
+    cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
+    n_cells_total <- nrow(cell_meta)
+
+    effective_min <- if (isTRUE(smide_adaptive_thresholds)) {
+      adaptive_min_cells_per_niche(n_cells_total, min_cells_per_niche, n_niches_effective)
+    } else {
+      min_cells_per_niche
+    }
+    if (effective_min < min_cells_per_niche) {
+      message(sprintf("  [adaptive] min_cells_per_niche relaxed %d \u2192 %d for '%s' (%d cells)",
+                      min_cells_per_niche, effective_min, cell_type, n_cells_total))
+    }
+
+    group_sizes   <- table(cell_meta$smide_niche_treatment)
+    valid_groups  <- names(group_sizes[group_sizes >= effective_min])
+    treat_in_valid <- unique(vapply(strsplit(valid_groups, "__"), `[`, character(1), 2))
+    n_treat_valid  <- length(treat_in_valid)
+
+    if (length(valid_groups) < 2 || n_treat_valid < 2) {
+      message(sprintf(
+        "  \u26a0 Merged smiDE skipped for '%s': %d cells, %d group(s) \u2265%d cells, %d treatment(s) (needs \u22652 groups spanning \u22652 treatments)",
+        cell_type, n_cells_total, length(valid_groups), effective_min, n_treat_valid
+      ))
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      next
+    }
+
+    cat("  Processing cell type:", cell_type, "(", n_cells_total, "cells,",
+        length(valid_groups), "niche-treatment groups)\n")
+    cat("  Groups:", paste(names(group_sizes[valid_groups]), group_sizes[valid_groups], sep = "=", collapse = ", "), "\n")
+
+    cell_ids   <- cell_meta$cell_ID
+    cell_counts <- counts_dense_full[, cell_ids, drop = FALSE]
+
+    pre_obj <- tryCatch(
+      smiDE::pre_de(
+        adjacencies_only = FALSE,
+        metadata = metadata,
+        ref_celltype = cell_type,
+        cell_type_metadata_colname = annotation_column,
+        cellid_colname = "cell_ID",
+        sdimx_colname = "sdimx",
+        sdimy_colname = "sdimy",
+        split_neighbors_by_colname = sample_column,
+        mm_radius = smide_radius,
+        counts = counts_dense_full,
+        verbose = FALSE
+      ),
+      error = function(e) {
+        message("pre_de failed for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (is.null(pre_obj)) { gc(verbose = FALSE); next }
+
+    overlap_df <- tryCatch(
+      coerce_overlap_metric_table(
+        smiDE::overlap_ratio_metric(
+          assay_matrix = counts_dense_full,
+          metadata = metadata,
+          cluster_col = annotation_column,
+          cellid_col = "cell_ID",
+          sdimx_col = "sdimx",
+          sdimy_col = "sdimy",
+          split_neighbors_by_colname = sample_column,
+          radius = smide_radius,
+          verbose = FALSE
+        )
+      ),
+      error = function(e) NULL
+    )
+
+    file_stub_base <- paste(
+      gsub("[^A-Za-z0-9]+", "_", run_label),
+      "merged",
+      gsub("[^A-Za-z0-9]+", "_", cell_type),
+      "smide",
+      sep = "_"
+    )
+    if (isTRUE(smide_save_raw)) {
+      saveRDS(pre_obj, file.path(tables_dir, paste0(file_stub_base, "_pre_de.rds")))
+    }
+    if (!is.null(overlap_df)) {
+      utils::write.csv(overlap_df,
+                       file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
+                       row.names = FALSE)
+    }
+
+    targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
+    if (!is.null(targets) && length(targets) == 0) {
+      message("All targets removed by overlap threshold for ", run_label, " / ", cell_type)
+      gc(verbose = FALSE); next
+    }
+
+    model_inputs <- prepare_smide_targets(
+      cell_counts = cell_counts,
+      targets = targets,
+      min_detection_fraction = smide_min_detection_fraction
+    )
+    if (is.null(model_inputs$counts) || model_inputs$n_genes == 0) {
+      message("No genes passed smiDE filters for ", run_label, " / ", cell_type)
+      gc(verbose = FALSE); next
+    }
+
+    # Subset to valid niche-treatment groups only
+    cell_meta_valid <- cell_meta[cell_meta$smide_niche_treatment %in% valid_groups, , drop = FALSE]
+    cell_meta_valid$smide_niche_treatment <- factor(
+      cell_meta_valid$smide_niche_treatment, levels = valid_groups
+    )
+    predictor_counts <- model_inputs$counts[, cell_meta_valid$cell_ID, drop = FALSE]
+
+    # Formula: ~ smide_niche_treatment + sample_id
+    # The niche_treatment term tests the niche × treatment interaction.
+    # The sample_id term absorbs sample-level batch effects in the count data.
+    formula_str <- paste("~ smide_niche_treatment +", sample_column)
+    cat("  Formula:", formula_str, "\n")
+    cat("  smiDE workload:", nrow(cell_meta_valid), "cells x", model_inputs$n_genes, "genes\n")
+
+    fit <- tryCatch(
+      smiDE::smi_de(
+        assay_matrix = predictor_counts,
+        metadata = cell_meta_valid,
+        formula = stats::as.formula(formula_str),
+        pre_de_obj = pre_obj,
+        groupVar = "smide_niche_treatment",
+        groupVar_levels = valid_groups,
+        nCores = smide_ncores,
+        family = smide_family,
+        targets = model_inputs$targets,
+        neighbor_expr_cell_type_metadata_colname = annotation_column,
+        cellid_colname = "cell_ID"
+      ),
+      error = function(e) {
+        message("smiDE::smi_de failed for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (is.null(fit)) { gc(verbose = FALSE); next }
+
+    if (isTRUE(smide_save_raw)) {
+      saveRDS(fit, file.path(tables_dir, paste0(file_stub_base, "_smide_fit.rds")))
+    }
+
+    res_obj <- tryCatch(
+      smiDE::results(
+        smide_results = fit,
+        comparisons = "one_vs_rest",
+        variable = "smide_niche_treatment",
+        targets = "all"
+      ),
+      error = function(e) {
+        message("smiDE::results failed for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
+        NULL
+      }
+    )
+    if (isTRUE(smide_save_raw) && !is.null(res_obj)) {
+      saveRDS(res_obj, file.path(tables_dir, paste0(file_stub_base, "_smide_results_raw.rds")))
+    }
+
+    result_df <- coerce_smide_results_table(res_obj)
+    if (!is.null(result_df) && nrow(result_df) > 0) {
+      result_df$backend        <- "smiDE"
+      result_df$analysis_scope <- "merged"
+      utils::write.csv(result_df,
+                       file.path(tables_dir, paste0(file_stub_base, "_results.csv")),
+                       row.names = FALSE)
+      all_results[[idx]] <- result_df
+    }
+
+    sig_col <- guess_significance_column(result_df)
+    n_sig   <- if (!is.null(sig_col) && !is.null(result_df)) {
+      sum(result_df[[sig_col]] < 0.05, na.rm = TRUE)
+    } else NA_integer_
+
+    summary_rows[[idx]] <- data.frame(
+      analysis_scope         = "merged",
+      backend                = "smiDE",
+      run_label              = run_label,
+      sample_id              = paste(sample_ids, collapse = "+"),
+      annotation             = cell_type,
+      treatment_column       = treatment_column,
+      niche_treatment_groups = paste(valid_groups, collapse = " / "),
+      n_cells                = nrow(cell_meta_valid),
+      n_genes_tested         = model_inputs$n_genes,
+      n_fdr_005              = n_sig,
+      stringsAsFactors       = FALSE
+    )
+    idx <- idx + 1L
+    gc(verbose = FALSE)
+  }
+
+  rm(counts_dense_full)
+  gc(verbose = FALSE)
+
+  list(
+    metadata           = metadata,
+    summary            = if (length(summary_rows) > 0) do.call(rbind, summary_rows) else data.frame(),
+    results            = if (length(all_results)  > 0) do.call(rbind, all_results)  else data.frame(),
+    skipped_cell_types = skipped_cell_types
+  )
+}
+
 detect_annotation_column <- function(metadata, preferred = NULL) {
   annotation_stats <- function(column) {
     values <- metadata[[column]]
@@ -2222,22 +2518,43 @@ run_spatial_differential_expression <- function(gobj,
       )
     }
   } else {
-    if (backend != "edgeR") {
-      stop("Merged-scope spatial DE currently supports only the edgeR backend.")
+    if (backend == "smiDE") {
+      run_smide_merged_backend(
+        expr_mat = expr_mat,
+        metadata = metadata,
+        run_label = run_label,
+        output_dir = output_dir,
+        annotation_column = annotation_column,
+        tables_dir = tables_dir,
+        treatment_column = treatment_column,
+        sample_column = sample_column,
+        min_cells_per_niche = min_cells_per_niche,
+        spatial_locations = spatial_locations,
+        neighbor_counts = niche_counts,
+        smide_family = smide_family,
+        smide_radius = smide_radius,
+        smide_ncores = smide_ncores,
+        smide_overlap_threshold = smide_overlap_threshold,
+        smide_annotation_subset = smide_annotation_subset,
+        smide_min_detection_fraction = smide_min_detection_fraction,
+        smide_save_raw = smide_save_raw,
+        smide_adaptive_thresholds = smide_adaptive_thresholds
+      )
+    } else {
+      run_merged_scope_spatial_de(
+        expr_mat = expr_mat,
+        metadata = metadata,
+        run_label = run_label,
+        annotation_column = annotation_column,
+        sample_column = sample_column,
+        treatment_column = treatment_column,
+        patient_column = patient_column,
+        tables_dir = tables_dir,
+        min_cells_per_niche = min_cells_per_niche,
+        min_cells_per_sample = min_cells_per_sample,
+        min_samples_per_group = min_samples_per_group
+      )
     }
-    run_merged_scope_spatial_de(
-      expr_mat = expr_mat,
-      metadata = metadata,
-      run_label = run_label,
-      annotation_column = annotation_column,
-      sample_column = sample_column,
-      treatment_column = treatment_column,
-      patient_column = patient_column,
-      tables_dir = tables_dir,
-      min_cells_per_niche = min_cells_per_niche,
-      min_cells_per_sample = min_cells_per_sample,
-      min_samples_per_group = min_samples_per_group
-    )
   }
 
   if (analysis_scope == "sample" && backend == "smiDE" && isTRUE(smide_edger_fallback)) {
@@ -2271,10 +2588,31 @@ run_spatial_differential_expression <- function(gobj,
         )
       }
 
+      # k-means on neighborhood composition can produce unbalanced groups when
+      # cells are spatially concentrated (e.g. all B-cells cluster in one niche).
+      # If the smaller niche has < 5 cells, fall back to a coordinate-based
+      # binary split (median sdimx), which guarantees a near-equal division.
+      fallback_floor <- 5L
+      niche_tab <- table(meta_fallback$spatial_niche)
+      if (min(niche_tab) < fallback_floor && !is.null(spatial_locations)) {
+        fb_ids <- meta_fallback$cell_ID
+        loc_idx <- match(fb_ids, spatial_locations$cell_ID)
+        fb_x <- spatial_locations$sdimx[loc_idx]
+        if (!all(is.na(fb_x))) {
+          med_x <- stats::median(fb_x, na.rm = TRUE)
+          meta_fallback$spatial_niche <- ifelse(fb_x >= med_x, "geo_niche_A", "geo_niche_B")
+          cat(sprintf(
+            "  [fallback] k-means unbalanced (%s); using coordinate split (median sdimx=%.1f)\n",
+            paste(names(niche_tab), niche_tab, sep = "=", collapse = ", "), med_x
+          ))
+        }
+      }
+
       fallback_min <- adaptive_min_cells_per_niche(
-        n_cells  = min_type_count,
-        base_min = min_cells_per_niche,
-        n_niches = n_niches_fallback
+        n_cells   = min_type_count,
+        base_min  = min_cells_per_niche,
+        n_niches  = n_niches_fallback,
+        floor_min = fallback_floor
       )
 
       # With few cells spread across many FOVs, the replicate filter strips
