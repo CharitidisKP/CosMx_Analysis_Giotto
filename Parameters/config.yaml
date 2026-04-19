@@ -109,7 +109,7 @@ spatial_de:
   min_samples_per_group: 2
   sample_replicate_column: "fov"
   sample_contrast: "one_vs_rest"
-  min_cells_per_replicate: 5
+  min_cells_per_replicate: 3
   min_replicates_per_group: 2
   n_spatial_patches: 8
   smide_family: "nbinom2"

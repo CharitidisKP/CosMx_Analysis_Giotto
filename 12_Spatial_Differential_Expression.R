@@ -283,7 +283,14 @@ coerce_overlap_metric_table <- function(overlap_obj) {
   
   if (is.data.frame(overlap_obj)) {
     overlap_df <- as.data.frame(overlap_obj, stringsAsFactors = FALSE)
-    if (!"gene" %in% names(overlap_df)) {
+    # smiDE returns a 'target' column with gene symbols and a 'gene' column
+    # that is a numeric row index. Prefer 'target' as the gene name column.
+    if ("target" %in% names(overlap_df) && !"gene" %in% names(overlap_df)) {
+      overlap_df$gene <- overlap_df$target
+    } else if ("target" %in% names(overlap_df)) {
+      # 'gene' exists but is a numeric index — overwrite with gene symbols
+      overlap_df$gene <- overlap_df$target
+    } else if (!"gene" %in% names(overlap_df)) {
       overlap_df$gene <- rownames(overlap_df)
     }
     rownames(overlap_df) <- NULL
@@ -298,15 +305,24 @@ extract_overlap_targets <- function(overlap_df, threshold = NULL) {
     return(NULL)
   }
   
-  numeric_cols <- names(overlap_df)[vapply(overlap_df, is.numeric, logical(1))]
-  if (length(numeric_cols) == 0) {
-    return(NULL)
+  # Prefer 'ratio' column (smiDE output) over the first numeric column,
+  # which may be a row index ('gene') rather than the overlap metric.
+  metric_col <- if ("ratio" %in% names(overlap_df)) {
+    "ratio"
+  } else {
+    numeric_cols <- names(overlap_df)[vapply(overlap_df, is.numeric, logical(1))]
+    # Exclude columns that look like row indices (sequential integers from 1)
+    numeric_cols <- numeric_cols[!vapply(numeric_cols, function(col) {
+      vals <- overlap_df[[col]]
+      isTRUE(all.equal(as.numeric(vals), seq_len(nrow(overlap_df))))
+    }, logical(1))]
+    if (length(numeric_cols) == 0) return(NULL)
+    numeric_cols[1]
   }
-  
-  metric_col <- numeric_cols[1]
+
   keep <- overlap_df[[metric_col]] <= threshold
   targets <- overlap_df$gene[keep & !is.na(overlap_df$gene)]
-  unique(targets[nzchar(targets)])
+  unique(targets[nzchar(as.character(targets))])
 }
 
 normalize_annotation_subset <- function(annotation_subset) {
