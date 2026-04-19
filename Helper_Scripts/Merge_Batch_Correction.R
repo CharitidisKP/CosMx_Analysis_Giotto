@@ -101,6 +101,18 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   )
 }
 
+.giotto_run_pca <- function(gobj, feats_to_use = NULL, n_pcs = 30) {
+  .run_known_giotto_warning_safe(
+    runPCA(
+      gobject   = gobj,
+      feats_to_use = feats_to_use,
+      scale_unit = TRUE,
+      center     = TRUE,
+      ncp        = n_pcs
+    )
+  )
+}
+
 .giotto_run_harmony <- function(gobj, vars_use, dimensions_to_use, name = "harmony") {
   accessor <- NULL
   
@@ -329,6 +341,8 @@ batch_correct_merged_object <- function(gobj,
                                         output_dir,
                                         batch_column = "slide_num",
                                         annotation_columns = NULL,
+                                        n_hvgs = 500,
+                                        n_pcs = 30,
                                         dimensions_to_use = 1:30,
                                         umap_n_neighbors = 30,
                                         umap_min_dist = 0.3,
@@ -364,9 +378,27 @@ batch_correct_merged_object <- function(gobj,
     batch_column <- fallback_column
   }
   
+  # PCA on the merged object (joinGiottoObjects does not carry over dim reductions)
+  cat("Selecting HVGs for merged PCA...\n")
+  hvg_genes <- tryCatch(
+    .select_sparse_hvgs(
+      gobj           = gobj,
+      n_hvgs         = n_hvgs,
+      sample_id      = sample_id,
+      results_folder = results_dir
+    ),
+    error = function(e) {
+      cat("⚠ HVG selection failed (", conditionMessage(e), ") — using all features\n")
+      NULL
+    }
+  )
+  cat("Running PCA on merged object (", length(hvg_genes) %||% "all", " features, ", n_pcs, " PCs)...\n", sep = "")
+  gobj <- .giotto_run_pca(gobj, feats_to_use = hvg_genes, n_pcs = n_pcs)
+  cat("✓ PCA complete\n\n")
+
   cat("Running Harmony using batch column:", batch_column, "\n")
   cat("Dimensions:", paste(range(dimensions_to_use), collapse = ":"), "\n\n")
-  
+
   gobj <- .giotto_run_harmony(
     gobj = gobj,
     vars_use = batch_column,

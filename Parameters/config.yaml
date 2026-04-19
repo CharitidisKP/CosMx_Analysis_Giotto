@@ -39,6 +39,8 @@ merged:
   # would over-correct by treating slides 3 and 4 as independent batches
   # when they were prepared and run simultaneously).
   batch_column: "slide_id"
+  n_hvgs: 500
+  n_pcs: 30
   dimensions_to_use: "1:30"
   umap_n_neighbors: 30
   umap_min_dist: 0.3
