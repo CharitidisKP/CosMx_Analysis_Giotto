@@ -327,11 +327,12 @@ create_visualizations <- function(gobj,
       )
       cat("  ✓ Spatial", ct_col, "\n")
     }, error = function(e) {
-      cat("  ⚠", ct_col, " failed:", conditionMessage(e), "\n") 
+      cat("  ⚠", ct_col, " failed:", conditionMessage(e), "\n")
       }
     )
-  
-  
+  }
+
+
   # Spatial - QC metrics
   tryCatch({
     .muffle_known_giotto_plot_warnings(
