@@ -527,12 +527,16 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     poly_ID = as.character(poly_list$cell)
   )
   
-  # Create GiottoPolygon
+  # Create GiottoPolygon — do NOT pre-store centroids here.
+  # joinGiottoObjects (merged mode) rbinds spatVectorCentroids across samples and
+  # checks count equality against spatVector; any per-sample mismatch (degenerate
+  # geometry, serialisation artefact) propagates to a fatal count error.
+  # Centroids are recomputed by Giotto or addSpatialCentroidLocations downstream.
   cat("Adding polygons to Giotto object...\n")
-  
+
   gpolygon <- new("giottoPolygon",
                   spatVector          = spat_vect,
-                  spatVectorCentroids = terra::centroids(spat_vect),
+                  spatVectorCentroids = NULL,
                   overlaps            = data.table(),
                   name                = "cell",
                   unique_ID_cache     = as.character(poly_list$cell))

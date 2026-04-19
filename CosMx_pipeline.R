@@ -974,9 +974,31 @@ load_merge_inputs <- function(samples, cfg) {
   input_step <- cfg$merged$input_step %||% "07_annotate"
   objs <- vector("list", length = nrow(samples))
   for (idx in seq_len(nrow(samples))) {
-    objs[[idx]] <- load_sample_checkpoint(samples[idx, , drop = FALSE], input_step)
+    gobj <- load_sample_checkpoint(samples[idx, , drop = FALSE], input_step)
+    objs[[idx]] <- .strip_polygon_centroids(gobj)
   }
   objs
+}
+
+# Nullify spatVectorCentroids on all giottoPolygon slots so joinGiottoObjects
+# does not encounter a centroid/polygon count mismatch from stale checkpoints.
+.strip_polygon_centroids <- function(gobj) {
+  tryCatch({
+    poly_slot <- gobj@spatial_info
+    if (!is.null(poly_slot) && length(poly_slot) > 0) {
+      for (nm in names(poly_slot)) {
+        poly <- poly_slot[[nm]]
+        if (inherits(poly, "giottoPolygon")) {
+          poly@spatVectorCentroids <- NULL
+          gobj@spatial_info[[nm]] <- poly
+        }
+      }
+    }
+    gobj
+  }, error = function(e) {
+    message("  ⚠ Could not strip polygon centroids from checkpoint (non-fatal): ", conditionMessage(e))
+    gobj
+  })
 }
 
 run_merged_pipeline <- function(runtime_env,
