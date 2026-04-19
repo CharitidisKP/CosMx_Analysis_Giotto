@@ -444,6 +444,10 @@ select_smide_partner_celltypes <- function(output_dir,
   unique(head(partner_tbl$partner_celltype, top_n))
 }
 
+adaptive_min_cells_per_niche <- function(n_cells, base_min, n_niches, floor_min = 10L) {
+  max(floor_min, min(base_min, as.integer(floor(n_cells / (n_niches + 1L)))))
+}
+
 make_smide_neighbor_group <- function(cell_meta,
                                       neighbor_counts,
                                       partner_celltype,
@@ -698,7 +702,8 @@ run_smide_sample_backend <- function(expr_mat,
                                      smide_partner_top_n = 3,
                                      smide_partner_padj_threshold = 0.05,
                                      smide_include_self_partner = FALSE,
-                                     smide_save_raw = TRUE) {
+                                     smide_save_raw = TRUE,
+                                     smide_adaptive_thresholds = TRUE) {
   sample_contrast <- match.arg(sample_contrast)
   smide_partner_source <- match.arg(smide_partner_source)
   
@@ -802,7 +807,10 @@ run_smide_sample_backend <- function(expr_mat,
   cat("smiDE min detection fraction:", smide_min_detection_fraction, "\n")
   cat("smiDE overlap threshold:", smide_overlap_threshold, "\n")
   cat("smiDE radius:", smide_radius, "\n")
-  
+
+  n_niches_effective <- length(unique(stats::na.omit(metadata$spatial_niche)))
+  skipped_cell_types <- character(0)
+
   # -------------------------------------------------------------------------
   # FIX #12b: For smiDE, we need a dense matrix for pre_de() and
   # overlap_ratio_metric() which operate on the full dataset.  However, we
@@ -833,13 +841,25 @@ run_smide_sample_backend <- function(expr_mat,
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
     n_cells_total <- nrow(cell_meta)
     niche_sizes <- table(cell_meta$spatial_niche)
-    valid_niches <- names(niche_sizes[niche_sizes >= min_cells_per_niche])
-    cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
-    if (nrow(cell_meta) < min_cells_per_niche || length(valid_niches) < 2) {
+    effective_min <- if (isTRUE(smide_adaptive_thresholds)) {
+      adaptive_min_cells_per_niche(n_cells_total, min_cells_per_niche, n_niches_effective)
+    } else {
+      min_cells_per_niche
+    }
+    if (effective_min < min_cells_per_niche) {
       message(sprintf(
-        "  \u26a0 smiDE skipped for '%s': %d total cells found, %d spatial niche(s) with \u2265%d cells (requires \u22652 qualifying niches with \u2265%d cells each)",
-        cell_type, n_cells_total, length(valid_niches), min_cells_per_niche, min_cells_per_niche
+        "  [adaptive] min_cells_per_niche relaxed from %d \u2192 %d for '%s' (%d total cells, %d niches)",
+        min_cells_per_niche, effective_min, cell_type, n_cells_total, n_niches_effective
       ))
+    }
+    valid_niches <- names(niche_sizes[niche_sizes >= effective_min])
+    cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
+    if (nrow(cell_meta) < effective_min || length(valid_niches) < 2) {
+      message(sprintf(
+        "  \u26a0 smiDE skipped for '%s': %d total cells, %d niche(s) \u2265%d cells (requires \u22652)",
+        cell_type, n_cells_total, length(valid_niches), effective_min
+      ))
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
       next
     }
     
@@ -942,7 +962,7 @@ run_smide_sample_backend <- function(expr_mat,
       cell_type = cell_type,
       annotation_column = annotation_column,
       valid_niches = valid_niches,
-      min_group_size = min_cells_per_niche,
+      min_group_size = effective_min,
       sample_contrast = sample_contrast,
       custom_predictor = smide_custom_predictor,
       partner_celltypes = smide_partner_celltypes,
@@ -965,7 +985,7 @@ run_smide_sample_backend <- function(expr_mat,
       predictor_meta <- predictor_meta[!is.na(predictor_meta[[predictor_var]]), , drop = FALSE]
       predictor_sizes <- table(predictor_meta[[predictor_var]])
       predictor_sizes <- predictor_sizes[predictor_sizes > 0]
-      if (length(predictor_sizes) < 2 || any(predictor_sizes < min_cells_per_niche)) {
+      if (length(predictor_sizes) < 2 || any(predictor_sizes < effective_min)) {
         next
       }
       predictor_levels <- names(predictor_sizes)
@@ -1088,7 +1108,8 @@ run_smide_sample_backend <- function(expr_mat,
   list(
     metadata = metadata,
     summary = if (length(summary_rows) > 0) do.call(rbind, summary_rows) else data.frame(),
-    results = if (length(all_results) > 0) do.call(rbind, all_results) else data.frame()
+    results = if (length(all_results) > 0) do.call(rbind, all_results) else data.frame(),
+    skipped_cell_types = skipped_cell_types
   )
 }
 
@@ -2030,6 +2051,8 @@ run_spatial_differential_expression <- function(gobj,
                                                 smide_partner_padj_threshold = 0.05,
                                                 smide_include_self_partner = FALSE,
                                                 smide_save_raw = TRUE,
+                                                smide_adaptive_thresholds = TRUE,
+                                                smide_edger_fallback = TRUE,
                                                 save_object = FALSE) {
   analysis_scope <- match.arg(analysis_scope)
   backend <- match.arg(backend)
@@ -2162,6 +2185,7 @@ run_spatial_differential_expression <- function(gobj,
         smide_partner_padj_threshold = smide_partner_padj_threshold,
         smide_include_self_partner = smide_include_self_partner,
         smide_save_raw = smide_save_raw,
+        smide_adaptive_thresholds = smide_adaptive_thresholds,
         spatial_network_name = spatial_network_name,
         neighbor_counts = niche_counts
       )
@@ -2199,7 +2223,40 @@ run_spatial_differential_expression <- function(gobj,
       min_samples_per_group = min_samples_per_group
     )
   }
-  
+
+  if (analysis_scope == "sample" && backend == "smiDE" && isTRUE(smide_edger_fallback)) {
+    skipped <- scope_out$skipped_cell_types
+    if (length(skipped) > 0) {
+      cat("  edgeR fallback for", length(skipped),
+          "cell type(s) skipped by smiDE:", paste(skipped, collapse = ", "), "\n")
+      meta_fallback <- metadata[metadata[[annotation_column]] %in% skipped, , drop = FALSE]
+      fallback_min <- adaptive_min_cells_per_niche(
+        n_cells  = nrow(meta_fallback) / max(1L, length(skipped)),
+        base_min = min_cells_per_niche,
+        n_niches = n_niches
+      )
+      fallback_out <- run_sample_scope_spatial_de(
+        expr_mat                 = expr_mat,
+        metadata                 = meta_fallback,
+        run_label                = paste0(run_label, "_edgeR_fallback"),
+        annotation_column        = annotation_column,
+        tables_dir               = tables_dir,
+        sample_replicate_column  = sample_replicate_column,
+        sample_contrast          = sample_contrast,
+        min_cells_per_niche      = fallback_min,
+        min_cells_per_replicate  = min_cells_per_replicate,
+        min_replicates_per_group = min_replicates_per_group,
+        n_spatial_patches        = n_spatial_patches,
+        spatial_locations        = spatial_locations
+      )
+      if (nrow(fallback_out$results) > 0) {
+        fallback_out$results$backend <- "edgeR_fallback"
+        scope_out$results <- rbind(scope_out$results, fallback_out$results)
+        scope_out$summary <- rbind(scope_out$summary, fallback_out$summary)
+      }
+    }
+  }
+
   metadata <- scope_out$metadata
   combined_results <- scope_out$results
   summary_df <- scope_out$summary
