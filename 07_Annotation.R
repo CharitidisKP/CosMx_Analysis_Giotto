@@ -501,6 +501,296 @@ select_best_annotation <- function(gobj,
 }
 
 
+# Helper: extract cell polygon coordinates from a Giotto object -----------
+#
+# Returns a data.frame with columns: geom, part, x, y, hole, cell_ID
+# or NULL when no polygon data are available.
+
+.extract_polygon_df <- function(gobj) {
+  # Try getPolygonInfo() — works for Giotto Suite >= 0.3
+  poly_sv <- tryCatch({
+    p <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell",
+                                      return_giottoPolygon = FALSE)
+    # Some versions return giottoPolygon even when return_giottoPolygon = FALSE
+    if (inherits(p, "giottoPolygon")) p@spatVector else p
+  }, error = function(e) {
+    tryCatch({
+      gp <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell")
+      if (inherits(gp, "giottoPolygon")) gp@spatVector else NULL
+    }, error = function(e2) NULL)
+  })
+
+  # Fallback: direct slot access
+  if (is.null(poly_sv)) {
+    poly_sv <- tryCatch(gobj@polygon$cell@spatVector, error = function(e) NULL)
+  }
+  if (is.null(poly_sv)) return(NULL)
+
+  # Attribute table: should contain poly_ID or cell_ID
+  poly_attr <- tryCatch(as.data.frame(poly_sv), error = function(e) NULL)
+  if (is.null(poly_attr) || nrow(poly_attr) == 0) return(NULL)
+
+  # Coordinate data (one row per vertex): geom, part, x, y, hole
+  poly_coords <- tryCatch(terra::geom(poly_sv, df = TRUE), error = function(e) NULL)
+  if (is.null(poly_coords) || nrow(poly_coords) == 0) return(NULL)
+
+  # Identify the cell ID column
+  id_col <- intersect(c("poly_ID", "cell_ID", "id"), names(poly_attr))
+  if (length(id_col) == 0) return(NULL)
+
+  # Map geom index → cell ID (geom is 1-based sequential integer)
+  poly_coords$cell_ID <- poly_attr[[id_col[1]]][poly_coords$geom]
+  poly_coords
+}
+
+
+# Helper: polygon-based spatial annotation plot ---------------------------
+#
+# Primary renderer for annotation spatial plots.  Extracts cell outlines
+# from the Giotto object and colours them by cell type.  Falls back to
+# spatPlot2D() (point cloud) if polygon data are unavailable.
+
+.plot_spatial_annotation_polygons <- function(gobj,
+                                               celltype_col,
+                                               colour_map,
+                                               profile_name,
+                                               sample_id,
+                                               out_dir,
+                                               ann_type,
+                                               width  = 20,
+                                               height = 10,
+                                               dpi    = 300) {
+  poly_coords <- .extract_polygon_df(gobj)
+
+  if (!is.null(poly_coords)) {
+    meta     <- as.data.frame(pDataDT(gobj))[, c("cell_ID", celltype_col)]
+    plot_df  <- merge(poly_coords, meta, by = "cell_ID", all.x = TRUE)
+    plot_df[[celltype_col]] <- factor(plot_df[[celltype_col]], levels = names(colour_map))
+
+    title_txt <- sample_plot_title(
+      sample_id,
+      paste("Spatial Annotation -", profile_name, ann_type)
+    )
+
+    wrapped_levels <- pretty_plot_label(names(colour_map), width = 24)
+    wrapped_cmap   <- stats::setNames(unname(colour_map), wrapped_levels)
+    plot_df$CellType_label <- factor(
+      pretty_plot_label(as.character(plot_df[[celltype_col]]), width = 24),
+      levels = wrapped_levels
+    )
+
+    p <- ggplot2::ggplot(
+      plot_df,
+      ggplot2::aes(x = x, y = y,
+                   group = interaction(geom, part),
+                   fill  = CellType_label)) +
+      ggplot2::geom_polygon(colour = NA, linewidth = 0) +
+      ggplot2::scale_fill_manual(
+        values   = wrapped_cmap,
+        na.value = "grey85",
+        drop     = FALSE,
+        name     = "Cell Type"
+      ) +
+      ggplot2::coord_equal() +
+      ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+      ggplot2::guides(fill = ggplot2::guide_legend(
+        ncol = 2, override.aes = list(size = 4))) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+
+    fname <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
+    save_presentation_plot(
+      plot     = p,
+      filename = file.path(out_dir, fname),
+      width    = width,
+      height   = height,
+      dpi      = dpi
+    )
+    cat("  \u2713 Spatial polygons saved:", fname, "\n")
+    return(invisible(p))
+  }
+
+  # ── Fallback: point cloud via spatPlot2D ──────────────────────────────
+  cat("  \u26A0 Polygon data not available; falling back to point plot\n")
+  tryCatch(
+    suppressWarnings(
+      spatPlot2D(gobj,
+                 cell_color = celltype_col,
+                 point_size = 0.5,
+                 show_image = FALSE,
+                 save_plot  = TRUE,
+                 save_param = list(
+                   save_name  = paste0(sample_id, "_spatial_", profile_name, "_", ann_type),
+                   save_dir   = out_dir,
+                   base_width = width, base_height = height))
+    ),
+    error = function(e) {
+      cat("  \u26A0 Spatial fallback also failed:", conditionMessage(e), "\n")
+    }
+  )
+}
+
+
+# Helper: B cell highlight UMAP + spatial plots ---------------------------
+#
+# Colours B cell types with their annotation colour; all other cells are
+# rendered in light grey so B cells stand out against the tissue background.
+# Produces two files per call:
+#   {sample_id}_bcell_highlight_umap_{ann_type}.png
+#   {sample_id}_bcell_highlight_spatial_{ann_type}.png  (polygons or points)
+
+.bcell_detect_patterns <- c(
+  "\\bB.cell\\b", "\\bB_cell\\b", "plasma.cell",
+  "plasmablast", "plasmacyt"
+)
+
+plot_bcell_highlights <- function(gobj,
+                                  celltype_col,
+                                  colour_map,
+                                  out_dir,
+                                  sample_id,
+                                  ann_type = "best") {
+
+  meta      <- as.data.frame(pDataDT(gobj))
+  ct_levels <- unique(as.character(meta[[celltype_col]]))
+
+  bcell_types <- ct_levels[vapply(ct_levels, function(ct) {
+    any(grepl(.bcell_detect_patterns, ct, ignore.case = TRUE, perl = TRUE))
+  }, logical(1))]
+
+  if (length(bcell_types) == 0) {
+    cat("  \u26A0 No B cell types detected in", celltype_col,
+        "\u2014 skipping B cell highlights\n")
+    return(invisible(NULL))
+  }
+  cat("  B cell types detected:", paste(bcell_types, collapse = ", "), "\n")
+
+  # Highlight colour map: B cell subtypes keep their colour; others go grey
+  present_in_map <- intersect(names(colour_map), ct_levels)
+  hi_colours <- stats::setNames(
+    ifelse(present_in_map %in% bcell_types,
+           colour_map[present_in_map],
+           "#DDDDDD"),
+    present_in_map
+  )
+  hi_alpha <- stats::setNames(
+    ifelse(present_in_map %in% bcell_types, 1.0, 0.12),
+    present_in_map
+  )
+
+  meta$celltype_fct <- factor(meta[[celltype_col]], levels = present_in_map)
+
+  # ── UMAP ──────────────────────────────────────────────────────────────
+  umap_df <- .get_umap_df(gobj)
+  if (!is.null(umap_df)) {
+    plot_df <- merge(umap_df,
+                     meta[, c("cell_ID", celltype_col)],
+                     by = "cell_ID")
+    plot_df[[celltype_col]] <- factor(plot_df[[celltype_col]],
+                                      levels = present_in_map)
+    # Draw non-B cells first so B cells render on top
+    is_bcell <- plot_df[[celltype_col]] %in% bcell_types
+    plot_df  <- rbind(plot_df[!is_bcell, ], plot_df[is_bcell, ])
+
+    p_umap <- ggplot2::ggplot(
+      plot_df,
+      ggplot2::aes(x      = UMAP_1,
+                   y      = UMAP_2,
+                   colour = !!rlang::sym(celltype_col),
+                   alpha  = !!rlang::sym(celltype_col))) +
+      ggplot2::geom_point(size = 0.3) +
+      ggplot2::scale_colour_manual(
+        values = hi_colours, drop = FALSE,
+        name   = "Cell Type",
+        breaks = bcell_types
+      ) +
+      ggplot2::scale_alpha_manual(values = hi_alpha, guide = "none") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "B Cell Highlight \u2014 UMAP"),
+        subtitle = paste("Highlighted:", paste(bcell_types, collapse = ", ")),
+        x = NULL, y = NULL
+      ) +
+      ggplot2::guides(colour = ggplot2::guide_legend(
+        override.aes = list(size = 4, alpha = 1), ncol = 1)) +
+      presentation_theme(base_size = 12, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+
+    save_presentation_plot(
+      plot     = p_umap,
+      filename = file.path(out_dir,
+                            paste0(sample_id, "_bcell_highlight_umap_",
+                                   ann_type, ".png")),
+      width = 14, height = 10, dpi = 300
+    )
+    cat("  \u2713 B cell highlight UMAP saved\n")
+  }
+
+  # ── Spatial (polygons preferred) ───────────────────────────────────────
+  poly_coords <- .extract_polygon_df(gobj)
+
+  if (!is.null(poly_coords)) {
+    plot_df_sp <- merge(poly_coords,
+                        meta[, c("cell_ID", celltype_col)],
+                        by = "cell_ID", all.x = TRUE)
+    plot_df_sp[[celltype_col]] <- factor(plot_df_sp[[celltype_col]],
+                                          levels = present_in_map)
+    is_bcell_sp <- plot_df_sp[[celltype_col]] %in% bcell_types
+    plot_df_sp  <- rbind(plot_df_sp[!is_bcell_sp, ], plot_df_sp[is_bcell_sp, ])
+
+    p_spat <- ggplot2::ggplot(
+      plot_df_sp,
+      ggplot2::aes(x     = x, y = y,
+                   group = interaction(geom, part),
+                   fill  = !!rlang::sym(celltype_col),
+                   alpha = !!rlang::sym(celltype_col))) +
+      ggplot2::geom_polygon(colour = NA, linewidth = 0) +
+      ggplot2::scale_fill_manual(
+        values = hi_colours, drop = FALSE,
+        name   = "Cell Type",
+        breaks = bcell_types
+      ) +
+      ggplot2::scale_alpha_manual(values = hi_alpha, guide = "none") +
+      ggplot2::coord_equal() +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "B Cell Highlight \u2014 Spatial"),
+        subtitle = paste("Highlighted:", paste(bcell_types, collapse = ", ")),
+        x = NULL, y = NULL
+      ) +
+      ggplot2::guides(fill = ggplot2::guide_legend(
+        override.aes = list(size = 4, alpha = 1), ncol = 1)) +
+      presentation_theme(base_size = 12, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+
+    save_presentation_plot(
+      plot     = p_spat,
+      filename = file.path(out_dir,
+                            paste0(sample_id, "_bcell_highlight_spatial_",
+                                   ann_type, ".png")),
+      width = 20, height = 10, dpi = 300
+    )
+    cat("  \u2713 B cell highlight spatial saved\n")
+  } else {
+    cat("  \u26A0 Polygon data unavailable; skipping B cell spatial highlight\n")
+  }
+  invisible(NULL)
+}
+
+
 # Helper: custom UMAP plot ------------------------------------------------
 
 #' @param gobj          Giotto object (must have a umap reduction)
@@ -738,12 +1028,13 @@ plot_custom_flightpath <- function(insitu_result,
       max.overlaps = Inf, inherit.aes = FALSE
     ) +
     ggplot2::labs(
-      title = title_txt,
+      title    = title_txt,
       subtitle = "Cells are positioned in the InSituType flightpath layout and colored by inferred annotation.",
-      colour = "Cluster\n(n cells, confidence)"
+      colour   = "Cluster\n(n cells, confidence)",
+      x = NULL, y = NULL
     ) +
     ggplot2::guides(colour = ggplot2::guide_legend(
-      override.aes = list(size = 4), ncol = 1)) +
+      override.aes = list(size = 4), ncol = 2)) +
     presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
       axis.title = ggplot2::element_blank(),
@@ -1294,20 +1585,17 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 UMAP (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — spatial
+    # Refined — spatial (polygon-based, falls back to points)
     tryCatch({
-      suppressWarnings({
-        spatPlot2D(gobj,
-                   cell_color = celltype_col_ref,
-                   point_size = 0.5,
-                   show_image = FALSE,
-                   save_plot  = TRUE,
-                   save_param = list(
-                     save_name  = paste0(sample_id, "_spatial_",
-                                         profile_name, "_supervised_refined"),
-                     save_dir   = refined_folder,
-                     base_width = 20, base_height = 10))
-      })
+      .plot_spatial_annotation_polygons(
+        gobj         = gobj,
+        celltype_col = celltype_col_ref,
+        colour_map   = colour_map_ref,
+        profile_name = paste0(profile_name, "_refined"),
+        sample_id    = sample_id,
+        out_dir      = refined_folder,
+        ann_type     = "supervised_refined"
+      )
       cat("  \u2713 Spatial (refined)\n")
     }, error = function(e) {
       cat("  \u26A0 Spatial (refined) failed:", conditionMessage(e), "\n")
@@ -1815,20 +2103,17 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 UMAP (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — spatial
+        # Supervised — spatial (polygon-based, falls back to points)
         tryCatch({
-          suppressWarnings({
-            spatPlot2D(gobj,
-                       cell_color = celltype_col_sup,
-                       point_size = 0.5,
-                       show_image = FALSE,
-                       save_plot  = TRUE,
-                       save_param = list(
-                         save_name  = paste0(sample_id, "_spatial_",
-                                             profile_name, "_supervised"),
-                         save_dir   = profile_folder,
-                         base_width = 20, base_height = 10))
-          })
+          .plot_spatial_annotation_polygons(
+            gobj         = gobj,
+            celltype_col = celltype_col_sup,
+            colour_map   = colour_map_sup,
+            profile_name = profile_name,
+            sample_id    = sample_id,
+            out_dir      = profile_folder,
+            ann_type     = "supervised"
+          )
           cat("  \u2713 Spatial (supervised)\n")
         }, error = function(e) {
           cat("  \u26A0 Spatial (supervised) failed:", conditionMessage(e), "\n")
@@ -1917,20 +2202,17 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 UMAP (semi) failed:", conditionMessage(e), "\n")
           })
           
-          # Semi — spatial
+          # Semi — spatial (polygon-based, falls back to points)
           tryCatch({
-            suppressWarnings({
-              spatPlot2D(gobj,
-                         cell_color = celltype_col_semi,
-                         point_size = 0.5,
-                         show_image = FALSE,
-                         save_plot  = TRUE,
-                         save_param = list(
-                           save_name  = paste0(sample_id, "_spatial_",
-                                               profile_name, "_semi"),
-                           save_dir   = profile_folder,
-                           base_width = 20, base_height = 10))
-            })
+            .plot_spatial_annotation_polygons(
+              gobj         = gobj,
+              celltype_col = celltype_col_semi,
+              colour_map   = colour_map_semi,
+              profile_name = profile_name,
+              sample_id    = sample_id,
+              out_dir      = profile_folder,
+              ann_type     = "semi"
+            )
             cat("  \u2713 Spatial (semi)\n")
           }, error = function(e) {
             cat("  \u26A0 Spatial (semi) failed:", conditionMessage(e), "\n")
@@ -2053,6 +2335,20 @@ annotate_cells <- function(gobj,
         column_cell_ID = "cell_ID"
       )
       cat("  \u2713 Generic 'celltype' column updated to selected annotation\n\n")
+
+      # ── B cell highlight plots (UMAP + spatial polygons) ───────────────
+      tryCatch({
+        plot_bcell_highlights(
+          gobj         = gobj,
+          celltype_col = best_col,
+          colour_map   = .build_colour_map(meta_now[[best_col]]),
+          out_dir      = file.path(output_dir, "07_Annotation"),
+          sample_id    = sample_id,
+          ann_type     = "best"
+        )
+      }, error = function(e) {
+        cat("  \u26A0 B cell highlight plots failed:", conditionMessage(e), "\n")
+      })
     }
   }
 
