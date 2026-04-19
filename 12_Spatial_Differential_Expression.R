@@ -2277,15 +2277,14 @@ run_spatial_differential_expression <- function(gobj,
         n_niches = n_niches_fallback
       )
 
-      # For very small populations the replicate filter (min_cells_per_replicate)
-      # strips all cells even when niches qualify — relax it to 1
-      fallback_rep_min <- min(min_cells_per_replicate, max(1L, as.integer(floor(fallback_min / 3L))))
-      if (fallback_rep_min < min_cells_per_replicate) {
-        cat(sprintf(
-          "  [fallback] min_cells_per_replicate relaxed from %d \u2192 %d\n",
-          min_cells_per_replicate, fallback_rep_min
-        ))
-      }
+      # With few cells spread across many FOVs, the replicate filter strips
+      # nearly everything even after niche reduction. In the fallback (last
+      # resort) always use 1 so no cell is dropped by this filter.
+      fallback_rep_min <- 1L
+      cat(sprintf(
+        "  [fallback] min_cells_per_replicate set to 1 (was %d; fallback mode)\n",
+        min_cells_per_replicate
+      ))
 
       fallback_out <- run_sample_scope_spatial_de(
         expr_mat                 = expr_mat,
