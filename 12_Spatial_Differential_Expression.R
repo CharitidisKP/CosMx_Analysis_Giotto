@@ -2246,11 +2246,47 @@ run_spatial_differential_expression <- function(gobj,
       cat("  edgeR fallback for", length(skipped),
           "cell type(s) skipped by smiDE:", paste(skipped, collapse = ", "), "\n")
       meta_fallback <- metadata[metadata[[annotation_column]] %in% skipped, , drop = FALSE]
+
+      # Compute per-type cell counts; scale niches to the smallest group
+      n_cells_per_type <- vapply(skipped, function(ct) {
+        sum(meta_fallback[[annotation_column]] == ct, na.rm = TRUE)
+      }, integer(1))
+      min_type_count <- min(n_cells_per_type)
+
+      # Re-assign niches with fewer groups if cell count is too small for
+      # the global n_niches — this prevents the 6-niche assignment leaving
+      # only 4 cells/niche on average, which the replicate filter then drops
+      n_niches_fallback <- max(2L, min(n_niches, as.integer(floor(min_type_count / 10L))))
+      if (n_niches_fallback < n_niches) {
+        cat(sprintf(
+          "  [fallback] Re-assigning niches: %d \u2192 %d (smallest type has %d cells)\n",
+          n_niches, n_niches_fallback, min_type_count
+        ))
+        fb_ids <- meta_fallback$cell_ID
+        fb_niche_props <- normalise_rows(niche_counts[
+          match(fb_ids, rownames(niche_counts)), , drop = FALSE
+        ])
+        meta_fallback$spatial_niche <- assign_spatial_niches(
+          fb_niche_props, n_niches = n_niches_fallback
+        )
+      }
+
       fallback_min <- adaptive_min_cells_per_niche(
-        n_cells  = nrow(meta_fallback) / max(1L, length(skipped)),
+        n_cells  = min_type_count,
         base_min = min_cells_per_niche,
-        n_niches = n_niches
+        n_niches = n_niches_fallback
       )
+
+      # For very small populations the replicate filter (min_cells_per_replicate)
+      # strips all cells even when niches qualify — relax it to 1
+      fallback_rep_min <- min(min_cells_per_replicate, max(1L, as.integer(floor(fallback_min / 3L))))
+      if (fallback_rep_min < min_cells_per_replicate) {
+        cat(sprintf(
+          "  [fallback] min_cells_per_replicate relaxed from %d \u2192 %d\n",
+          min_cells_per_replicate, fallback_rep_min
+        ))
+      }
+
       fallback_out <- run_sample_scope_spatial_de(
         expr_mat                 = expr_mat,
         metadata                 = meta_fallback,
@@ -2260,7 +2296,7 @@ run_spatial_differential_expression <- function(gobj,
         sample_replicate_column  = sample_replicate_column,
         sample_contrast          = sample_contrast,
         min_cells_per_niche      = fallback_min,
-        min_cells_per_replicate  = min_cells_per_replicate,
+        min_cells_per_replicate  = fallback_rep_min,
         min_replicates_per_group = min_replicates_per_group,
         n_spatial_patches        = n_spatial_patches,
         spatial_locations        = spatial_locations
