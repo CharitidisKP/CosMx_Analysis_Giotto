@@ -406,41 +406,57 @@ batch_correct_merged_object <- function(gobj,
     name = "harmony"
   )
   
-  gobj <- .giotto_run_umap(
-    gobj = gobj,
-    dim_reduction_to_use = "harmony",
-    dim_reduction_name = "harmony",
-    dimensions_to_use = dimensions_to_use,
-    n_neighbors = umap_n_neighbors,
-    min_dist = umap_min_dist,
-    name = "umap"
+  # Call Giotto dimension reduction and clustering functions DIRECTLY (no wrappers).
+  # These functions use sys.frame(-2) internally to look up helpers; adding a wrapper
+  # frame shifts the lookup to the wrong environment, causing "accessor not found".
+  cat("Running UMAP on Harmony embedding...\n")
+  gobj <- .run_known_giotto_warning_safe(
+    runUMAP(
+      gobject              = gobj,
+      dim_reduction_to_use = "harmony",
+      dim_reduction_name   = "harmony",
+      dimensions_to_use    = dimensions_to_use,
+      n_neighbors          = umap_n_neighbors,
+      min_dist             = umap_min_dist,
+      name                 = "umap"
+    )
   )
-  
-  gobj <- .giotto_run_tsne(
-    gobj = gobj,
-    dim_reduction_to_use = "harmony",
-    dim_reduction_name = "harmony",
-    dimensions_to_use = dimensions_to_use,
-    perplexity = 30,
-    name = "tsne"
+  cat("✓ UMAP complete\n\n")
+
+  cat("Running t-SNE on Harmony embedding...\n")
+  gobj <- .run_known_giotto_warning_safe(
+    runtSNE(
+      gobject              = gobj,
+      dim_reduction_to_use = "harmony",
+      dim_reduction_name   = "harmony",
+      dimensions_to_use    = dimensions_to_use,
+      perplexity           = 30,
+      name                 = "tsne"
+    )
   )
-  
-  gobj <- .giotto_create_nearest_network(
-    gobj = gobj,
+  cat("✓ t-SNE complete\n\n")
+
+  cat("Building nearest-neighbour network on Harmony embedding...\n")
+  gobj <- createNearestNetwork(
+    gobject              = gobj,
     dim_reduction_to_use = "harmony",
-    dim_reduction_name = "harmony",
-    dimensions_to_use = dimensions_to_use,
-    k = k_nn,
-    name = "NN.harmony"
+    dim_reduction_name   = "harmony",
+    dimensions_to_use    = dimensions_to_use,
+    k                    = k_nn,
+    name                 = "NN.harmony"
   )
-  
-  gobj <- .giotto_do_leiden_cluster(
-    gobj = gobj,
+  cat("✓ NN network complete\n\n")
+
+  cat("Running Leiden clustering...\n")
+  gobj <- doLeidenCluster(
+    gobject      = gobj,
+    nn_network_to_use = "kNN",
     network_name = "NN.harmony",
-    resolution = resolution,
+    resolution   = resolution,
     n_iterations = 1000,
-    name = "leiden_clust"
+    name         = "leiden_clust"
   )
+  cat("✓ Leiden clustering complete\n\n")
   
   readr::write_csv(
     tibble::as_tibble(.giotto_pdata_dt(gobj)),
