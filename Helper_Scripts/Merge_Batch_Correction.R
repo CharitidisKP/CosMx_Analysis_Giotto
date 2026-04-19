@@ -399,11 +399,12 @@ batch_correct_merged_object <- function(gobj,
   cat("Running Harmony using batch column:", batch_column, "\n")
   cat("Dimensions:", paste(range(dimensions_to_use), collapse = ":"), "\n\n")
 
-  gobj <- .giotto_run_harmony(
-    gobj = gobj,
-    vars_use = batch_column,
-    dimensions_to_use = dimensions_to_use,
-    name = "harmony"
+  gobj <- runGiottoHarmony(
+    gobject              = gobj,
+    vars_use             = batch_column,
+    dim_reduction_to_use = "pca",
+    dimensions_to_use    = dimensions_to_use,
+    name                 = "harmony"
   )
   
   # Call Giotto dimension reduction and clustering functions DIRECTLY (no wrappers).
