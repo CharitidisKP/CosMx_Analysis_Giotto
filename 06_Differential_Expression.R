@@ -1,12 +1,25 @@
-# Cluster marker analysis retained for backward compatibility -------------------
+# Cluster marker analysis -----------------------------------------------------
 
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 06_marker_analysis.R
-# Cluster marker analysis
+# 06_Differential_Expression.R  (pipeline alias: 06_markers)
+#
+# NOTE ON NAMING
+#   The historical file name is "06_Differential_Expression.R" but the
+#   analysis performed here is *cluster marker discovery* (one-vs-all per
+#   Leiden cluster), NOT cross-sample / cross-treatment differential
+#   expression. True inter-sample spatial DE is implemented in
+#   12_Spatial_Differential_Expression.R.
+#
+#   The pipeline dispatches this script via the alias "06_markers"
+#   (see CosMx_pipeline.R::canonicalize_step_id). The exported function is
+#   marker_analysis().
 # ==============================================================================
 
 #' Marker Gene Analysis
+#'
+#' Per-cluster marker discovery (one-vs-all) using scran. This is NOT
+#' cross-sample differential expression — see script 12 for that.
 #'
 #' @param gobj Giotto object or path
 #' @param sample_id Sample identifier
@@ -22,8 +35,9 @@ marker_analysis <- function(gobj,
                             top_n = 25) {
   
   cat("\n========================================\n")
-  cat("STEP 06: Cluster Marker Analysis\n")
+  cat("STEP 06: Cluster Marker Analysis (one-vs-all)\n")
   cat("Sample:", sample_id, "\n")
+  cat("Note:  NOT cross-sample DE; see step 12 for that.\n")
   cat("========================================\n\n")
   
   if (is.character(gobj)) {

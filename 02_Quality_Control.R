@@ -417,6 +417,32 @@ quality_control <- function(gobj,
   )
   
   write_csv(qc_summary, file.path(results_folder, paste0(sample_id, "_qc_summary.csv")))
+
+  # Audit trail: record the exact thresholds used for this run so downstream
+  # analysts can reproduce filtering decisions without re-running the pipeline.
+  qc_parameters <- tibble(
+    parameter = c("gene_min_cells", "cell_min_genes", "cell_max_genes",
+                  "min_count", "max_mito_pct",
+                  "n_mt_genes_detected",
+                  "n_cells_initial", "n_cells_final",
+                  "n_genes_initial", "n_genes_final",
+                  "timestamp"),
+    value = c(as.character(gene_min_cells),
+              as.character(cell_min_genes),
+              ifelse(is.null(cell_max_genes), "NULL", as.character(cell_max_genes)),
+              as.character(min_count),
+              ifelse(is.null(max_mito_pct), "NULL", as.character(max_mito_pct)),
+              as.character(length(mt_genes)),
+              as.character(n_cells_initial),
+              as.character(n_cells_after),
+              as.character(n_genes_initial),
+              as.character(n_genes_after),
+              format(Sys.time(), "%Y-%m-%dT%H:%M:%S"))
+  )
+  write_csv(
+    qc_parameters,
+    file.path(results_folder, paste0(sample_id, "_qc_parameters.csv"))
+  )
   
   cat("=== Final Statistics ===\n")
   print(qc_summary)

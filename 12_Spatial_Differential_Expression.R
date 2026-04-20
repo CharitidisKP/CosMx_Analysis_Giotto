@@ -826,6 +826,7 @@ run_smide_sample_backend <- function(expr_mat,
 
   n_niches_effective <- length(unique(stats::na.omit(metadata$spatial_niche)))
   skipped_cell_types <- character(0)
+  skipped_records    <- list()
 
   # -------------------------------------------------------------------------
   # FIX #12b: For smiDE, we need a dense matrix for pre_de() and
@@ -876,6 +877,14 @@ run_smide_sample_backend <- function(expr_mat,
         cell_type, n_cells_total, length(valid_niches), effective_min
       ))
       skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type,
+        n_cells   = n_cells_total,
+        n_niches  = length(valid_niches),
+        reason    = sprintf("below niche threshold (need \u22652 niches with \u2265%d cells)", effective_min),
+        stage     = "niche_gate",
+        stringsAsFactors = FALSE
+      )
       next
     }
     
@@ -912,6 +921,15 @@ run_smide_sample_backend <- function(expr_mat,
       }
     )
     if (is.null(pre_obj)) {
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type,
+        n_cells   = nrow(cell_meta),
+        n_niches  = length(valid_niches),
+        reason    = "smiDE::pre_de() failed",
+        stage     = "pre_de",
+        stringsAsFactors = FALSE
+      )
       gc(verbose = FALSE)
       next
     }
@@ -958,6 +976,15 @@ run_smide_sample_backend <- function(expr_mat,
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
     if (!is.null(targets) && length(targets) == 0) {
       message("All targets were removed by the overlap threshold for ", run_label, " / ", cell_type)
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type,
+        n_cells   = nrow(cell_meta),
+        n_niches  = length(valid_niches),
+        reason    = sprintf("overlap threshold %.2f removed all targets", smide_overlap_threshold),
+        stage     = "overlap_filter",
+        stringsAsFactors = FALSE
+      )
       gc(verbose = FALSE)
       next
     }
@@ -969,6 +996,15 @@ run_smide_sample_backend <- function(expr_mat,
     )
     if (is.null(model_inputs$counts) || model_inputs$n_genes == 0) {
       message("No genes passed the smiDE filters for ", run_label, " / ", cell_type)
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type,
+        n_cells   = nrow(cell_meta),
+        n_niches  = length(valid_niches),
+        reason    = sprintf("no genes passed min_detection_fraction=%.2f", smide_min_detection_fraction),
+        stage     = "detection_filter",
+        stringsAsFactors = FALSE
+      )
       gc(verbose = FALSE)
       next
     }
@@ -1120,7 +1156,18 @@ run_smide_sample_backend <- function(expr_mat,
   # Release the full dense matrix now that all cell types are processed
   rm(counts_dense_full)
   gc(verbose = FALSE)
-  
+
+  if (length(skipped_records) > 0) {
+    skipped_df <- do.call(rbind, skipped_records)
+    skip_csv <- file.path(tables_dir, paste0(run_label, "_smide_skipped_summary.csv"))
+    utils::write.csv(skipped_df, skip_csv, row.names = FALSE)
+    cat(sprintf("\n[smiDE] %d/%d candidate cell type(s) skipped \u2014 see %s\n",
+                length(skipped_records), length(candidate_cell_types), skip_csv))
+  } else {
+    cat(sprintf("\n[smiDE] 0/%d candidate cell types skipped\n",
+                length(candidate_cell_types)))
+  }
+
   list(
     metadata = metadata,
     summary = if (length(summary_rows) > 0) do.call(rbind, summary_rows) else data.frame(),
@@ -1220,6 +1267,7 @@ run_smide_merged_backend <- function(expr_mat,
   summary_rows <- list()
   all_results  <- list()
   skipped_cell_types <- character(0)
+  skipped_records    <- list()
   idx <- 1L
 
   for (cell_type in candidate_cell_types) {
@@ -1247,6 +1295,15 @@ run_smide_merged_backend <- function(expr_mat,
         cell_type, n_cells_total, length(valid_groups), effective_min, n_treat_valid
       ))
       skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type,
+        n_cells   = n_cells_total,
+        n_niches  = length(valid_groups),
+        reason    = sprintf("needs \u22652 niche-treatment groups with \u2265%d cells spanning \u22652 treatments (got %d groups, %d treatments)",
+                            effective_min, length(valid_groups), n_treat_valid),
+        stage     = "group_gate",
+        stringsAsFactors = FALSE
+      )
       next
     }
 
@@ -1276,7 +1333,15 @@ run_smide_merged_backend <- function(expr_mat,
         NULL
       }
     )
-    if (is.null(pre_obj)) { gc(verbose = FALSE); next }
+    if (is.null(pre_obj)) {
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type, n_cells = n_cells_total, n_niches = length(valid_groups),
+        reason = "smiDE::pre_de() failed", stage = "pre_de",
+        stringsAsFactors = FALSE
+      )
+      gc(verbose = FALSE); next
+    }
 
     overlap_df <- tryCatch(
       coerce_overlap_metric_table(
@@ -1314,6 +1379,13 @@ run_smide_merged_backend <- function(expr_mat,
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
     if (!is.null(targets) && length(targets) == 0) {
       message("All targets removed by overlap threshold for ", run_label, " / ", cell_type)
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type, n_cells = n_cells_total, n_niches = length(valid_groups),
+        reason = sprintf("overlap threshold %.2f removed all targets", smide_overlap_threshold),
+        stage = "overlap_filter",
+        stringsAsFactors = FALSE
+      )
       gc(verbose = FALSE); next
     }
 
@@ -1324,6 +1396,13 @@ run_smide_merged_backend <- function(expr_mat,
     )
     if (is.null(model_inputs$counts) || model_inputs$n_genes == 0) {
       message("No genes passed smiDE filters for ", run_label, " / ", cell_type)
+      skipped_cell_types <- c(skipped_cell_types, cell_type)
+      skipped_records[[length(skipped_records) + 1L]] <- data.frame(
+        cell_type = cell_type, n_cells = n_cells_total, n_niches = length(valid_groups),
+        reason = sprintf("no genes passed min_detection_fraction=%.2f", smide_min_detection_fraction),
+        stage = "detection_filter",
+        stringsAsFactors = FALSE
+      )
       gc(verbose = FALSE); next
     }
 
@@ -1416,6 +1495,17 @@ run_smide_merged_backend <- function(expr_mat,
 
   rm(counts_dense_full)
   gc(verbose = FALSE)
+
+  if (length(skipped_records) > 0) {
+    skipped_df <- do.call(rbind, skipped_records)
+    skip_csv <- file.path(tables_dir, paste0(run_label, "_smide_merged_skipped_summary.csv"))
+    utils::write.csv(skipped_df, skip_csv, row.names = FALSE)
+    cat(sprintf("\n[smiDE merged] %d/%d candidate cell type(s) skipped \u2014 see %s\n",
+                length(skipped_records), length(candidate_cell_types), skip_csv))
+  } else {
+    cat(sprintf("\n[smiDE merged] 0/%d candidate cell types skipped\n",
+                length(candidate_cell_types)))
+  }
 
   list(
     metadata           = metadata,
@@ -2424,7 +2514,55 @@ run_spatial_differential_expression <- function(gobj,
       stop("Sample-scope spatial DE requires exactly one sample in the input object.")
     }
   }
-  
+
+  # ── Metadata-column validation (T1.7): fail fast with clear messages ─────
+  .validate_de_column <- function(col, label, require_multi_level = TRUE) {
+    if (is.null(col) || !nzchar(col)) return(invisible(NULL))
+    if (!col %in% names(metadata)) {
+      stop(sprintf(
+        "%s '%s' is not present in cell metadata. Available columns: %s",
+        label, col, paste(names(metadata), collapse = ", ")
+      ))
+    }
+    values <- metadata[[col]]
+    n_na <- sum(is.na(values) | !nzchar(as.character(values)))
+    n_levels <- length(unique(stats::na.omit(values)))
+    if (require_multi_level && n_levels < 2) {
+      stop(sprintf(
+        "%s '%s' has %d non-NA unique value(s); need \u22652.",
+        label, col, n_levels
+      ))
+    }
+    if (n_na > 0 && n_na / length(values) > 0.1) {
+      warning(sprintf(
+        "%s '%s' has %d/%d (%.1f%%) NA/empty entries.",
+        label, col, n_na, length(values), 100 * n_na / length(values)
+      ), immediate. = TRUE)
+    }
+  }
+  .validate_de_column(annotation_column, "annotation_column")
+  if (analysis_scope == "merged") {
+    .validate_de_column(treatment_column, "treatment_column")
+    .validate_de_column(patient_column,   "patient_column", require_multi_level = FALSE)
+  }
+  if (!is.null(smide_annotation_subset) && length(smide_annotation_subset) > 0) {
+    ann_values <- unique(stats::na.omit(metadata[[annotation_column]]))
+    missing_labels <- setdiff(smide_annotation_subset, ann_values)
+    if (length(missing_labels) == length(smide_annotation_subset)) {
+      stop(sprintf(
+        "None of the smide_annotation_subset labels (%s) are present in '%s'. Available labels: %s",
+        paste(smide_annotation_subset, collapse = ", "),
+        annotation_column,
+        paste(ann_values, collapse = ", ")
+      ))
+    } else if (length(missing_labels) > 0) {
+      warning(sprintf(
+        "smide_annotation_subset labels not in '%s': %s",
+        annotation_column, paste(missing_labels, collapse = ", ")
+      ), immediate. = TRUE)
+    }
+  }
+
   cat("Analysis scope:", analysis_scope, "\n")
   cat("Backend:", backend, "\n")
   cat("Annotation column:", annotation_column, "\n")

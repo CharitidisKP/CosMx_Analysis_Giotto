@@ -348,7 +348,7 @@ merge_giotto_samples <- function(gobject_list,
 batch_correct_merged_object <- function(gobj,
                                         sample_id = "merged",
                                         output_dir,
-                                        batch_column = "slide_num",
+                                        batch_column = "slide_id",
                                         annotation_columns = NULL,
                                         n_hvgs = 500,
                                         n_pcs = 30,
@@ -388,6 +388,32 @@ batch_correct_merged_object <- function(gobj,
       stop("Batch column '", batch_column, "' is not present in merged metadata.")
     }
     batch_column <- fallback_column
+  }
+
+  # Hard guard: Harmony must never regress out biological variables.
+  forbidden_batch <- c("group_id", "treatment", "group", "arm")
+  if (tolower(batch_column) %in% forbidden_batch) {
+    stop(sprintf(
+      "batch_column '%s' is a biological variable; Harmony would erase CART/Control/Conventional signal. Use slide_id / slide_num / sample_id instead.",
+      batch_column))
+  }
+
+  # Advisory: warn if batch_column is strongly correlated with group_id.
+  if ("group_id" %in% names(metadata) && batch_column != "group_id") {
+    tab <- table(metadata[[batch_column]], metadata[["group_id"]])
+    if (all(dim(tab) >= 2L)) {
+      chi <- suppressWarnings(chisq.test(tab, correct = FALSE))
+      n   <- sum(tab)
+      k   <- min(dim(tab)) - 1L
+      cramers_v <- if (n > 0 && k > 0) {
+        sqrt(as.numeric(chi$statistic) / (n * k))
+      } else NA_real_
+      if (is.finite(cramers_v) && cramers_v > 0.5) {
+        warning(sprintf(
+          "batch_column '%s' has Cramer's V = %.2f with group_id (> 0.5); Harmony may partially erase biological signal.",
+          batch_column, cramers_v))
+      }
+    }
   }
 
   # Sub-checkpoints — saved inside output_dir alongside the main checkpoints.

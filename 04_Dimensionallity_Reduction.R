@@ -199,7 +199,8 @@ dimensionality_reduction <- function(gobj,
                                      n_pcs = 30,
                                      umap_n_neighbors = 30,
                                      umap_min_dist = 0.3,
-                                     spatial_hvg = FALSE) {
+                                     spatial_hvg = FALSE,
+                                     seed = 42) {
   
   cat("\n========================================\n")
   cat("STEP 04: Dimensionality Reduction\n")
@@ -303,7 +304,9 @@ dimensionality_reduction <- function(gobj,
   cat("Running UMAP...\n")
   cat("  Neighbors:", umap_n_neighbors, "\n")
   cat("  Min distance:", umap_min_dist, "\n")
-  
+  cat("  Seed:", seed, "\n")
+
+  set.seed(seed)
   gobj <- .run_known_giotto_warning_safe(
     runUMAP(
       gobject = gobj,
@@ -312,12 +315,14 @@ dimensionality_reduction <- function(gobj,
       min_dist = umap_min_dist
     )
   )
-  
+
   cat("✓ UMAP complete\n\n")
-  
+
   # t-SNE
   cat("Running t-SNE...\n")
-  
+  cat("  Seed:", seed, "\n")
+
+  set.seed(seed)
   gobj <- .run_known_giotto_warning_safe(
     runtSNE(
       gobject = gobj,

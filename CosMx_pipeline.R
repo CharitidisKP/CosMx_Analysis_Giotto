@@ -334,6 +334,8 @@ normalize_sample_table <- function(sample_df, cfg) {
   if (!"treatment" %in% names(sample_df)) {
     sample_df$treatment <- NA_character_
   }
+  # Canonicalise "CAR-T" -> "CART" so downstream contrast strings match.
+  sample_df$treatment <- gsub("-", "", sample_df$treatment)
   if (!"notes" %in% names(sample_df)) {
     sample_df$notes <- NA_character_
   }
@@ -719,7 +721,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       n_pcs = cfg$parameters$dim_reduction$n_pcs %||% 30,
       umap_n_neighbors = cfg$parameters$dim_reduction$umap_n_neighbors %||% 30,
       umap_min_dist = cfg$parameters$dim_reduction$umap_min_dist %||% 0.3,
-      spatial_hvg = cfg$parameters$dim_reduction$spatial_hvg %||% FALSE
+      spatial_hvg = cfg$parameters$dim_reduction$spatial_hvg %||% FALSE,
+      seed = cfg$reproducibility$seed %||% 42
     ),
     "05_cluster" = runtime_env$perform_clustering(
       gobj = gobj,
@@ -730,7 +733,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       dimensions_to_use = coerce_dimension_vector(cfg$parameters$clustering$dimensions_to_use %||% "1:30"),
       leiden_n_iterations = cfg$parameters$clustering$n_iterations %||% 200,
       resolution_sweep = cfg$parameters$clustering$resolution_sweep %||% NULL,
-      scripts_dir = cfg$paths$scripts_dir
+      scripts_dir = cfg$paths$scripts_dir,
+      seed = cfg$reproducibility$seed %||% 42
     ),
     "06_markers" = runtime_env$marker_analysis(
       gobj = gobj,
@@ -752,7 +756,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       min_gene_overlap = cfg$parameters$annotation$min_gene_overlap %||% 100,
       create_plots = cfg$parameters$annotation$create_plots %||% TRUE,
       conf_threshold = cfg$parameters$annotation$conf_threshold %||% NULL,
-      save_object = TRUE
+      save_object = TRUE,
+      seed = cfg$reproducibility$seed %||% 42
     ),
     "08_visualize" = runtime_env$create_visualizations(
       gobj = gobj,
@@ -828,6 +833,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         bcell_regex = focus_regex,
         spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
         number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
+        max_network_edges = cfg$interaction$max_network_edges %||% 70,
         save_object = TRUE
       )
     },
@@ -975,6 +981,41 @@ merged_output_dir <- function(cfg, run_label = NULL) {
   label <- run_label %||% cfg$merged$run_label %||% format(Sys.time(), "%Y%m%d_%H%M%S")
   label <- gsub("[^A-Za-z0-9._-]+", "_", label)
   ensure_dir(file.path(cfg$paths$output_dir, "Merged", label))
+}
+
+# Aggregate per-sample annotation selections (written by script 07 to
+# 07_Annotation/annotation_selection.json) and return the consensus column
+# name. The consensus is the mode; ties break alphabetically. Samples with no
+# JSON file are skipped. Returns NULL if no sample has a JSON.
+resolve_merged_annotation_column <- function(samples) {
+  if (is.null(samples) || !nrow(samples)) return(NULL)
+  per_sample <- data.frame(
+    sample_id = samples$sample_id,
+    selected  = NA_character_,
+    score     = NA_real_,
+    stringsAsFactors = FALSE
+  )
+  for (idx in seq_len(nrow(samples))) {
+    sel_file <- file.path(samples$output_dir[[idx]],
+                          "07_Annotation", "annotation_selection.json")
+    if (!file.exists(sel_file)) next
+    sel <- tryCatch(jsonlite::read_json(sel_file), error = function(e) NULL)
+    if (is.null(sel)) next
+    col <- sel$selected_annotation_column
+    if (!is.null(col) && nzchar(col)) {
+      per_sample$selected[idx] <- col
+      if (!is.null(sel$composite_score)) {
+        per_sample$score[idx] <- suppressWarnings(as.numeric(sel$composite_score))
+      }
+    }
+  }
+  valid <- per_sample$selected[!is.na(per_sample$selected)]
+  if (length(valid) == 0) return(NULL)
+  counts <- sort(table(valid), decreasing = TRUE)
+  max_n  <- counts[1]
+  tied   <- names(counts)[counts == max_n]
+  consensus <- sort(tied)[1]
+  list(consensus = consensus, per_sample = per_sample, tied = tied)
 }
 
 load_merge_inputs <- function(samples, cfg) {
@@ -1271,6 +1312,38 @@ run_pipeline <- function(cli_opts) {
   }
   
   if (cli_opts$mode %in% c("all", "merged")) {
+    # Consensus annotation column across samples — each per-sample run writes
+    # annotation_selection.json in step 07, but run_sample_pipeline's cfg
+    # mutation is local; we re-resolve here so the merged object uses the
+    # same column the per-sample pipeline chose.
+    ann_sel <- resolve_merged_annotation_column(selected_samples)
+    if (!is.null(ann_sel)) {
+      cfg$interaction$annotation_column <- ann_sel$consensus
+      cfg$spatial_de$annotation_column  <- ann_sel$consensus
+      message(sprintf(
+        "[Merge] Consensus annotation column: '%s' (%d/%d samples%s)",
+        ann_sel$consensus,
+        sum(!is.na(ann_sel$per_sample$selected)),
+        nrow(ann_sel$per_sample),
+        if (length(ann_sel$tied) > 1)
+          sprintf("; tied with %s, broke alphabetically",
+                  paste(setdiff(ann_sel$tied, ann_sel$consensus), collapse = ", "))
+        else ""
+      ))
+      utils::write.csv(
+        data.frame(
+          ann_sel$per_sample,
+          consensus = ann_sel$consensus,
+          stringsAsFactors = FALSE
+        ),
+        file.path(run_dir, "annotation_selection_merged.csv"),
+        row.names = FALSE
+      )
+    } else {
+      message("[Merge] No per-sample annotation_selection.json found; using config default: ",
+              cfg$interaction$annotation_column %||% "<unset>")
+    }
+
     merged_results <- run_merged_pipeline(
       runtime_env = runtime_env,
       samples = selected_samples,

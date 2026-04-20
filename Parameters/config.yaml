@@ -18,6 +18,11 @@ pipeline:
   skip_on_error: false
   memory_cleanup: true
 
+# Single global seed used before every stochastic call (UMAP, t-SNE, Leiden,
+# InSituType). Change to 43, 44, ... to produce reproducible alternative runs.
+reproducibility:
+  seed: 42
+
 paired:
   pair_column: "pair_id"
   group_column: "group_id"
@@ -77,6 +82,9 @@ interaction:
   bcell_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
+  # Cap on edges drawn in the focused cell-type proximity network (step 11).
+  # Raises readability on dense networks; set higher to show more interactions.
+  max_network_edges: 70
 
 cci:
   run_sections:

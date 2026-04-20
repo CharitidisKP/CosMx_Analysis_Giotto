@@ -1449,9 +1449,17 @@ refine_annotation <- function(gobj,
   # refineClusters() requires a matrix with ≥2 columns; a single retained
   # type collapses the logliks subset to a vector and causes a dimension error.
   if (length(remaining) < 2) {
-    message("  \u26A0 Skipping refineClusters(): only ", length(remaining),
-            " cell type retained after confidence filtering",
-            " \u2014 refinement requires \u22652 types")
+    reason <- paste0(
+      "only ", length(remaining),
+      " cell type retained after confidence filtering — refinement requires >=2 types"
+    )
+    warning(
+      "[Annotation] refineClusters skipped for profile '", profile_name,
+      "' (sample: ", sample_id, "): ", reason,
+      call. = FALSE
+    )
+    attr(gobj, "refinement_skipped")        <- TRUE
+    attr(gobj, "refinement_skipped_reason") <- reason
     return(invisible(gobj))
   }
 
@@ -1731,7 +1739,8 @@ annotate_cells <- function(gobj,
                            min_gene_overlap = 100,
                            create_plots     = TRUE,
                            conf_threshold   = NULL,
-                           save_object      = TRUE) {
+                           save_object      = TRUE,
+                           seed             = 42) {
   
   cat("\n========================================\n")
   cat("STEP 07: Cell Type Annotation\n")
@@ -1833,14 +1842,31 @@ annotate_cells <- function(gobj,
   }
   
   insitu_results_store <- list()
-  
+
+  # Per-profile diagnostic paths taken (anchor fallback, refinement skip,
+  # insufficient gene overlap, etc.). Written to annotation_diagnostics.json
+  # alongside annotation_selection.json so analysts can audit each sample's
+  # annotation path without grepping the log.
+  annotation_diagnostics <- list()
+
   # Loop over profiles ----------------------------------------------------
   for (i in seq_along(profiles)) {
-    
+
     profile_config <- profiles[[i]]
     profile_name   <- profile_config$name
     is_default     <- (i == default_idx)
-    
+
+    annotation_diagnostics[[profile_name]] <- list(
+      supervised_status         = "pending",
+      semi_supervised_status    = "pending",
+      semi_fallback_refinement  = FALSE,
+      semi_fallback_reason      = NA_character_,
+      refinement_skipped        = FALSE,
+      refinement_skipped_reason = NA_character_,
+      notes                     = character(0)
+    )
+
+
     cat("================================================================================\n")
     cat("Running annotation with:", profile_name)
     if (is_default) cat(" [DEFAULT]")
@@ -1864,6 +1890,13 @@ annotate_cells <- function(gobj,
       if (length(common_genes) < min_gene_overlap) {
         cat("\u2717 Insufficient overlap (", length(common_genes), " < ",
             min_gene_overlap, ")\n  Skipping", profile_name, "\n\n")
+        annotation_diagnostics[[profile_name]]$supervised_status      <- "skipped_low_overlap"
+        annotation_diagnostics[[profile_name]]$semi_supervised_status <- "skipped_low_overlap"
+        annotation_diagnostics[[profile_name]]$notes <- c(
+          annotation_diagnostics[[profile_name]]$notes,
+          sprintf("overlap %d < min_gene_overlap %d",
+                  length(common_genes), min_gene_overlap)
+        )
         next
       }
       cat("  Sufficient overlap - proceeding\n\n")
@@ -1871,7 +1904,9 @@ annotate_cells <- function(gobj,
       # BLOCK A: SUPERVISED ------------------------------------------------
       cat("--- SUPERVISED ---\n")
       cat("Running InSituType (supervised)...\n")
-      
+      cat("  Seed:", seed, "\n")
+
+      set.seed(seed)
       insitu_supervised <- InSituType::insitutypeML(
         x                  = counts_mat,
         neg                = bg_per_cell,
@@ -1916,6 +1951,7 @@ annotate_cells <- function(gobj,
         file.path(profile_folder, paste0(sample_id, "_supervised_celltypes.csv"))
       )
       cat("\u2713 Supervised annotations added and saved\n\n")
+      annotation_diagnostics[[profile_name]]$supervised_status <- "ok"
       
       sup_summary <- dplyr::arrange(
         dplyr::summarise(
@@ -1966,6 +2002,7 @@ annotate_cells <- function(gobj,
         cat("\n")
         
         insitu_semi <- tryCatch({
+          set.seed(seed)
           InSituType::insitutype(
             x                  = counts_mat,
             neg                = bg_per_cell,
@@ -1993,9 +2030,22 @@ annotate_cells <- function(gobj,
             "  Continuing with supervised-only annotations."
           )
 
-          # Fallback: retry with refinement = FALSE to bypass anchor selection
-          message("  \u21B3 Retrying semi-supervised with refinement = FALSE ...")
+          # Fallback: retry with refinement = FALSE to bypass anchor selection.
+          # This path is explicitly surfaced in the banner below and recorded
+          # in annotation_diagnostics so it propagates into the per-sample
+          # annotation_diagnostics.json for audit.
+          cat("\n", strrep("-", 72), "\n", sep = "")
+          cat(sprintf(
+            "[Annotation] Semi-supervised retried without refinement for profile '%s' (sample: %s)\n",
+            profile_name, sample_id
+          ))
+          cat(sprintf("  Reason: %s\n", err_msg))
+          cat(strrep("-", 72), "\n\n")
+          annotation_diagnostics[[profile_name]]$semi_fallback_refinement <- TRUE
+          annotation_diagnostics[[profile_name]]$semi_fallback_reason     <- err_msg
+
           fallback_result <- tryCatch({
+            set.seed(seed)
             InSituType::insitutype(
               x                  = counts_mat,
               neg                = bg_per_cell,
@@ -2009,6 +2059,11 @@ annotate_cells <- function(gobj,
           }, error = function(e2) {
             message("  \u21B3 Retry also failed: ", conditionMessage(e2))
             message("  \u21B3 Using supervised-only annotations.")
+            annotation_diagnostics[[profile_name]]$semi_supervised_status <<- "failed_fallback_also_failed"
+            annotation_diagnostics[[profile_name]]$notes <<- c(
+              annotation_diagnostics[[profile_name]]$notes,
+              paste("fallback_error:", conditionMessage(e2))
+            )
             NULL
           })
           fallback_result
@@ -2017,6 +2072,12 @@ annotate_cells <- function(gobj,
         if (!is.null(insitu_semi)) {
           cat("\u2713 Semi-supervised complete\n")
           cat("  Cell types found:", length(unique(insitu_semi$clust)), "\n\n")
+          annotation_diagnostics[[profile_name]]$semi_supervised_status <-
+            if (isTRUE(annotation_diagnostics[[profile_name]]$semi_fallback_refinement)) {
+              "ok_fallback_refinement_false"
+            } else {
+              "ok"
+            }
           
           colour_map_semi <- .build_colour_map(insitu_semi$clust)
           
@@ -2062,10 +2123,13 @@ annotate_cells <- function(gobj,
           
           insitu_results_store[[profile_name]]$semi            <- insitu_semi
           insitu_results_store[[profile_name]]$colour_map_semi <- colour_map_semi
+        } else if (annotation_diagnostics[[profile_name]]$semi_supervised_status == "pending") {
+          annotation_diagnostics[[profile_name]]$semi_supervised_status <- "failed"
         }
-        
+
       } else {
         cat("Semi-supervised skipped (n_clusts_semi = 0)\n\n")
+        annotation_diagnostics[[profile_name]]$semi_supervised_status <- "skipped_n_clusts_semi_zero"
       }
       
       # BLOCK C: VISUALISATIONS --------------------------------------------
@@ -2289,6 +2353,13 @@ annotate_cells <- function(gobj,
           conf_threshold = conf_threshold,
           create_plots   = create_plots
         )
+        if (isTRUE(attr(gobj, "refinement_skipped"))) {
+          annotation_diagnostics[[profile_name]]$refinement_skipped        <- TRUE
+          annotation_diagnostics[[profile_name]]$refinement_skipped_reason <-
+            attr(gobj, "refinement_skipped_reason") %||% NA_character_
+          attr(gobj, "refinement_skipped")        <- NULL
+          attr(gobj, "refinement_skipped_reason") <- NULL
+        }
       }
       
       cat("\u2713 Complete:", profile_name, "\n\n")
@@ -2299,6 +2370,34 @@ annotate_cells <- function(gobj,
   }  # end for loop over profiles
   
   cat("\u2713 All annotations complete for", sample_id, "\n\n")
+
+  # ── Persist per-profile annotation diagnostics ───────────────────────────
+  tryCatch({
+    diagnostics_path <- file.path(results_folder, "annotation_diagnostics.json")
+    jsonlite::write_json(
+      list(
+        sample_id = sample_id,
+        timestamp = format(Sys.time(), "%Y-%m-%dT%H:%M:%S"),
+        seed      = seed,
+        profiles  = annotation_diagnostics
+      ),
+      path       = diagnostics_path,
+      pretty     = TRUE,
+      auto_unbox = TRUE
+    )
+    any_fallback <- any(vapply(
+      annotation_diagnostics,
+      function(d) isTRUE(d$semi_fallback_refinement) || isTRUE(d$refinement_skipped),
+      logical(1)
+    ))
+    if (any_fallback) {
+      cat("\u2139 Annotation diagnostics (fallbacks/skips) written to ",
+          diagnostics_path, "\n\n", sep = "")
+    }
+  }, error = function(e) {
+    cat("  \u26A0 Could not write annotation_diagnostics.json:",
+        conditionMessage(e), "\n")
+  })
 
   # ── Auto-select best annotation ──────────────────────────────────────────
   cat("Selecting best annotation based on confidence and LN composition...\n")

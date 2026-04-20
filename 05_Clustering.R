@@ -48,7 +48,8 @@ perform_clustering <- function(gobj,
                                inspect_snn          = TRUE,
                                n_cells_subgraph     = 100000,
                                leiden_n_iterations  = 200,
-                               resolution_sweep     = NULL) {
+                               resolution_sweep     = NULL,
+                               seed                 = 42) {
   
   cat("\n========================================\n")
   cat("STEP 05: Clustering\n")
@@ -194,7 +195,9 @@ perform_clustering <- function(gobj,
   cat("Running Leiden clustering...\n")
   cat("  Resolution:", resolution, "\n")
   cat("  Iterations:", leiden_n_iterations, "\n")
-  
+  cat("  Seed:", seed, "\n")
+
+  set.seed(seed)
   gobj <- doLeidenCluster(
     gobject      = gobj,
     python_path  = if (nzchar(python_path)) python_path else NULL,
@@ -218,6 +221,7 @@ perform_clustering <- function(gobj,
         "leiden_clust_res_",
         gsub("(^_+|_+$)", "", gsub("[^A-Za-z0-9]+", "_", format(res, trim = TRUE, scientific = FALSE)))
       )
+      set.seed(seed)
       gobj <- doLeidenCluster(
         gobject = gobj,
         python_path = if (nzchar(python_path)) python_path else NULL,

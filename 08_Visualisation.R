@@ -111,12 +111,11 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
   ## preview_ids <- sample(gobj@cell_ID$cell, max_cells_preview) ##
   ## Check again ##
   preview_ids_slot <- tryCatch(sample(gobj@cell_ID$cell, max_cells_preview), error = function(e) NULL)
-  all_cell_ids  <- if (!is.null(preview_ids_slot) && length(preview_ids_slot) > 0) {
+  preview_ids <- if (!is.null(preview_ids_slot) && length(preview_ids_slot) > 0) {
     preview_ids_slot
   } else {
-    GiottoClass::getCellID(gobj)   # Giotto Suite accessor
+    sample(GiottoClass::getCellID(gobj), max_cells_preview)
   }
-  preview_ids <- length(all_cell_ids)
   preview_gobj <- subsetGiotto(gobject = gobj, cell_ids = preview_ids)
   
   list(

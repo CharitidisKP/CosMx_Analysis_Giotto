@@ -3362,9 +3362,37 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["misty"])) {
     misty_ready <- .misty_runtime_ready()
     if (!isTRUE(misty_ready$ok)) {
-      cat("\u26A0 Skipping MISTy:", misty_ready$reason, "\n")
+      cat("\n", strrep("=", 72), "\n", sep = "")
+      cat("  \u26A0  MISTy SKIPPED \u2014 sample: ", sample_id, "\n", sep = "")
+      cat(strrep("=", 72), "\n")
+      cat(misty_ready$reason, "\n")
+      cat("  Recommended substitutes for cell-cell interaction inference:\n")
+      cat("    - InSituCor (spatial co-expression modules)\n")
+      cat("    - LIANA (L-R consensus)\n")
+      cat(strrep("=", 72), "\n\n")
       section_status["misty"] <- "skipped"
       section_messages[["misty"]] <- misty_ready$reason
+
+      # Persist skip record so analysts can audit post-hoc without grepping logs.
+      tryCatch({
+        misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty")
+        dir.create(misty_dir, recursive = TRUE, showWarnings = FALSE)
+        skip_path <- file.path(misty_dir, paste0(sample_id, "_misty_skipped.txt"))
+        writeLines(
+          c(
+            paste0("sample_id: ", sample_id),
+            paste0("timestamp: ", format(Sys.time(), "%Y-%m-%dT%H:%M:%S%z")),
+            "status: skipped",
+            "reason:",
+            misty_ready$reason,
+            "",
+            "recommended_substitutes: InSituCor, LIANA"
+          ),
+          skip_path
+        )
+      }, error = function(e) {
+        cat("\u26A0 Could not write misty_skipped.txt:", conditionMessage(e), "\n")
+      })
     } else {
       section_out <- .run_cci_section(
         "MISTy",

@@ -468,6 +468,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 bcell_regex = "^B\\.cell$",
                                                 spatial_network_name = "Delaunay_network",
                                                 number_of_simulations = 250,
+                                                max_network_edges = 70,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
   cat("STEP 11: Focused Cell-Type Microenvironment\n")
@@ -603,7 +604,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
   })
   
   tryCatch({
-    network_plot <- .build_proximity_network_plot(enrichment_table, sample_id = sample_id)
+    network_plot <- .build_proximity_network_plot(
+      enrichment_table,
+      sample_id = sample_id,
+      max_edges = max_network_edges
+    )
     save_presentation_plot(
       plot = network_plot,
       filename = file.path(results_dir, paste0(sample_id, "_cell_proximity_network.png")),

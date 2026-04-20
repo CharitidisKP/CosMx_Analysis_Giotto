@@ -234,9 +234,43 @@ normalize_expression <- function(gobj,
     
     cat("\n✓ Comparison plots saved\n")
   }
-  
+
+  # Audit trail: record normalization parameters + summary statistics.
+  tryCatch({
+    raw_summary  <- if (exists("raw_summary",  inherits = FALSE)) raw_summary
+                    else list(mean = NA_real_, median = NA_real_, max = NA_real_)
+    norm_summary <- if (exists("norm_summary", inherits = FALSE)) norm_summary
+                    else list(mean = NA_real_, median = NA_real_, max = NA_real_)
+    norm_params <- tibble(
+      parameter = c("scalefactor", "log_transform", "library_size_norm",
+                    "norm_method", "log_offset",
+                    "raw_mean", "raw_median", "raw_max",
+                    "normalized_mean", "normalized_median", "normalized_max",
+                    "timestamp"),
+      value = c(as.character(scalefactor),
+                as.character(log_transform),
+                "TRUE",
+                "standard",
+                "1",
+                as.character(round(raw_summary$mean,  3)),
+                as.character(round(raw_summary$median, 3)),
+                as.character(round(raw_summary$max,   3)),
+                as.character(round(norm_summary$mean,   3)),
+                as.character(round(norm_summary$median, 3)),
+                as.character(round(norm_summary$max,    3)),
+                format(Sys.time(), "%Y-%m-%dT%H:%M:%S"))
+    )
+    write_csv(
+      norm_params,
+      file.path(results_folder, paste0(sample_id, "_normalization_parameters.csv"))
+    )
+  }, error = function(e) {
+    cat("  \u26A0 Could not write normalization_parameters.csv:",
+        conditionMessage(e), "\n")
+  })
+
   cat("\n✓ Normalization complete for", sample_id, "\n\n")
-  
+
   return(gobj)
 }
 

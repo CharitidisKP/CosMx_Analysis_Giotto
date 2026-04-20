@@ -241,15 +241,15 @@ save_giotto_checkpoint <- function(gobj,
   }
   
   if (save_method == "none") {
-    return(invisible(
-      list(
-        checkpoint_dir = checkpoint_dir,
-        save_method = save_method,
-        error_message = error_message
-      )
-    ))
+    stop(
+      "save_giotto_checkpoint: all three serialisation backends failed for '",
+      checkpoint_dir, "'. Last error: ",
+      if (is.null(error_message)) "<none>" else error_message,
+      "\n  Tried: saveGiotto(), qs::qsave(), saveRDS().",
+      "\n  Check disk space, write permissions, and the Giotto object integrity."
+    )
   }
-  
+
   write_json_pretty(
     c(
       list(
@@ -261,7 +261,7 @@ save_giotto_checkpoint <- function(gobj,
     ),
     file.path(checkpoint_dir, "manifest.json")
   )
-  
+
   invisible(
     list(
       checkpoint_dir = checkpoint_dir,
@@ -273,11 +273,12 @@ save_giotto_checkpoint <- function(gobj,
 
 load_giotto_checkpoint <- function(checkpoint_dir) {
   checkpoint_dir <- resolve_path(checkpoint_dir, mustWork = TRUE)
-  
+
   giotto_dir <- file.path(checkpoint_dir, "giotto")
   qs_file <- file.path(checkpoint_dir, "object.qs")
   rds_file <- file.path(checkpoint_dir, "object.rds")
-  
+  manifest_file <- file.path(checkpoint_dir, "manifest.json")
+
   if (dir.exists(giotto_dir)) {
     return(loadGiotto(giotto_dir))
   }
@@ -287,6 +288,13 @@ load_giotto_checkpoint <- function(checkpoint_dir) {
   if (file.exists(rds_file)) {
     return(readRDS(rds_file))
   }
-  
+
+  # Manifest without payload signals a prior aborted save — be explicit.
+  if (file.exists(manifest_file)) {
+    stop(
+      "Checkpoint manifest present but no payload (giotto/, object.qs, object.rds) in ",
+      checkpoint_dir, ". Rerun the producing step."
+    )
+  }
   stop("No checkpoint payload found in ", checkpoint_dir)
 }
