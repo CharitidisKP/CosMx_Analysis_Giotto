@@ -606,6 +606,11 @@ plot_liana_extended <- function(liana_agg,
     top_lr$neg_log10_rank     <- -log10(pmax(top_lr$aggregate_rank, 1e-10))
     top_lr$is_focus           <- !is.null(focus_celltype) & top_lr$source %in% focus_celltype
 
+    # Interactions shared by >1 sender get a grey outline
+    sender_counts    <- table(top_lr$interaction_label)
+    top_lr$multi_ct  <- top_lr$interaction_label %in%
+                          names(sender_counts[sender_counts > 1])
+
     n_rows    <- nrow(top_lr)
     n_senders <- length(unique(top_lr$source))
     p1_w      <- max(14, ceiling(n_rows * 0.32) + 6)
@@ -617,10 +622,14 @@ plot_liana_extended <- function(liana_agg,
                y    = neg_log10_rank,
                fill = source
              )) +
-      ggplot2::geom_col() +
+      ggplot2::geom_col(ggplot2::aes(
+        color    = ifelse(multi_ct, "grey40", NA),
+        linewidth = ifelse(multi_ct, 0.4, 0)
+      )) +
+      ggplot2::scale_color_identity() +
       ggplot2::geom_col(
         data   = top_lr[top_lr$is_focus, ],
-        color  = "black", linewidth = 0.5, fill = NA
+        color  = "black", linewidth = 0.6, fill = NA
       ) +
       ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
@@ -748,7 +757,14 @@ plot_liana_extended <- function(liana_agg,
           subtitle = paste0("Top 25 pairs + ", paste(focus_celltype, collapse = "/"),
                             " edges; edge width proportional to N significant L-R pairs")
         ) +
-        presentation_theme(base_size = 11, legend_position = "right")
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::theme(
+          axis.line   = ggplot2::element_blank(),
+          axis.text   = ggplot2::element_blank(),
+          axis.ticks  = ggplot2::element_blank(),
+          axis.title  = ggplot2::element_blank(),
+          panel.border = ggplot2::element_blank()
+        )
 
       save_presentation_plot(
         plot     = p3,
@@ -771,16 +787,17 @@ plot_liana_extended <- function(liana_agg,
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      # Limit chord to top N cell types; always include focus_celltype if set
-      top_ct_pairs <- head(count_df[order(-count_df$n_interactions), ], 20)
-      keep_cts     <- unique(c(top_ct_pairs$source, top_ct_pairs$target))
+      # If focus_celltype set: show only B cell interactions; otherwise top 20 pairs
       if (!is.null(focus_celltype)) {
-        b_pairs  <- count_df[count_df$source %in% focus_celltype |
+        chord_df <- count_df[count_df$source %in% focus_celltype |
                                count_df$target %in% focus_celltype, ]
-        keep_cts <- unique(c(keep_cts, b_pairs$source, b_pairs$target))
+        if (nrow(chord_df) == 0) chord_df <- count_df  # fallback
+      } else {
+        top_ct_pairs <- head(count_df[order(-count_df$n_interactions), ], 20)
+        keep_cts     <- unique(c(top_ct_pairs$source, top_ct_pairs$target))
+        chord_df     <- count_df[count_df$source %in% keep_cts &
+                                    count_df$target %in% keep_cts, ]
       }
-      chord_df     <- count_df[count_df$source %in% keep_cts &
-                                  count_df$target %in% keep_cts, ]
       mat <- stats::xtabs(n_interactions ~ source + target, data = chord_df)
       chord_path <- file.path(out_dir, paste0(sample_id, "_liana_chord.png"))
       grDevices::png(chord_path, width = 2400, height = 2400, res = 200)
@@ -811,7 +828,7 @@ plot_liana_extended <- function(liana_agg,
     cat("\u26A0 LIANA chord diagram failed:", conditionMessage(e), "\n")
   })
 
-  # -- Plot 5: Spatial LR expression map ------------------------------------
+  # -- Plot 5: Spatial LR expression maps (B cell interactions, top 10) -------
   tryCatch({
     spat <- tryCatch(
       as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
@@ -820,14 +837,6 @@ plot_liana_extended <- function(liana_agg,
     if (is.null(spat) || !all(c("cell_ID", "sdimx", "sdimy") %in% names(spat))) {
       stop("Spatial locations unavailable.")
     }
-
-    top_pair <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], 1)
-    if (nrow(top_pair) == 0) stop("No interactions to map.")
-
-    ligand_gene   <- strsplit(as.character(top_pair$ligand_complex[1]),   "_")[[1]][1]
-    receptor_gene <- strsplit(as.character(top_pair$receptor_complex[1]), "_")[[1]][1]
-    sender_ct     <- as.character(top_pair$source[1])
-    receiver_ct   <- as.character(top_pair$target[1])
 
     expr_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
       expr_cache$normalized
@@ -839,10 +848,21 @@ plot_liana_extended <- function(liana_agg,
     }
     if (is.null(expr_mat)) stop("Expression matrix unavailable.")
 
-    sender_ids   <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
-                                    meta[[celltype_col]] == sender_ct]
-    receiver_ids <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
-                                    meta[[celltype_col]] == receiver_ct]
+    # Select interactions: B cell sender/receiver first, then top ranked
+    if (!is.null(focus_celltype)) {
+      focus_rows <- agg[agg$source %in% focus_celltype | agg$target %in% focus_celltype, ]
+      focus_rows <- focus_rows[order(focus_rows$aggregate_rank, na.last = TRUE), ]
+      other_rows <- agg[!(agg$source %in% focus_celltype | agg$target %in% focus_celltype), ]
+      other_rows <- other_rows[order(other_rows$aggregate_rank, na.last = TRUE), ]
+      pairs_to_plot <- rbind(head(focus_rows, 8), head(other_rows, 2))
+    } else {
+      pairs_to_plot <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], 10)
+    }
+    if (nrow(pairs_to_plot) == 0) stop("No interactions to map.")
+
+    # Subfolder for spatial LR maps
+    sp_lr_dir <- file.path(out_dir, "spatial_lr")
+    dir.create(sp_lr_dir, showWarnings = FALSE, recursive = TRUE)
 
     extract_expr_vec <- function(gene, cell_ids) {
       ids <- intersect(as.character(cell_ids), colnames(expr_mat))
@@ -851,71 +871,131 @@ plot_liana_extended <- function(liana_agg,
       data.frame(cell_ID = ids, expression = as.numeric(vals), stringsAsFactors = FALSE)
     }
 
-    lig_df <- extract_expr_vec(ligand_gene,   sender_ids)
-    rec_df <- extract_expr_vec(receptor_gene, receiver_ids)
-    if (is.null(lig_df) && is.null(rec_df)) stop("No expression data for top L-R pair.")
+    n_saved <- 0L
+    for (i in seq_len(nrow(pairs_to_plot))) {
+      pair <- pairs_to_plot[i, ]
+      tryCatch({
+        ligand_gene   <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
+        receptor_gene <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
+        sender_ct     <- as.character(pair$source)
+        receiver_ct   <- as.character(pair$target)
 
-    panels <- Filter(Negate(is.null), list(
-      if (!is.null(lig_df)) {
-        lig_df$panel <- paste0("Ligand: ", ligand_gene, " (", sender_ct, ")"); lig_df
-      },
-      if (!is.null(rec_df)) {
-        rec_df$panel <- paste0("Receptor: ", receptor_gene, " (", receiver_ct, ")"); rec_df
-      }
-    ))
-    panel_df <- merge(do.call(rbind, panels),
-                      spat[, c("cell_ID", "sdimx", "sdimy")],
-                      by = "cell_ID")
+        sender_ids   <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                       meta[[celltype_col]] == sender_ct]
+        receiver_ids <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                       meta[[celltype_col]] == receiver_ct]
 
-    p5 <- ggplot2::ggplot() +
-      # All cells as gray background for tissue context
-      ggplot2::geom_point(
-        data  = spat,
-        ggplot2::aes(x = sdimx, y = sdimy),
-        color = "grey80", size = 0.2, alpha = 0.4
-      ) +
-      # Sender/receiver cells colored by expression
-      ggplot2::geom_point(
-        data  = panel_df,
-        ggplot2::aes(x = sdimx, y = sdimy, color = expression),
-        size  = 0.9, alpha = 0.9
-      ) +
-      ggplot2::facet_wrap(~panel) +
-      ggplot2::scale_color_viridis_c(option = "magma", name = "Expression") +
-      ggplot2::labs(
-        title    = sample_plot_title(sample_id,
-                     paste0("Spatial Expression: ", ligand_gene, " \u2192 ", receptor_gene)),
-        subtitle = paste0("Gray = all cells; colored = ",
-                          sender_ct, " (ligand) & ", receiver_ct, " (receptor)"),
-        x        = "x",
-        y        = "y"
-      ) +
-      presentation_theme(base_size = 12, legend_position = "right") +
-      ggplot2::theme(panel.background = ggplot2::element_rect(fill = "grey15"))
+        lig_df <- extract_expr_vec(ligand_gene,   sender_ids)
+        rec_df <- extract_expr_vec(receptor_gene, receiver_ids)
+        if (is.null(lig_df) && is.null(rec_df)) next
 
-    save_presentation_plot(
-      plot     = p5,
-      filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_lr.png")),
-      width    = 14,
-      height   = 7,
-      dpi      = 150
-    )
-    cat("\u2713 LIANA spatial LR map saved\n")
+        panels <- Filter(Negate(is.null), list(
+          if (!is.null(lig_df)) {
+            lig_df$panel <- paste0("Ligand: ", ligand_gene, "\n(", sender_ct, ")"); lig_df
+          },
+          if (!is.null(rec_df)) {
+            rec_df$panel <- paste0("Receptor: ", receptor_gene, "\n(", receiver_ct, ")"); rec_df
+          }
+        ))
+        panel_df <- merge(do.call(rbind, panels),
+                          spat[, c("cell_ID", "sdimx", "sdimy")],
+                          by = "cell_ID")
+
+        p5 <- ggplot2::ggplot() +
+          ggplot2::geom_point(data = spat,
+            ggplot2::aes(x = sdimx, y = sdimy),
+            color = "grey80", size = 0.15, alpha = 0.35) +
+          ggplot2::geom_point(data = panel_df,
+            ggplot2::aes(x = sdimx, y = sdimy, color = expression),
+            size = 0.8, alpha = 0.9) +
+          ggplot2::facet_wrap(~panel) +
+          ggplot2::scale_color_viridis_c(option = "magma", name = "Expression") +
+          ggplot2::labs(
+            title    = sample_plot_title(sample_id,
+                         paste0("Spatial Expression: ", ligand_gene, " \u2192 ", receptor_gene)),
+            subtitle = paste0(sender_ct, " (ligand) \u2192 ", receiver_ct, " (receptor)"),
+            x = "x", y = "y"
+          ) +
+          presentation_theme(base_size = 12, legend_position = "right") +
+          ggplot2::theme(panel.background = ggplot2::element_rect(fill = "grey15"))
+
+        fname <- paste0(sample_id, "_spatial_lr_",
+                        sprintf("%02d", i), "_",
+                        gsub("[^A-Za-z0-9]", "_", ligand_gene), "_",
+                        gsub("[^A-Za-z0-9]", "_", receptor_gene), ".png")
+        save_presentation_plot(
+          plot = p5,
+          filename = file.path(sp_lr_dir, fname),
+          width = 16, height = 8, dpi = 200
+        )
+        n_saved <- n_saved + 1L
+      }, error = function(e) {
+        cat("  \u26A0 Spatial LR pair", i, "failed:", conditionMessage(e), "\n")
+      })
+    }
+    cat("\u2713 LIANA spatial LR maps saved (", n_saved, "plots) \u2192", sp_lr_dir, "\n")
   }, error = function(e) {
     cat("\u26A0 LIANA spatial LR map failed:", conditionMessage(e), "\n")
   })
 
-  # -- Plot 6: Spatial CCI map (global centroid arrows + B cell overlay) ------
+  # -- Plot 6: UMAP CCI overview + B cell spatial overlay ----------------------
   tryCatch({
+    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+
+    # -- 6a: UMAP colored by cell type, B cells highlighted -------------------
+    umap_coords <- tryCatch(
+      as.data.frame(.giotto_get_dim_reduction(gobj, reduction_method = "umap",
+                                              name = "umap", output = "data.table")),
+      error = function(e) NULL
+    )
+    if (!is.null(umap_coords)) {
+      umap_cols <- setdiff(names(umap_coords), "cell_ID")
+      umap_df   <- merge(
+        umap_coords[, c("cell_ID", umap_cols[1], umap_cols[2])],
+        meta[, c("cell_ID", celltype_col)],
+        by = "cell_ID"
+      )
+      names(umap_df)[2:3]                          <- c("umap_1", "umap_2")
+      names(umap_df)[names(umap_df) == celltype_col] <- "celltype"
+      umap_df$cell_ID <- as.character(umap_df$cell_ID)
+
+      active_cts <- unique(c(count_df$source, count_df$target))
+      umap_df$has_interactions <- umap_df$celltype %in% active_cts
+      umap_df$is_focus         <- umap_df$celltype %in% (focus_celltype %||% character(0))
+
+      p6 <- ggplot2::ggplot(umap_df[order(umap_df$has_interactions), ],
+               ggplot2::aes(x = umap_1, y = umap_2, color = celltype)) +
+        ggplot2::geom_point(
+          ggplot2::aes(alpha = ifelse(has_interactions, 0.75, 0.2),
+                       size  = ifelse(is_focus, 0.6, 0.3))
+        ) +
+        ggplot2::scale_alpha_identity() +
+        ggplot2::scale_size_identity() +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id, "CCI Overview — UMAP"),
+          subtitle = "Cell types with detected L-R interactions highlighted; B cells shown larger",
+          x = "UMAP 1", y = "UMAP 2", color = "Cell Type"
+        ) +
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::guides(color = ggplot2::guide_legend(
+          override.aes = list(size = 3, alpha = 1), ncol = 2))
+
+      save_presentation_plot(
+        plot = p6,
+        filename = file.path(out_dir, paste0(sample_id, "_liana_umap_cci.png")),
+        width = 14, height = 11, dpi = 150
+      )
+      cat("\u2713 LIANA CCI UMAP saved\n")
+    }
+
+    # -- 6b: B cell spatial interaction overlay (when focus_celltype is set) --
     spat <- tryCatch(
       as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
       error = function(e) NULL
     )
     if (is.null(spat) || !all(c("cell_ID", "sdimx", "sdimy") %in% names(spat))) {
-      stop("Spatial locations unavailable.")
+      stop("Spatial locations unavailable for B cell overlay.")
     }
-    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
-
     cell_spat <- merge(
       spat[, c("cell_ID", "sdimx", "sdimy")],
       meta[, c("cell_ID", celltype_col)],
@@ -923,16 +1003,10 @@ plot_liana_extended <- function(liana_agg,
     )
     names(cell_spat)[names(cell_spat) == celltype_col] <- "celltype"
 
-    if (nrow(cell_spat) == 0) {
-      stop(paste0("cell_spat merge produced 0 rows (spat n=", nrow(spat),
-                  ", meta n=", nrow(meta), "). cell_ID mismatch?"))
-    }
-
     centroids <- stats::aggregate(
       cbind(sdimx, sdimy) ~ celltype,
       data = cell_spat, FUN = mean, na.rm = TRUE
     )
-
     .build_seg_df <- function(pairs_df, cent_df) {
       s <- merge(pairs_df, cent_df, by.x = "source", by.y = "celltype")
       names(s)[names(s) %in% c("sdimx", "sdimy")] <- c("x_start", "y_start")
@@ -941,51 +1015,6 @@ plot_liana_extended <- function(liana_agg,
       s
     }
 
-    # -- 6a: Global centroid map (top 15 pairs, labeled) ----------------------
-    top_pairs <- head(count_df[order(-count_df$n_interactions), ], 15)
-    seg_df    <- .build_seg_df(top_pairs, centroids)
-
-    p6 <- ggplot2::ggplot() +
-      ggplot2::geom_point(
-        data = cell_spat,
-        ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
-        size = 0.3, alpha = 0.35
-      ) +
-      {if (nrow(seg_df) > 0)
-        ggplot2::geom_segment(
-          data  = seg_df,
-          ggplot2::aes(x = x_start, y = y_start, xend = x_end, yend = y_end,
-                       size = n_interactions),
-          color = "black", alpha = 0.8,
-          arrow = grid::arrow(length = grid::unit(3, "mm"), type = "open")
-        )
-      } +
-      {if (nrow(seg_df) > 0)
-        ggplot2::scale_size_continuous(range = c(0.5, 3.5), name = "Interactions (n)")
-      } +
-      ggplot2::geom_text(
-        data = centroids,
-        ggplot2::aes(x = sdimx, y = sdimy, label = celltype),
-        size = 2.0, color = "grey10", fontface = "bold",
-        check_overlap = TRUE
-      ) +
-      ggplot2::labs(
-        title    = sample_plot_title(sample_id, "Spatial CCI Map"),
-        subtitle = paste0("Global centroids (top 15 pairs); arrows show most active sender-receiver"),
-        x = "x", y = "y", color = "Cell Type"
-      ) +
-      presentation_theme(base_size = 11, legend_position = "right") +
-      ggplot2::guides(color = ggplot2::guide_legend(
-        override.aes = list(size = 2, alpha = 1), ncol = 2))
-
-    save_presentation_plot(
-      plot = p6,
-      filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_cci_map.png")),
-      width = 16, height = 13, dpi = 150
-    )
-    cat("\u2713 LIANA spatial CCI map saved\n")
-
-    # -- 6b: B cell spatial interaction overlay (when focus_celltype is set) --
     if (!is.null(focus_celltype) && any(focus_celltype %in% cell_spat$celltype)) {
 
       focus_pairs_all <- count_df[count_df$source %in% focus_celltype |
@@ -1088,11 +1117,13 @@ plot_liana_extended <- function(liana_agg,
         color = "firebrick", shape = 21, stroke = 2, fill = NA
       ) +
       ggrepel::geom_text_repel(
-        data  = rbind(
-          head(dom_df[order(-dom_df$total), ], 8),
-          dom_df[dom_df$is_focus, ]
-        ),
-        size = 3, max.overlaps = 20, show.legend = FALSE
+        data  = {
+          top8   <- head(dom_df[order(-dom_df$total), ], 8)
+          focus  <- dom_df[dom_df$is_focus, ]
+          unique(rbind(top8, focus))
+        },
+        size = 3, max.overlaps = 30, show.legend = FALSE,
+        force = 2, min.segment.length = 0.2
       ) +
       ggplot2::geom_abline(slope = 1, intercept = 0,
                            linetype = "dashed", color = "grey50") +
@@ -1340,8 +1371,9 @@ run_liana <- function(gobj,
         dp_subtitle  <- "Top 15 senders/receivers by interaction count"
       }
 
-      dp_width  <- max(22, n_dp_targets * 1.5 + 8)
-      dp_height <- max(12, 20 * 0.5 + 4)
+      # Width: 2.2 inches per target cell type + margin; minimum 28
+      dp_width  <- max(28, n_dp_targets * 2.2 + 10)
+      dp_height <- max(14, 20 * 0.55 + 6)
 
       p <- liana::liana_dotplot(
         liana_agg,
@@ -1357,10 +1389,11 @@ run_liana <- function(gobj,
         ) +
         presentation_theme(base_size = 10, legend_position = "right") +
         ggplot2::theme(
-          axis.text.x  = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+          axis.text.x  = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
           axis.text.y  = ggplot2::element_text(size = 8),
-          strip.text.x = ggplot2::element_text(size = 8, angle = 90, hjust = 0, vjust = 0.5),
-          strip.text.y = ggplot2::element_text(size = 8)
+          strip.text.x = ggplot2::element_text(size = 7, angle = 90, hjust = 0, vjust = 0.5),
+          strip.text.y = ggplot2::element_text(size = 7),
+          strip.clip   = "off"
         )
       save_presentation_plot(
         plot     = p,
