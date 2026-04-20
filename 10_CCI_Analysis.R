@@ -561,7 +561,8 @@ plot_liana_extended <- function(liana_agg,
                                 out_dir,
                                 sample_id,
                                 celltype_col,
-                                top_n = 20) {
+                                top_n        = 20,
+                                focus_celltype = NULL) {
 
   if (is.null(liana_agg) || nrow(liana_agg) == 0) return(invisible(NULL))
 
@@ -645,7 +646,7 @@ plot_liana_extended <- function(liana_agg,
              ggplot2::aes(x = source, y = target, fill = n_interactions)) +
       ggplot2::geom_tile(color = "grey90", linewidth = 0.3) +
       ggplot2::geom_text(ggplot2::aes(label = n_interactions), size = 2.5) +
-      ggplot2::scale_fill_viridis_c(option = "plasma", name = "# Interactions") +
+      ggplot2::scale_fill_viridis_c(option = "plasma", name = "Interactions (n)") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
         subtitle = "Number of significant L-R pairs per sender-receiver combination",
@@ -691,11 +692,11 @@ plot_liana_extended <- function(liana_agg,
           fold    = TRUE
         ) +
         ggraph::geom_node_label(ggplot2::aes(label = name), size = 2.8, fill = "white") +
-        ggraph::scale_edge_width_continuous(range = c(0.5, 3), name = "# Interactions") +
+        ggraph::scale_edge_width_continuous(range = c(0.5, 3), name = "Interactions (n)") +
         ggraph::scale_edge_alpha_continuous(range = c(0.3, 0.9), guide = "none") +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "CCI Network"),
-          subtitle = "Top 25 source-receiver pairs; edge width \u221d # significant L-R pairs"
+          subtitle = "Top 25 source-receiver pairs; edge width proportional to N significant L-R pairs"
         ) +
         presentation_theme(base_size = 12, legend_position = "right")
 
@@ -720,9 +721,14 @@ plot_liana_extended <- function(liana_agg,
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      # Limit chord to top N cell types by total interaction count
+      # Limit chord to top N cell types; always include focus_celltype if set
       top_ct_pairs <- head(count_df[order(-count_df$n_interactions), ], 20)
       keep_cts     <- unique(c(top_ct_pairs$source, top_ct_pairs$target))
+      if (!is.null(focus_celltype)) {
+        b_pairs  <- count_df[count_df$source %in% focus_celltype |
+                               count_df$target %in% focus_celltype, ]
+        keep_cts <- unique(c(keep_cts, b_pairs$source, b_pairs$target))
+      }
       chord_df     <- count_df[count_df$source %in% keep_cts &
                                   count_df$target %in% keep_cts, ]
       mat <- stats::xtabs(n_interactions ~ source + target, data = chord_df)
@@ -904,12 +910,12 @@ plot_liana_extended <- function(liana_agg,
         )
       } +
       {if (nrow(seg_df) > 0)
-        ggplot2::scale_size_continuous(range = c(0.5, 3), name = "# Interactions")
+        ggplot2::scale_size_continuous(range = c(0.5, 3), name = "Interactions (n)")
       } +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Spatial CCI Map"),
         subtitle = paste0("Arrows connect cell-type centroids (top ", nrow(seg_df),
-                          " pairs); width \u221d # L-R pairs"),
+                          " pairs); width proportional to N L-R pairs"),
         x        = "x",
         y        = "y",
         color    = "Cell Type"
@@ -956,9 +962,10 @@ plot_liana_extended <- function(liana_agg,
 run_liana <- function(gobj,
                       sample_id,
                       output_dir,
-                      celltype_col = NULL,
-                      methods      = NULL,
-                      expr_cache   = NULL) {
+                      celltype_col   = NULL,
+                      methods        = NULL,
+                      expr_cache     = NULL,
+                      focus_celltype = "B.cell") {
   
   if (!requireNamespace("liana", quietly = TRUE))
     stop("liana not installed.\n  Install: remotes::install_github('saezlab/liana')")
@@ -1066,25 +1073,47 @@ run_liana <- function(gobj,
         stop("Could not identify LIANA plot columns for the selected methods.")
       }
       
-      top_n_groups  <- 15L
-      src_col_dp    <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
-      tgt_col_dp    <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
-      top_sources   <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
-        seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
-      top_targets   <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
-        seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
+      src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
+      tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
+
+      # Resolve focus cell type name against actual cell types present in results
+      all_cts <- unique(c(liana_agg[[src_col_dp]], liana_agg[[tgt_col_dp]]))
+      resolved_focus <- if (!is.null(focus_celltype) && focus_celltype %in% all_cts) {
+        focus_celltype
+      } else if (!is.null(focus_celltype)) {
+        # Fuzzy match: find cell types containing the focus string (case-insensitive)
+        hits <- all_cts[grepl(focus_celltype, all_cts, ignore.case = TRUE)]
+        if (length(hits) > 0) hits else NULL
+      } else {
+        NULL
+      }
+
+      if (!is.null(resolved_focus)) {
+        # Focus mode: show interactions where focus cell type is the sender
+        dp_sources  <- resolved_focus
+        dp_targets  <- NULL   # all receivers
+        dp_subtitle <- paste0("B cell (", paste(resolved_focus, collapse = ", "),
+                              ") as sender \u2014 top 20 L-R pairs by rank")
+      } else {
+        top_n_groups <- 15L
+        dp_sources   <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
+          seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
+        dp_targets   <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
+          seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
+        dp_subtitle  <- paste0("Top 15 senders/receivers by interaction count")
+      }
 
       p <- liana::liana_dotplot(
         liana_agg,
-        source_groups = top_sources,
-        target_groups = top_targets,
+        source_groups = dp_sources,
+        target_groups = dp_targets,
         ntop          = 20,
         specificity   = specificity_col,
         magnitude     = magnitude_col
       ) +
         ggplot2::labs(
-          title    = sample_plot_title(sample_id, "Top LIANA Ligand-Receptor Interactions"),
-          subtitle = paste0("Top ", top_n_groups, " senders/receivers by interaction count.")
+          title    = sample_plot_title(sample_id, "LIANA Ligand-Receptor Interactions"),
+          subtitle = dp_subtitle
         ) +
         presentation_theme(base_size = 11, legend_position = "right") +
         ggplot2::theme(
@@ -1106,13 +1135,14 @@ run_liana <- function(gobj,
     })
 
     plot_liana_extended(
-      liana_agg    = liana_agg,
-      meta         = meta,
-      gobj         = gobj,
-      expr_cache   = expr_cache,
-      out_dir      = out_dir,
-      sample_id    = sample_id,
-      celltype_col = celltype_col
+      liana_agg      = liana_agg,
+      meta           = meta,
+      gobj           = gobj,
+      expr_cache     = expr_cache,
+      out_dir        = out_dir,
+      sample_id      = sample_id,
+      celltype_col   = celltype_col,
+      focus_celltype = resolved_focus
     )
 
     cat("\u2713 LIANA complete. Results saved to:", out_dir, "\n")
