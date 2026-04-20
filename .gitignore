@@ -42,4 +42,10 @@ Test_Scripts/*
 !Test_Scripts/
 !Test_Scripts/Manual_Single_Sample_Test.R
 Parameters/sample_sheet_old.csv
+
+# Claude related
 Other_stuff/*
+.claude/*
+.wolf/*
+CLAUDE.md
+
