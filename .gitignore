@@ -42,3 +42,4 @@ Test_Scripts/*
 !Test_Scripts/
 !Test_Scripts/Manual_Single_Sample_Test.R
 Parameters/sample_sheet_old.csv
+Other_stuff/*
