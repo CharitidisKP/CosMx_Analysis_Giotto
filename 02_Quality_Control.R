@@ -97,21 +97,34 @@ quality_control <- function(gobj,
   # Calculate mitochondrial percentage if MT genes present
   cat("Checking for mitochondrial genes...\n")
   
-  mt_genes <- grep("^MT-|^Mt-|^mt-", fDataDT(gobj)$feat_ID, value = TRUE)
-  
+  all_feat_ids <- fDataDT(gobj)$feat_ID
+  mt_genes <- grep("^MT-|^Mt-|^mt-", all_feat_ids, value = TRUE)
+
   if (length(mt_genes) > 0) {
     cat("Found", length(mt_genes), "mitochondrial genes\n")
     cat("  Examples:", paste(head(mt_genes, 5), collapse = ", "), "\n")
-    
+
     gobj <- addFeatsPerc(
       gobject = gobj,
       feats = mt_genes,
       vector_name = "mito_pct"
     )
-    
+
     cat("✓ Mitochondrial percentage calculated\n\n")
   } else {
-    cat("⚠ No mitochondrial genes found (pattern: ^MT-)\n\n")
+    # Louder diagnostic: 0 matches usually indicates a non-human panel or a
+    # renamed feature prefix (e.g. "mt-Nd1" vs "MT-ND1"), not actual absence
+    # of mito genes. Show the first 5 feature IDs so the user can diagnose.
+    warning(
+      sprintf(
+        "No mitochondrial genes matched '^MT-|^Mt-|^mt-' in %d features. Sample '%s' will proceed WITHOUT mito-pct filtering. First 5 feature IDs: %s",
+        length(all_feat_ids),
+        sample_id,
+        paste(head(all_feat_ids, 5), collapse = ", ")
+      ),
+      immediate. = TRUE, call. = FALSE
+    )
+    cat("  (Adjust the MT regex in 02_Quality_Control.R if your panel uses a different convention.)\n\n")
   }
   
   # Get cell metadata for QC plots

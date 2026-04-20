@@ -140,24 +140,40 @@ normalize_expression <- function(gobj,
                                  output_dir,
                                  scalefactor = 6000,
                                  log_transform = TRUE) {
-  
+
   cat("\n========================================\n")
   cat("STEP 03: Normalization\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
-  
+
   # Load if path
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
     cat("✓ Loaded\n\n")
   }
-  
+
   results_folder <- file.path(output_dir, "03_Normalization")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
-  
+
+  # Dynamic scalefactor: if NULL / 0 / negative, use the per-sample median
+  # library size. Fixed 6000 does not fit mixed panel sizes (1K vs 6K).
+  scalefactor_source <- "config"
+  if (is.null(scalefactor) || !is.numeric(scalefactor) || scalefactor <= 0) {
+    raw_mat <- getExpression(gobj, values = "raw", output = "matrix")
+    lib_sizes <- Matrix::colSums(raw_mat)
+    dyn_sf <- as.numeric(stats::median(lib_sizes, na.rm = TRUE))
+    if (!is.finite(dyn_sf) || dyn_sf <= 0) dyn_sf <- 6000
+    scalefactor <- round(dyn_sf)
+    scalefactor_source <- "dynamic_median_lib_size"
+    cat(sprintf(
+      "Using dynamic scalefactor = %d (median library size across %d cells)\n",
+      scalefactor, length(lib_sizes)
+    ))
+  }
+
   cat("Normalizing expression data...\n")
-  cat("  Scale factor:", scalefactor, "\n")
+  cat("  Scale factor:", scalefactor, " (", scalefactor_source, ")\n", sep = "")
   cat("  Log transform:", log_transform, "\n\n")
   
   # Normalize
@@ -242,12 +258,14 @@ normalize_expression <- function(gobj,
     norm_summary <- if (exists("norm_summary", inherits = FALSE)) norm_summary
                     else list(mean = NA_real_, median = NA_real_, max = NA_real_)
     norm_params <- tibble(
-      parameter = c("scalefactor", "log_transform", "library_size_norm",
+      parameter = c("scalefactor", "scalefactor_source",
+                    "log_transform", "library_size_norm",
                     "norm_method", "log_offset",
                     "raw_mean", "raw_median", "raw_max",
                     "normalized_mean", "normalized_median", "normalized_max",
                     "timestamp"),
       value = c(as.character(scalefactor),
+                scalefactor_source,
                 as.character(log_transform),
                 "TRUE",
                 "standard",

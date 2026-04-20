@@ -249,7 +249,25 @@ score_annotation_quality <- function(celltype_col,
                                      score_col,
                                      metadata,
                                      expected_comp,
-                                     conf_threshold = 0.8) {
+                                     conf_threshold = 0.8,
+                                     score_weights  = NULL) {
+
+  # Default composite-score weights — override per-run via config:
+  #   parameters.annotation.score_weights:
+  #     { confidence: 0.35, high_conf_fraction: 0.25,
+  #       composition: 0.30, coverage: 0.10 }
+  default_weights <- list(
+    confidence         = 0.35,
+    high_conf_fraction = 0.25,
+    composition        = 0.30,
+    coverage           = 0.10
+  )
+  if (is.null(score_weights)) score_weights <- default_weights
+  for (k in names(default_weights)) {
+    if (is.null(score_weights[[k]]) || !is.finite(as.numeric(score_weights[[k]]))) {
+      score_weights[[k]] <- default_weights[[k]]
+    }
+  }
 
   scores <- as.numeric(metadata[[score_col]])
   scores <- scores[!is.na(scores)]
@@ -288,10 +306,10 @@ score_annotation_quality <- function(celltype_col,
   coverage_score <- mean(category_proportions >= 0.005)
 
   composite_score <- (
-    0.35 * mean_conf       +
-    0.25 * high_conf_frac  +
-    0.30 * composition_score +
-    0.10 * coverage_score
+    as.numeric(score_weights$confidence)         * mean_conf       +
+    as.numeric(score_weights$high_conf_fraction) * high_conf_frac  +
+    as.numeric(score_weights$composition)        * composition_score +
+    as.numeric(score_weights$coverage)           * coverage_score
   )
 
   list(
@@ -327,7 +345,8 @@ score_annotation_quality <- function(celltype_col,
 select_best_annotation <- function(gobj,
                                    annotation_dir,
                                    sample_id,
-                                   conf_threshold = 0.8) {
+                                   conf_threshold = 0.8,
+                                   score_weights  = NULL) {
 
   dir.create(annotation_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -357,7 +376,8 @@ select_best_annotation <- function(gobj,
   scores_list <- mapply(function(ct_col, sc_col) {
     tryCatch(
       score_annotation_quality(ct_col, sc_col, metadata,
-                               expected_comp, conf_threshold),
+                               expected_comp, conf_threshold,
+                               score_weights = score_weights),
       error = function(e) {
         cat("    \u26A0 Could not score '", ct_col, "': ",
             conditionMessage(e), "\n", sep = "")
@@ -466,10 +486,17 @@ select_best_annotation <- function(gobj,
     composition_score          = best$composition_score,
     coverage_score             = best$coverage_score,
     n_cell_types               = best$n_cell_types,
-    selection_reason           = paste0(
-      "Highest composite score (confidence x0.60 + LN-composition x0.30 ",
-      "+ coverage x0.10) across all supervised annotation results."
-    ),
+    selection_reason           = (function() {
+      w <- score_weights %||% list(
+        confidence = 0.35, high_conf_fraction = 0.25,
+        composition = 0.30, coverage = 0.10
+      )
+      sprintf(
+        "Highest composite (confidence x%.2f + high_conf_frac x%.2f + composition x%.2f + coverage x%.2f) across supervised annotations.",
+        w$confidence %||% 0.35, w$high_conf_fraction %||% 0.25,
+        w$composition %||% 0.30, w$coverage %||% 0.10
+      )
+    })(),
     expected_composition_ref   = paste0(
       "Lupus nephritis / autoimmune kidney disease ",
       "(Arazi 2019, Monteagudo 2021, Hinze 2022)"
@@ -1669,28 +1696,61 @@ refine_annotation <- function(gobj,
 # load_reference_profile --------------------------------------------------
 
 load_reference_profile <- function(profile_config) {
-  
+
   if (profile_config$type == "url") {
     cat("  Downloading from URL...\n")
     ref_data <- read_profile_csv(url = profile_config$source)
-    
+
   } else if (profile_config$type == "hca") {
+    # Validate SpatialDecon HCA parameters up-front. Invalid values crash deep
+    # inside download_profile_matrix() with a cryptic HTTP 404; fail fast here
+    # with a message that tells the user what's accepted.
+    valid_species   <- c("Human", "Mouse")
+    valid_age_group <- c("Adult", "Fetal", "COVID", "Newborn")
+
+    species   <- profile_config$species
+    age_group <- profile_config$age_group
+
+    if (is.null(species) || !species %in% valid_species) {
+      stop(sprintf(
+        "HCA profile '%s': species '%s' not valid. Accepted: %s",
+        profile_config$name %||% "<unnamed>",
+        species %||% "<NULL>",
+        paste(valid_species, collapse = ", ")
+      ))
+    }
+    if (is.null(age_group) || !age_group %in% valid_age_group) {
+      stop(sprintf(
+        "HCA profile '%s': age_group '%s' not valid. Accepted: %s",
+        profile_config$name %||% "<unnamed>",
+        age_group %||% "<NULL>",
+        paste(valid_age_group, collapse = ", ")
+      ))
+    }
+    if (is.null(profile_config$matrixname) || !nzchar(profile_config$matrixname)) {
+      stop(sprintf(
+        "HCA profile '%s': matrixname must be set (e.g. 'Kidney_HCA').",
+        profile_config$name %||% "<unnamed>"
+      ))
+    }
+
     cat("  Downloading HCA profile via SpatialDecon...\n")
     ref_data <- SpatialDecon::download_profile_matrix(
-      species    = profile_config$species,
-      age_group  = profile_config$age_group,
+      species    = species,
+      age_group  = age_group,
       matrixname = profile_config$matrixname
     )
     ref_data <- as.matrix(ref_data)
-    
+
   } else if (profile_config$type == "file") {
     cat("  Loading from local file...\n")
     ref_data <- read_profile_csv(url = profile_config$source)
-    
+
   } else {
-    stop("Unknown profile type: ", profile_config$type)
+    stop("Unknown profile type: ", profile_config$type,
+         " (expected one of 'url', 'hca', 'file').")
   }
-  
+
   return(ref_data)
 }
 
@@ -1739,6 +1799,7 @@ annotate_cells <- function(gobj,
                            min_gene_overlap = 100,
                            create_plots     = TRUE,
                            conf_threshold   = NULL,
+                           score_weights    = NULL,
                            save_object      = TRUE,
                            seed             = 42) {
   
@@ -2407,7 +2468,8 @@ annotate_cells <- function(gobj,
       annotation_dir = file.path(output_dir, "07_Annotation"),
       sample_id      = sample_id,
       conf_threshold = if (!is.null(conf_threshold) && conf_threshold > 0)
-                         conf_threshold else 0.8
+                         conf_threshold else 0.8,
+      score_weights  = score_weights
     ),
     error = function(e) {
       cat("  \u26A0 Annotation selection failed:", conditionMessage(e), "\n")

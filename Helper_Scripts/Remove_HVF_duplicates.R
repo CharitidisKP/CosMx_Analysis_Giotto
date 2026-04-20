@@ -105,11 +105,28 @@ remove_hvf_duplicates <- function(gobj, hvgs, output_dir = NULL, verbose = TRUE)
     ## Handle polygons - simplified approach ##
     if (!is.null(gobj_sub@spatial_info$cell)) {
       if (verbose) cat("Reconstructing polygon data...\n")
-      
+
       poly_obj <- gobj_sub@spatial_info$cell
-      all_poly_ids <- poly_obj@unique_ID_cache
-      keep_poly_idx <- all_poly_ids %in% cells_to_keep
-      
+      # Guard against Giotto versions that renamed or dropped the
+      # unique_ID_cache slot — fall back to spatVector IDs if needed.
+      all_poly_ids <- tryCatch(
+        poly_obj@unique_ID_cache,
+        error = function(e) {
+          if (verbose) cat("  @unique_ID_cache unavailable (",
+                           conditionMessage(e), ") — using spatVector IDs\n")
+          tryCatch(
+            as.character(terra::values(poly_obj@spatVector)$poly_ID),
+            error = function(e2) character(0)
+          )
+        }
+      )
+      if (length(all_poly_ids) == 0) {
+        if (verbose) cat("  No polygon IDs available; skipping polygon resync\n")
+        keep_poly_idx <- logical(0)
+      } else {
+        keep_poly_idx <- all_poly_ids %in% cells_to_keep
+      }
+
       n_poly_remove <- sum(!keep_poly_idx)
       
       if (n_poly_remove > 0) {
@@ -123,7 +140,15 @@ remove_hvf_duplicates <- function(gobj, hvgs, output_dir = NULL, verbose = TRUE)
         
         ## Update the components ##
         poly_new@spatVector <- sv_new
-        poly_new@unique_ID_cache <- all_poly_ids[keep_poly_idx]
+        tryCatch(
+          {
+            poly_new@unique_ID_cache <- all_poly_ids[keep_poly_idx]
+          },
+          error = function(e) {
+            if (verbose) cat("  Could not set @unique_ID_cache (",
+                             conditionMessage(e), "); skipping.\n")
+          }
+        )
         poly_new@spatVectorCentroids <- terra::centroids(sv_new)
         
         ## Update overlap info if it exists ##

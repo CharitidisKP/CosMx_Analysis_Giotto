@@ -160,10 +160,16 @@ parameters:
     max_mito_pct: null
 
   normalization:
+    # Fixed integer = explicit scale factor.
+    # null = dynamic (per-sample median library size), recommended when
+    # mixing panels with different transcript capture depths (e.g. 1K vs 6K).
     scalefactor: 6000
     log_transform: true
 
   dim_reduction:
+    # n_hvgs: integer = explicit count, or null = auto
+    # auto formula: min(500, max(100, round(0.1 * n_genes)))
+    # Prevents selecting ~50% of a 1K panel as "variable".
     n_hvgs: 500
     n_pcs: 30
     umap_n_neighbors: 30
@@ -211,6 +217,16 @@ parameters:
     min_gene_overlap: 100
     create_plots: true
     conf_threshold: 0.8
+    # Composite score weights for auto-selecting the best annotation column.
+    # Must sum to ~1.0. confidence = mean per-cell posterior; high_conf_fraction
+    # = fraction with posterior >= conf_threshold; composition = how well the
+    # sample matches expected LN cell-type proportions; coverage = fraction of
+    # expected LN categories observed. Omit the block to use defaults.
+    score_weights:
+      confidence: 0.35
+      high_conf_fraction: 0.25
+      composition: 0.30
+      coverage: 0.10
 
   visualization:
     celltype_columns: null

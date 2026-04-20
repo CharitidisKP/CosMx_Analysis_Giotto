@@ -201,20 +201,40 @@ dimensionality_reduction <- function(gobj,
                                      umap_min_dist = 0.3,
                                      spatial_hvg = FALSE,
                                      seed = 42) {
-  
+
   cat("\n========================================\n")
   cat("STEP 04: Dimensionality Reduction\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
-  
+
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
     cat("✓ Loaded\n\n")
   }
-  
+
   results_folder <- file.path(output_dir, "04_Dimensionality_Reduction")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
+
+  # Dynamic n_hvgs: when NULL or "auto", use min(500, max(100, round(0.1 * n_genes)))
+  # to avoid selecting 50% of a 1K panel as "variable". Explicit numeric values
+  # are honoured verbatim (still capped at n_genes downstream).
+  n_genes_total <- length(gobj@feat_ID$rna)
+  n_hvgs_source <- "explicit"
+  if (is.null(n_hvgs) ||
+      (is.character(n_hvgs) && tolower(n_hvgs) %in% c("auto", "default")) ||
+      (is.numeric(n_hvgs) && n_hvgs <= 0)) {
+    n_hvgs <- min(500L, max(100L, as.integer(round(0.1 * n_genes_total))))
+    n_hvgs_source <- sprintf("auto (0.1 x %d genes, clamped 100..500)", n_genes_total)
+    cat(sprintf("Auto n_hvgs = %d [%s]\n", n_hvgs, n_hvgs_source))
+  } else if (is.numeric(n_hvgs) && n_hvgs > n_genes_total) {
+    cat(sprintf(
+      "\u26A0 n_hvgs (%d) exceeds total genes (%d); capping at %d\n",
+      n_hvgs, n_genes_total, n_genes_total
+    ))
+    n_hvgs <- n_genes_total
+    n_hvgs_source <- "capped_at_n_genes"
+  }
   
   # Identify highly variable genes
   if (spatial_hvg) {

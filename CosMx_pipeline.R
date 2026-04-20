@@ -696,16 +696,34 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       }
       gobj
     },
-    "02_qc" = runtime_env$quality_control(
-      gobj = gobj,
-      sample_id = sample_id,
-      output_dir = output_dir,
-      gene_min_cells = cfg$parameters$qc$gene_min_cells %||% 10,
-      cell_min_genes = cfg$parameters$qc$cell_min_genes %||% 50,
-      cell_max_genes = cfg$parameters$qc$cell_max_genes %||% NULL,
-      min_count = cfg$parameters$qc$min_count %||% 100,
-      max_mito_pct = cfg$parameters$qc$max_mito_pct %||% NULL
-    ),
+    "02_qc" = {
+      # Per-sample QC overrides: any of qc_gene_min_cells, qc_cell_min_genes,
+      # qc_cell_max_genes, qc_min_count, qc_max_mito_pct in the sample sheet
+      # overrides the config default for that one sample. Useful when a
+      # slide is noisier or denser than the rest of the cohort.
+      .sample_qc_override <- function(col, default) {
+        if (!col %in% names(sample_row)) return(default)
+        val <- sample_row[[col]]
+        if (is.null(val) || length(val) == 0) return(default)
+        if (is.na(val) || !nzchar(as.character(val))) return(default)
+        suppressWarnings(as.numeric(val))
+      }
+      runtime_env$quality_control(
+        gobj = gobj,
+        sample_id = sample_id,
+        output_dir = output_dir,
+        gene_min_cells = .sample_qc_override("qc_gene_min_cells",
+                         cfg$parameters$qc$gene_min_cells %||% 10),
+        cell_min_genes = .sample_qc_override("qc_cell_min_genes",
+                         cfg$parameters$qc$cell_min_genes %||% 50),
+        cell_max_genes = .sample_qc_override("qc_cell_max_genes",
+                         cfg$parameters$qc$cell_max_genes %||% NULL),
+        min_count      = .sample_qc_override("qc_min_count",
+                         cfg$parameters$qc$min_count %||% 100),
+        max_mito_pct   = .sample_qc_override("qc_max_mito_pct",
+                         cfg$parameters$qc$max_mito_pct %||% NULL)
+      )
+    },
     "03_norm" = runtime_env$normalize_expression(
       gobj = gobj,
       sample_id = sample_id,
@@ -756,6 +774,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       min_gene_overlap = cfg$parameters$annotation$min_gene_overlap %||% 100,
       create_plots = cfg$parameters$annotation$create_plots %||% TRUE,
       conf_threshold = cfg$parameters$annotation$conf_threshold %||% NULL,
+      score_weights = cfg$parameters$annotation$score_weights %||% NULL,
       save_object = TRUE,
       seed = cfg$reproducibility$seed %||% 42
     ),
