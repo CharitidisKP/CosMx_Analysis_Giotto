@@ -591,7 +591,16 @@ plot_liana_extended <- function(liana_agg,
 
   # -- Plot 1: LR ranking bar chart ------------------------------------------
   tryCatch({
-    top_lr <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], top_n)
+    agg_sorted <- agg[order(agg$aggregate_rank, na.last = TRUE), ]
+    top_lr     <- head(agg_sorted, top_n)
+
+    # Ensure every source cell type gets at least one entry even if not in top_n
+    represented <- unique(top_lr$source)
+    extra <- do.call(rbind, lapply(setdiff(unique(agg$source), represented), function(ct) {
+      sub <- agg_sorted[agg_sorted$source == ct, ]
+      if (nrow(sub) > 0) sub[1, ] else NULL
+    }))
+    if (!is.null(extra) && nrow(extra) > 0) top_lr <- rbind(top_lr, extra)
     top_lr$interaction_label  <- paste(top_lr$ligand_complex, "\u2192", top_lr$receptor_complex)
     top_lr$neg_log10_rank     <- -log10(pmax(top_lr$aggregate_rank, 1e-10))
 
@@ -606,7 +615,7 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
         subtitle = paste0("Top ", top_n,
-                          " interactions by LIANA aggregate rank (\u2212log\u2081\u2080; taller = more significant)"),
+                          " interactions + best per sender (\u2212log\u2081\u2080; taller = more significant)"),
         x        = "Interaction (Ligand \u2192 Receptor)",
         y        = "\u2212log\u2081\u2080(Aggregate Rank)",
         fill     = "Sender"
@@ -629,10 +638,13 @@ plot_liana_extended <- function(liana_agg,
   tryCatch({
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
 
+    n_ct      <- length(unique(c(count_df$source, count_df$target)))
+    tile_size <- max(10, ceiling(n_ct * 0.45))
+
     p2 <- ggplot2::ggplot(count_df,
              ggplot2::aes(x = source, y = target, fill = n_interactions)) +
-      ggplot2::geom_tile(color = "white") +
-      ggplot2::geom_text(ggplot2::aes(label = n_interactions), color = "white", size = 3) +
+      ggplot2::geom_tile(color = "grey90", linewidth = 0.3) +
+      ggplot2::geom_text(ggplot2::aes(label = n_interactions), size = 2.5) +
       ggplot2::scale_fill_viridis_c(option = "plasma", name = "# Interactions") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
@@ -640,19 +652,23 @@ plot_liana_extended <- function(liana_agg,
         x        = "Sender",
         y        = "Receiver"
       ) +
-      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
-      presentation_theme(base_size = 12, legend_position = "right")
+      presentation_theme(base_size = 10, legend_position = "right") +
+      ggplot2::theme(
+        axis.text.x = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+        axis.text.y = ggplot2::element_text(size = 7)
+      )
 
     save_presentation_plot(
       plot     = p2,
       filename = file.path(out_dir, paste0(sample_id, "_liana_cci_heatmap.png")),
-      width    = 10,
-      height   = 9,
+      width    = tile_size,
+      height   = tile_size,
       dpi      = 150
     )
     cat("\u2713 LIANA CCI heatmap saved\n")
   }, error = function(e) {
     cat("\u26A0 LIANA CCI heatmap failed:", conditionMessage(e), "\n")
+    message("  Detail: ", conditionMessage(e))
   })
 
   # -- Plot 3: CCI network graph (requires ggraph) ---------------------------
@@ -662,35 +678,39 @@ plot_liana_extended <- function(liana_agg,
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      g <- igraph::graph_from_data_frame(count_df, directed = TRUE)
+      # Limit to top 25 source-target pairs to keep the network readable
+      net_df <- head(count_df[order(-count_df$n_interactions), ], 25)
+      g <- igraph::graph_from_data_frame(net_df, directed = TRUE)
 
       p3 <- ggraph::ggraph(g, layout = "circle") +
         ggraph::geom_edge_arc(
-          ggplot2::aes(width = n_interactions),
-          arrow  = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
-          end_cap = ggraph::circle(4, "mm"),
-          alpha  = 0.7,
-          color  = "steelblue"
+          ggplot2::aes(edge_width = n_interactions, edge_alpha = n_interactions),
+          arrow   = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
+          end_cap = ggraph::circle(5, "mm"),
+          color   = "steelblue",
+          fold    = TRUE
         ) +
-        ggraph::geom_node_label(ggplot2::aes(label = name), size = 3) +
+        ggraph::geom_node_label(ggplot2::aes(label = name), size = 2.8, fill = "white") +
         ggraph::scale_edge_width_continuous(range = c(0.5, 3), name = "# Interactions") +
+        ggraph::scale_edge_alpha_continuous(range = c(0.3, 0.9), guide = "none") +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "CCI Network"),
-          subtitle = "Edge width proportional to number of significant L-R pairs"
+          subtitle = "Top 25 source-receiver pairs; edge width \u221d # significant L-R pairs"
         ) +
         presentation_theme(base_size = 12, legend_position = "right")
 
       save_presentation_plot(
         plot     = p3,
         filename = file.path(out_dir, paste0(sample_id, "_liana_cci_network.png")),
-        width    = 10,
-        height   = 10,
+        width    = 12,
+        height   = 12,
         dpi      = 150
       )
       cat("\u2713 LIANA CCI network saved\n")
     }
   }, error = function(e) {
     cat("\u26A0 LIANA CCI network failed:", conditionMessage(e), "\n")
+    message("  Detail: ", conditionMessage(e))
   })
 
   # -- Plot 4: Chord diagram (requires circlize) -----------------------------
@@ -700,14 +720,31 @@ plot_liana_extended <- function(liana_agg,
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      mat <- stats::xtabs(n_interactions ~ source + target, data = count_df)
+      # Limit chord to top N cell types by total interaction count
+      top_ct_pairs <- head(count_df[order(-count_df$n_interactions), ], 20)
+      keep_cts     <- unique(c(top_ct_pairs$source, top_ct_pairs$target))
+      chord_df     <- count_df[count_df$source %in% keep_cts &
+                                  count_df$target %in% keep_cts, ]
+      mat <- stats::xtabs(n_interactions ~ source + target, data = chord_df)
       chord_path <- file.path(out_dir, paste0(sample_id, "_liana_chord.png"))
       grDevices::png(chord_path, width = 2400, height = 2400, res = 200)
       circlize::chordDiagram(
         mat,
-        transparency     = 0.3,
-        annotationTrack  = c("grid", "name"),
-        preAllocateTracks = 1
+        transparency      = 0.35,
+        annotationTrack   = "grid",
+        preAllocateTracks = list(track.height = circlize::mm_h(4))
+      )
+      circlize::circos.trackPlotRegion(
+        track.index = 1,
+        panel.fun   = function(x, y) {
+          xlim <- circlize::get.cell.meta.data("xlim")
+          ylim <- circlize::get.cell.meta.data("ylim")
+          sector.name <- circlize::get.cell.meta.data("sector.index")
+          circlize::circos.text(mean(xlim), ylim[1],
+                                sector.name, facing = "clockwise",
+                                niceFacing = TRUE, adj = c(0, 0.5), cex = 0.7)
+        },
+        bg.border = NA
       )
       graphics::title(main = paste0(sample_id, " \u2014 CCI Chord Diagram"))
       grDevices::dev.off()
@@ -774,19 +811,31 @@ plot_liana_extended <- function(liana_agg,
                       spat[, c("cell_ID", "sdimx", "sdimy")],
                       by = "cell_ID")
 
-    p5 <- ggplot2::ggplot(panel_df,
-             ggplot2::aes(x = sdimx, y = sdimy, color = expression)) +
-      ggplot2::geom_point(size = 0.8, alpha = 0.8) +
+    p5 <- ggplot2::ggplot() +
+      # All cells as gray background for tissue context
+      ggplot2::geom_point(
+        data  = spat,
+        ggplot2::aes(x = sdimx, y = sdimy),
+        color = "grey80", size = 0.2, alpha = 0.4
+      ) +
+      # Sender/receiver cells colored by expression
+      ggplot2::geom_point(
+        data  = panel_df,
+        ggplot2::aes(x = sdimx, y = sdimy, color = expression),
+        size  = 0.9, alpha = 0.9
+      ) +
       ggplot2::facet_wrap(~panel) +
       ggplot2::scale_color_viridis_c(option = "magma", name = "Expression") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id,
                      paste0("Spatial Expression: ", ligand_gene, " \u2192 ", receptor_gene)),
-        subtitle = "Normalized expression of top-ranked L-R pair in sender/receiver cells",
+        subtitle = paste0("Gray = all cells; colored = ",
+                          sender_ct, " (ligand) & ", receiver_ct, " (receptor)"),
         x        = "x",
         y        = "y"
       ) +
-      presentation_theme(base_size = 12, legend_position = "right")
+      presentation_theme(base_size = 12, legend_position = "right") +
+      ggplot2::theme(panel.background = ggplot2::element_rect(fill = "grey15"))
 
     save_presentation_plot(
       plot     = p5,
@@ -818,6 +867,12 @@ plot_liana_extended <- function(liana_agg,
     )
     names(cell_spat)[names(cell_spat) == celltype_col] <- "celltype"
 
+    if (nrow(cell_spat) == 0) {
+      stop(paste0("cell_spat merge produced 0 rows. ",
+                  "Check that cell_ID values match between spatial locations and metadata. ",
+                  "spat nrow=", nrow(spat), " meta nrow=", nrow(meta)))
+    }
+
     centroids <- stats::aggregate(
       cbind(sdimx, sdimy) ~ celltype,
       data  = cell_spat,
@@ -826,46 +881,55 @@ plot_liana_extended <- function(liana_agg,
     )
 
     top_pairs <- head(count_df[order(-count_df$n_interactions), ], 10)
-    seg_df <- merge(top_pairs,  centroids, by.x = "source", by.y = "celltype")
+    seg_df    <- merge(top_pairs, centroids, by.x = "source", by.y = "celltype")
     names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_start", "y_start")
-    seg_df <- merge(seg_df, centroids, by.x = "target", by.y = "celltype")
+    seg_df    <- merge(seg_df, centroids, by.x = "target", by.y = "celltype")
     names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_end", "y_end")
 
     p6 <- ggplot2::ggplot() +
       ggplot2::geom_point(
         data = cell_spat,
         ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
-        size = 0.5, alpha = 0.5
+        size = 0.4, alpha = 0.4
       ) +
-      ggplot2::geom_segment(
-        data = seg_df,
-        ggplot2::aes(
-          x = x_start, y = y_start, xend = x_end, yend = y_end,
-          linewidth = n_interactions
-        ),
-        color = "black", alpha = 0.7,
-        arrow = grid::arrow(length = grid::unit(3, "mm"), type = "open")
-      ) +
-      ggplot2::scale_linewidth_continuous(range = c(0.5, 3), name = "# Interactions") +
+      {if (nrow(seg_df) > 0)
+        ggplot2::geom_segment(
+          data  = seg_df,
+          ggplot2::aes(
+            x = x_start, y = y_start, xend = x_end, yend = y_end,
+            size = n_interactions
+          ),
+          color = "black", alpha = 0.75,
+          arrow = grid::arrow(length = grid::unit(3, "mm"), type = "open")
+        )
+      } +
+      {if (nrow(seg_df) > 0)
+        ggplot2::scale_size_continuous(range = c(0.5, 3), name = "# Interactions")
+      } +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Spatial CCI Map"),
-        subtitle = "Arrows connect cell-type centroids; width proportional to # significant L-R pairs",
+        subtitle = paste0("Arrows connect cell-type centroids (top ", nrow(seg_df),
+                          " pairs); width \u221d # L-R pairs"),
         x        = "x",
         y        = "y",
         color    = "Cell Type"
       ) +
-      presentation_theme(base_size = 12, legend_position = "right")
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::guides(color = ggplot2::guide_legend(
+        override.aes = list(size = 2, alpha = 1), ncol = 2
+      ))
 
     save_presentation_plot(
       plot     = p6,
       filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_cci_map.png")),
-      width    = 12,
-      height   = 10,
+      width    = 14,
+      height   = 11,
       dpi      = 150
     )
     cat("\u2713 LIANA spatial CCI map saved\n")
   }, error = function(e) {
     cat("\u26A0 LIANA spatial CCI map failed:", conditionMessage(e), "\n")
+    message("  Detail: ", conditionMessage(e))
   })
 
   invisible(NULL)
@@ -1024,8 +1088,10 @@ run_liana <- function(gobj,
         ) +
         presentation_theme(base_size = 11, legend_position = "right") +
         ggplot2::theme(
-          axis.text.x = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
-          axis.text.y = ggplot2::element_text(size = 7)
+          axis.text.x  = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+          axis.text.y  = ggplot2::element_text(size = 7),
+          strip.text.x = ggplot2::element_text(size = 7, angle = 90, hjust = 0),
+          strip.text.y = ggplot2::element_text(size = 7)
         )
       save_presentation_plot(
         plot     = p,
