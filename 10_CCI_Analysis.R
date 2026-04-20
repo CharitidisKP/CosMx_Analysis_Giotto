@@ -1012,7 +1012,11 @@ plot_liana_extended <- function(liana_agg,
   # presentation_theme(x_angle = 45) so rotation survives liana_dotplot's
   # internal theme.
   render_liana_dotplot <- function(source_groups, target_groups,
-                                   title_text, subtitle_text, out_path) {
+                                   title_text, subtitle_text, out_path,
+                                   base_size   = 11,
+                                   axis_size   = 10,
+                                   strip_size  = 11,
+                                   width_per_target = 2.8) {
     if (!requireNamespace("liana", quietly = TRUE)) {
       cat("\u26A0 LIANA dotplot skipped: 'liana' not installed.\n")
       return(invisible(FALSE))
@@ -1032,7 +1036,7 @@ plot_liana_extended <- function(liana_agg,
     }
 
     n_targets <- length(target_groups %||% unique(agg$target))
-    dp_width  <- max(22, n_targets * 2.8 + 10)
+    dp_width  <- max(22, n_targets * width_per_target + 10)
     dp_height <- max(16, 20 * 0.6 + 8)
 
     p <- liana::liana_dotplot(
@@ -1044,17 +1048,20 @@ plot_liana_extended <- function(liana_agg,
       magnitude     = magnitude_col
     ) +
       ggplot2::labs(title = title_text, subtitle = subtitle_text) +
-      presentation_theme(base_size = 11, legend_position = "right",
+      presentation_theme(base_size = base_size, legend_position = "right",
                          x_angle = 45) +
       ggplot2::theme(
-        axis.text.x  = ggplot2::element_text(size = 10),
-        axis.text.y  = ggplot2::element_text(size = 10),
-        strip.text.x = ggplot2::element_text(size = 10, angle = 45,
-                                             hjust = 0, vjust = 0,
-                                             margin = ggplot2::margin(b = 6)),
-        strip.text.y = ggplot2::element_text(size = 10),
+        axis.text.x  = ggplot2::element_text(size = axis_size),
+        axis.text.y  = ggplot2::element_text(size = axis_size),
+        # Facet strip (cell-type) titles: no rotation, centered
+        strip.text.x = ggplot2::element_text(size = strip_size,
+                                             angle = 0,
+                                             hjust = 0.5, vjust = 0.5,
+                                             face = "bold",
+                                             margin = ggplot2::margin(t = 4, b = 4)),
+        strip.text.y = ggplot2::element_text(size = strip_size),
         strip.clip   = "off",
-        plot.margin  = ggplot2::margin(t = 70, r = 20, b = 70, l = 20)
+        plot.margin  = ggplot2::margin(t = 40, r = 20, b = 40, l = 20)
       )
     save_presentation_plot(plot = p, filename = out_path,
                            width = dp_width, height = dp_height, dpi = 150)
@@ -1112,7 +1119,12 @@ plot_liana_extended <- function(liana_agg,
                                  length(bcell_targets),
                                  " receivers by interaction count"),
           out_path      = file.path(bcell_dir,
-                            paste0(sample_id, "_liana_dotplot_bcell.png"))
+                            paste0(sample_id, "_liana_dotplot_bcell.png")),
+          # Larger type for the B-cell version \u2014 fewer panels = more room
+          base_size        = 14,
+          axis_size        = 13,
+          strip_size       = 15,
+          width_per_target = 3.6
         )
         cat("\u2713 LIANA B-cell dotplot saved \u2192", bcell_dir, "\n")
       }
