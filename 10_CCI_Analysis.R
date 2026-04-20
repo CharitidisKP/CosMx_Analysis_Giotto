@@ -724,6 +724,17 @@ plot_liana_extended <- function(liana_agg,
         (out_deg[n] %||% 0) + (in_deg[n] %||% 0), numeric(1))
 
       g <- igraph::graph_from_data_frame(net_df, directed = TRUE)
+
+      # Add focus cell types as isolated nodes if they have no edges at all
+      if (!is.null(focus_celltype)) {
+        missing_focus <- setdiff(focus_celltype, igraph::V(g)$name)
+        if (length(missing_focus) > 0) {
+          g <- igraph::add_vertices(g, length(missing_focus), name = missing_focus)
+          node_size <- c(node_size,
+                         stats::setNames(rep(2, length(missing_focus)), missing_focus))
+        }
+      }
+
       igraph::V(g)$total_degree <- node_size[igraph::V(g)$name]
       igraph::V(g)$is_focus     <- igraph::V(g)$name %in% (focus_celltype %||% character(0))
 
@@ -754,7 +765,7 @@ plot_liana_extended <- function(liana_agg,
         ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "CCI Network"),
-          subtitle = paste0("Top 25 pairs + ", paste(focus_celltype, collapse = "/"),
+          subtitle = paste0("Top 25 pairs + ", paste(focus_celltype %||% "all", collapse = "/"),
                             " edges; edge width proportional to N significant L-R pairs")
         ) +
         ggraph::theme_graph(background = "white", base_size = 11) +
@@ -765,14 +776,15 @@ plot_liana_extended <- function(liana_agg,
           legend.position = "right",
           legend.title    = ggplot2::element_text(face = "bold", size = 10),
           legend.text     = ggplot2::element_text(size = 9),
-          plot.margin     = ggplot2::margin(12, 16, 12, 12)
-        )
+          plot.margin     = ggplot2::margin(60, 80, 60, 80)
+        ) +
+        ggplot2::coord_cartesian(clip = "off")
 
       save_presentation_plot(
         plot     = p3,
         filename = file.path(out_dir, paste0(sample_id, "_liana_cci_network.png")),
-        width    = 12,
-        height   = 12,
+        width    = 14,
+        height   = 14,
         dpi      = 150
       )
       cat("\u2713 LIANA CCI network saved\n")
