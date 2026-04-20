@@ -794,6 +794,106 @@ plot_liana_extended <- function(liana_agg,
     message("  Detail: ", conditionMessage(e))
   })
 
+  # -- Plot 3b: B-cell-focused CCI network (requires ggraph) ----------------
+  tryCatch({
+    if (!requireNamespace("ggraph", quietly = TRUE)) {
+      cat("\u26A0 LIANA B-cell CCI network skipped: 'ggraph' is not installed.\n")
+    } else if (is.null(focus_celltype) || length(focus_celltype) == 0) {
+      cat("\u26A0 LIANA B-cell CCI network skipped: no focus_celltype resolved.\n")
+    } else if (is.null(count_df) || nrow(count_df) == 0) {
+      stop("No interaction count data.")
+    } else {
+      bcell_df <- count_df[count_df$source %in% focus_celltype |
+                             count_df$target %in% focus_celltype, ]
+      if (nrow(bcell_df) == 0) {
+        cat("\u26A0 LIANA B-cell CCI network skipped: no ",
+            paste(focus_celltype, collapse = "/"),
+            " edges in count_df.\n", sep = "")
+      } else {
+        bcell_df$edge_color <- bcell_df$source
+
+        out_deg <- stats::setNames(
+          tapply(bcell_df$n_interactions, bcell_df$source, sum, default = 0),
+          unique(bcell_df$source)
+        )
+        in_deg  <- stats::setNames(
+          tapply(bcell_df$n_interactions, bcell_df$target, sum, default = 0),
+          unique(bcell_df$target)
+        )
+        all_nodes <- unique(c(bcell_df$source, bcell_df$target))
+        node_size <- vapply(all_nodes, function(n)
+          (out_deg[n] %||% 0) + (in_deg[n] %||% 0), numeric(1))
+
+        gB <- igraph::graph_from_data_frame(bcell_df, directed = TRUE)
+        igraph::V(gB)$total_degree <- node_size[igraph::V(gB)$name]
+        igraph::V(gB)$is_focus     <- igraph::V(gB)$name %in% focus_celltype
+
+        p3b <- ggraph::ggraph(gB, layout = "circle") +
+          ggraph::geom_edge_arc(
+            ggplot2::aes(edge_width = n_interactions,
+                         edge_colour = edge_color,
+                         edge_alpha  = n_interactions),
+            arrow   = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
+            end_cap = ggraph::circle(5, "mm")
+          ) +
+          ggraph::geom_node_point(
+            ggplot2::aes(size = total_degree),
+            color = "grey30", alpha = 0.6
+          ) +
+          ggraph::geom_node_point(
+            data  = function(x) x[x$is_focus, ],
+            ggplot2::aes(size = total_degree),
+            color = "firebrick", alpha = 0.9
+          ) +
+          ggraph::geom_node_label(
+            ggplot2::aes(label = name,
+                         fontface = ifelse(is_focus, "bold", "plain")),
+            size = 2.5, fill = "white",
+            label.padding = grid::unit(0.15, "lines")
+          ) +
+          ggraph::scale_edge_width_continuous(range = c(0.4, 2.5),
+                                              name  = "Interactions (n)") +
+          ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85),
+                                              guide = "none") +
+          ggraph::scale_edge_colour_discrete(guide = "none") +
+          ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
+          ggplot2::labs(
+            title    = sample_plot_title(sample_id, "B-cell CCI Network"),
+            subtitle = paste0("All edges where ",
+                              paste(focus_celltype, collapse = "/"),
+                              " is sender or receiver; edge width \u221D ",
+                              "N significant L-R pairs")
+          ) +
+          ggraph::theme_graph(background = "white", base_size = 11) +
+          ggplot2::theme(
+            plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold",
+                                                    size = 13,
+                                                    margin = ggplot2::margin(b = 6)),
+            plot.subtitle   = ggplot2::element_text(hjust = 0.5, size = 10,
+                                                    color = "grey20"),
+            legend.position = "right",
+            legend.title    = ggplot2::element_text(face = "bold", size = 10),
+            legend.text     = ggplot2::element_text(size = 9),
+            plot.margin     = ggplot2::margin(60, 80, 60, 80)
+          ) +
+          ggplot2::coord_cartesian(clip = "off")
+
+        save_presentation_plot(
+          plot     = p3b,
+          filename = file.path(out_dir,
+                               paste0(sample_id, "_liana_cci_network_bcell.png")),
+          width    = 14,
+          height   = 14,
+          dpi      = 150
+        )
+        cat("\u2713 LIANA B-cell CCI network saved\n")
+      }
+    }
+  }, error = function(e) {
+    cat("\u26A0 LIANA B-cell CCI network failed:", conditionMessage(e), "\n")
+    message("  Detail: ", conditionMessage(e))
+  })
+
   # -- Plot 4: Chord diagram (requires circlize) -----------------------------
   tryCatch({
     if (!requireNamespace("circlize", quietly = TRUE)) {
