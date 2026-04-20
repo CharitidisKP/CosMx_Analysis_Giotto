@@ -537,16 +537,337 @@ run_insitucor <- function(gobj,
     # Save module assignments
     saveRDS(cor_results,
             file.path(out_dir, paste0(sample_id, "_insitucor.rds")))
-    
+
     if (!is.null(cor_results$modules)) {
       write.csv(cor_results$modules,
                 file.path(out_dir, paste0(sample_id, "_insitucor_modules.csv")),
                 row.names = FALSE)
     }
+
+    # --- InSituCor visualisations --------------------------------------
+    plot_insitucor_results(
+      cor_results = cor_results,
+      gobj        = gobj,
+      meta        = meta,
+      counts      = counts,
+      celltype_col = celltype_col,
+      out_dir     = out_dir,
+      sample_id   = sample_id
+    )
+
     cat("\u2713 InSituCor complete. Results saved to:", out_dir, "\n")
   }
-  
+
   invisible(cor_results)
+}
+
+# ------------------------------------------------------------------
+# InSituCor visualisation helper
+# ------------------------------------------------------------------
+#
+# Produces four plots for an InSituCor result:
+#   1. {id}_insitucor_module_sizes.png       — module size + mean weight bars
+#   2. {id}_insitucor_celltype_involvement.png — ggplot heatmap
+#   3. {id}_insitucor_spatial_modules.png    — polygon spatial map per top module
+#   4. {id}_insitucor_module_network.png     — module co-expression network
+# Safe to call whenever cor_results contains `modules` (others optional).
+
+plot_insitucor_results <- function(cor_results,
+                                   gobj,
+                                   meta,
+                                   counts,           # cells x genes (from caller)
+                                   celltype_col,
+                                   out_dir,
+                                   sample_id,
+                                   top_n_modules = 12) {
+  modules_df <- tryCatch(tibble::as_tibble(cor_results$modules),
+                         error = function(e) NULL)
+  if (is.null(modules_df) || nrow(modules_df) == 0 ||
+      !all(c("module", "gene", "weight") %in% colnames(modules_df))) {
+    cat("  \u26A0 InSituCor: no module table \u2014 skipping plots.\n")
+    return(invisible(NULL))
+  }
+
+  module_stats <- modules_df %>%
+    dplyr::group_by(module) %>%
+    dplyr::summarise(
+      n_genes      = dplyr::n(),
+      mean_weight  = mean(weight, na.rm = TRUE),
+      max_weight   = max(weight,  na.rm = TRUE),
+      top_genes    = paste(
+        gene[order(-weight)][seq_len(min(3, dplyr::n()))],
+        collapse = ", "
+      ),
+      .groups = "drop"
+    ) %>%
+    dplyr::arrange(dplyr::desc(n_genes))
+
+  write.csv(module_stats,
+            file.path(out_dir, paste0(sample_id, "_insitucor_module_stats.csv")),
+            row.names = FALSE)
+
+  top_modules <- head(module_stats, top_n_modules)
+
+  # -- Plot 1: module sizes with top-3 genes annotated --------------------
+  tryCatch({
+    p1 <- ggplot2::ggplot(
+      top_modules,
+      ggplot2::aes(x = stats::reorder(module, n_genes),
+                   y = n_genes, fill = mean_weight)
+    ) +
+      ggplot2::geom_col(color = "grey30", linewidth = 0.2) +
+      ggplot2::geom_text(
+        ggplot2::aes(label = top_genes),
+        hjust = -0.05, size = 3.2, color = "grey25"
+      ) +
+      ggplot2::coord_flip(clip = "off") +
+      ggplot2::scale_fill_viridis_c(option = "C", name = "Mean weight") +
+      ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.4))) +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "InSituCor Modules"),
+        subtitle = paste0("Top ", nrow(top_modules),
+                          " modules by gene count; top-3 weighted genes annotated"),
+        x = NULL, y = "Number of genes"
+      ) +
+      presentation_theme(base_size = 12)
+    save_presentation_plot(
+      plot     = p1,
+      filename = file.path(out_dir,
+                           paste0(sample_id, "_insitucor_module_sizes.png")),
+      width    = 12, height = max(6, 0.5 * nrow(top_modules) + 2), dpi = 150
+    )
+    cat("  \u2713 InSituCor module sizes plot saved\n")
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor module sizes failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 2: celltype involvement as ggplot heatmap ---------------------
+  tryCatch({
+    inv <- cor_results$celltypeinvolvement
+    if (!is.null(inv)) {
+      inv_mat <- as.matrix(inv)
+      # Orient so modules are columns, celltypes are rows
+      if (!is.null(colnames(inv_mat)) && all(top_modules$module %in% colnames(inv_mat))) {
+        inv_mat <- inv_mat[, top_modules$module, drop = FALSE]
+      } else if (!is.null(rownames(inv_mat)) &&
+                 all(top_modules$module %in% rownames(inv_mat))) {
+        inv_mat <- t(inv_mat[top_modules$module, , drop = FALSE])
+      }
+      # Drop all-zero celltype rows
+      row_max <- apply(inv_mat, 1, max, na.rm = TRUE)
+      inv_mat <- inv_mat[order(-row_max), , drop = FALSE]
+      inv_mat <- inv_mat[seq_len(min(nrow(inv_mat), 25)), , drop = FALSE]
+
+      inv_long <- as.data.frame(inv_mat)
+      inv_long$celltype <- rownames(inv_mat)
+      inv_long <- tidyr::pivot_longer(inv_long,
+                                       cols      = -celltype,
+                                       names_to  = "module",
+                                       values_to = "involvement")
+
+      inv_long$celltype <- factor(inv_long$celltype, levels = rownames(inv_mat))
+      inv_long$module   <- factor(inv_long$module,   levels = colnames(inv_mat))
+
+      p2 <- ggplot2::ggplot(inv_long,
+               ggplot2::aes(x = module, y = celltype, fill = involvement)) +
+        ggplot2::geom_tile(color = "grey90", linewidth = 0.2) +
+        ggplot2::scale_fill_viridis_c(option = "magma",
+                                      name = "Involvement") +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id,
+                       "InSituCor Cell-type Involvement"),
+          subtitle = "Row = cell type, column = module",
+          x = "Module", y = "Cell type"
+        ) +
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::theme(
+          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y = ggplot2::element_text(size = 9)
+        )
+      save_presentation_plot(
+        plot     = p2,
+        filename = file.path(out_dir,
+                             paste0(sample_id,
+                                    "_insitucor_celltype_involvement.png")),
+        width    = max(10, ncol(inv_mat) * 0.55 + 4),
+        height   = max(8,  nrow(inv_mat) * 0.32 + 2),
+        dpi      = 150
+      )
+      cat("  \u2713 InSituCor celltype involvement plot saved\n")
+    } else {
+      cat("  \u26A0 InSituCor: no celltypeinvolvement slot; heatmap skipped.\n")
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor celltype involvement failed:",
+        conditionMessage(e), "\n")
+  })
+
+  # -- Plot 3: spatial polygon maps of aggregate module expression --------
+  tryCatch({
+    poly_df <- .cci_extract_polygon_df(gobj)
+    if (is.null(poly_df) || nrow(poly_df) == 0) {
+      cat("  \u26A0 InSituCor spatial module maps skipped: polygon data unavailable.\n")
+    } else {
+      mod_spatial_dir <- file.path(out_dir, "spatial_modules")
+      dir.create(mod_spatial_dir, showWarnings = FALSE, recursive = TRUE)
+      module_list <- head(module_stats$module, min(top_n_modules, 8))
+      n_saved <- 0L
+      for (mod_id in module_list) {
+        tryCatch({
+          genes_in_mod <- modules_df$gene[modules_df$module == mod_id]
+          weights_in_mod <- modules_df$weight[modules_df$module == mod_id]
+          genes_in_mod <- genes_in_mod[genes_in_mod %in% colnames(counts)]
+          if (length(genes_in_mod) == 0) return(invisible(NULL))
+          weights_in_mod <- weights_in_mod[match(genes_in_mod,
+                                                 modules_df$gene[modules_df$module == mod_id])]
+          sub_mat <- counts[, genes_in_mod, drop = FALSE]
+          # Weighted aggregate expression per cell (sum weight_i * norm_expr_i)
+          # Using counts -> convert to log1p-normalised per cell
+          cell_total <- rowSums(counts)
+          cell_total[cell_total == 0] <- 1
+          sub_norm   <- log1p(sub_mat / cell_total * 1e4)
+          mod_score  <- as.numeric(sub_norm %*% weights_in_mod)
+
+          score_df <- data.frame(cell_ID = rownames(counts),
+                                 module_score = mod_score,
+                                 stringsAsFactors = FALSE)
+          plot_df <- merge(poly_df, score_df, by = "cell_ID", all.x = TRUE)
+          plot_df$module_score[is.na(plot_df$module_score)] <- 0
+
+          p3 <- ggplot2::ggplot(plot_df,
+                   ggplot2::aes(x = x, y = y,
+                                group = interaction(geom, part),
+                                fill  = module_score)) +
+            ggplot2::geom_polygon(color = NA) +
+            ggplot2::scale_fill_viridis_c(option = "magma",
+                                          name = "Module\nscore") +
+            ggplot2::coord_equal() +
+            ggplot2::labs(
+              title    = sample_plot_title(sample_id,
+                           paste0("InSituCor Module: ", mod_id)),
+              subtitle = paste0(length(genes_in_mod),
+                                " genes; weighted log1p aggregate expression")
+            ) +
+            presentation_theme(base_size = 11, legend_position = "right") +
+            ggplot2::theme(
+              panel.background = ggplot2::element_rect(fill = "grey15")
+            )
+
+          fname <- paste0(sample_id, "_insitucor_spatial_",
+                          gsub("[^A-Za-z0-9]", "_", mod_id), ".png")
+          save_presentation_plot(
+            plot     = p3,
+            filename = file.path(mod_spatial_dir, fname),
+            width    = 12, height = 10, dpi = 180
+          )
+          n_saved <- n_saved + 1L
+        }, error = function(e) {
+          cat("  \u26A0 InSituCor spatial module ", mod_id,
+              " failed: ", conditionMessage(e), "\n", sep = "")
+        })
+      }
+      cat("  \u2713 InSituCor spatial module maps saved (", n_saved,
+          " plots) \u2192 ", mod_spatial_dir, "\n", sep = "")
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor spatial module maps failed:",
+        conditionMessage(e), "\n")
+  })
+
+  # -- Plot 4: module co-expression network -------------------------------
+  tryCatch({
+    if (!requireNamespace("ggraph", quietly = TRUE)) {
+      cat("  \u26A0 InSituCor module network skipped: 'ggraph' not installed.\n")
+    } else {
+      # Edges: between modules that share genes (weighted by shared count),
+      # or — if an insitucor $condcor / $modulecor matrix exists — by its
+      # off-diagonal correlations.
+      mod_net_edges <- NULL
+      mod_cor <- cor_results$modulecor %||% cor_results$moduleCor %||%
+                 cor_results$module_cor %||% NULL
+      if (!is.null(mod_cor)) {
+        mc <- as.matrix(mod_cor)
+        diag(mc) <- NA
+        mc[lower.tri(mc)] <- NA
+        idx <- which(!is.na(mc) & abs(mc) > 0.15, arr.ind = TRUE)
+        if (nrow(idx) > 0) {
+          mod_net_edges <- data.frame(
+            from   = rownames(mc)[idx[, 1]],
+            to     = colnames(mc)[idx[, 2]],
+            weight = mc[idx],
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+      if (is.null(mod_net_edges)) {
+        # Fallback: shared-gene edges
+        mods <- split(modules_df$gene, modules_df$module)
+        mods <- mods[top_modules$module]
+        pairs <- utils::combn(names(mods), 2, simplify = FALSE)
+        mod_net_edges <- do.call(rbind, lapply(pairs, function(pr) {
+          shared <- length(intersect(mods[[pr[1]]], mods[[pr[2]]]))
+          if (shared > 0) {
+            data.frame(from = pr[1], to = pr[2], weight = shared,
+                       stringsAsFactors = FALSE)
+          } else NULL
+        }))
+      }
+
+      if (is.null(mod_net_edges) || nrow(mod_net_edges) == 0) {
+        cat("  \u26A0 InSituCor module network skipped: no inter-module edges.\n")
+      } else {
+        g <- igraph::graph_from_data_frame(mod_net_edges, directed = FALSE,
+               vertices = data.frame(
+                 name = top_modules$module,
+                 n_genes = top_modules$n_genes,
+                 stringsAsFactors = FALSE
+               ))
+        p4 <- ggraph::ggraph(g, layout = "fr") +
+          ggraph::geom_edge_link(
+            ggplot2::aes(edge_width = abs(weight), edge_alpha = abs(weight)),
+            color = "steelblue"
+          ) +
+          ggraph::geom_node_point(
+            ggplot2::aes(size = n_genes),
+            color = "firebrick", alpha = 0.85
+          ) +
+          ggraph::geom_node_label(
+            ggplot2::aes(label = name),
+            size = 3.5, fill = "white",
+            label.padding = grid::unit(0.15, "lines")
+          ) +
+          ggraph::scale_edge_width_continuous(range = c(0.3, 2.5),
+                                              name = "Edge weight") +
+          ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85),
+                                              guide = "none") +
+          ggplot2::scale_size_continuous(range = c(3, 12),
+                                         name = "Module\nsize (genes)") +
+          ggplot2::labs(
+            title    = sample_plot_title(sample_id,
+                         "InSituCor Module Co-expression Network"),
+            subtitle = "Nodes = modules (sized by gene count); edges weighted by module correlation or shared genes"
+          ) +
+          ggraph::theme_graph(background = "white", base_size = 11) +
+          ggplot2::theme(
+            plot.title    = ggplot2::element_text(hjust = 0.5, face = "bold", size = 13),
+            plot.subtitle = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey20")
+          )
+        save_presentation_plot(
+          plot     = p4,
+          filename = file.path(out_dir,
+                               paste0(sample_id,
+                                      "_insitucor_module_network.png")),
+          width    = 12, height = 10, dpi = 150
+        )
+        cat("  \u2713 InSituCor module co-expression network saved\n")
+      }
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor module network failed:",
+        conditionMessage(e), "\n")
+  })
+
+  invisible(NULL)
 }
 
 
@@ -724,104 +1045,135 @@ plot_liana_extended <- function(liana_agg,
   })
 
   # -- Plot 3: CCI network graph (requires ggraph) ---------------------------
+  # Shared renderer for circular CCI network plots. Takes a source-target
+  # edge table (net_df) and renders it with the standard ggraph style;
+  # highlights any vertices in `highlight_celltype` in firebrick.
+  render_cci_network <- function(net_df, highlight_celltype,
+                                 title_text, subtitle_text, out_path) {
+    net_df <- net_df[!duplicated(paste(net_df$source, net_df$target)), ]
+    net_df$edge_color <- net_df$source
+
+    out_deg <- stats::setNames(
+      tapply(net_df$n_interactions, net_df$source, sum, default = 0),
+      unique(net_df$source)
+    )
+    in_deg <- stats::setNames(
+      tapply(net_df$n_interactions, net_df$target, sum, default = 0),
+      unique(net_df$target)
+    )
+    all_nodes <- unique(c(net_df$source, net_df$target))
+    node_size <- vapply(all_nodes, function(n)
+      (out_deg[n] %||% 0) + (in_deg[n] %||% 0), numeric(1))
+
+    g <- igraph::graph_from_data_frame(net_df, directed = TRUE)
+    if (!is.null(highlight_celltype)) {
+      missing_focus <- setdiff(highlight_celltype, igraph::V(g)$name)
+      if (length(missing_focus) > 0) {
+        g <- igraph::add_vertices(g, length(missing_focus), name = missing_focus)
+        node_size <- c(node_size,
+                       stats::setNames(rep(2, length(missing_focus)), missing_focus))
+      }
+    }
+    igraph::V(g)$total_degree <- node_size[igraph::V(g)$name]
+    igraph::V(g)$is_focus     <- igraph::V(g)$name %in% (highlight_celltype %||% character(0))
+
+    p <- ggraph::ggraph(g, layout = "circle") +
+      ggraph::geom_edge_arc(
+        ggplot2::aes(edge_width = n_interactions, edge_colour = edge_color,
+                     edge_alpha = n_interactions),
+        arrow   = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
+        end_cap = ggraph::circle(5, "mm")
+      ) +
+      ggraph::geom_node_point(
+        ggplot2::aes(size = total_degree),
+        color = "grey30", alpha = 0.6
+      ) +
+      ggraph::geom_node_point(
+        data  = function(x) x[x$is_focus, ],
+        ggplot2::aes(size = total_degree),
+        color = "firebrick", alpha = 0.9
+      ) +
+      ggraph::geom_node_label(
+        ggplot2::aes(label = name,
+                     fontface = ifelse(is_focus, "bold", "plain")),
+        size = 2.5, fill = "white", label.padding = grid::unit(0.15, "lines")
+      ) +
+      ggraph::scale_edge_width_continuous(range = c(0.4, 2.5),
+                                          name = "Interactions (n)") +
+      ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85), guide = "none") +
+      ggraph::scale_edge_colour_discrete(guide = "none") +
+      ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
+      ggplot2::labs(title = title_text, subtitle = subtitle_text) +
+      ggraph::theme_graph(background = "white", base_size = 11) +
+      ggplot2::theme(
+        plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold", size = 13,
+                                                margin = ggplot2::margin(b = 6)),
+        plot.subtitle   = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey20"),
+        legend.position = "right",
+        legend.title    = ggplot2::element_text(face = "bold", size = 10),
+        legend.text     = ggplot2::element_text(size = 9),
+        plot.margin     = ggplot2::margin(60, 80, 60, 80)
+      ) +
+      ggplot2::coord_cartesian(clip = "off")
+
+    save_presentation_plot(plot = p, filename = out_path,
+                           width = 14, height = 14, dpi = 150)
+  }
+
+  # Plot 3a: pure top-25 edges (no focus union) -----------------------------
   tryCatch({
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       cat("\u26A0 LIANA CCI network skipped: 'ggraph' is not installed.\n")
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      # Top 25 pairs, always including focus_celltype edges
-      net_df <- head(count_df[order(-count_df$n_interactions), ], 25)
-      if (!is.null(focus_celltype)) {
-        focus_edges <- count_df[count_df$source %in% focus_celltype |
-                                  count_df$target %in% focus_celltype, ]
-        net_df <- rbind(net_df, focus_edges)
-        net_df <- net_df[!duplicated(paste(net_df$source, net_df$target)), ]
-      }
-      net_df$edge_color <- net_df$source
-
-      # Node size = total degree (outgoing + incoming)
-      out_deg <- stats::setNames(
-        tapply(net_df$n_interactions, net_df$source, sum, default = 0),
-        unique(net_df$source)
+      net_top25 <- head(count_df[order(-count_df$n_interactions), ], 25)
+      render_cci_network(
+        net_df             = net_top25,
+        highlight_celltype = focus_celltype,
+        title_text         = sample_plot_title(sample_id, "CCI Network"),
+        subtitle_text      = paste0("Top 25 sender-receiver pairs; ",
+                                    "edge width proportional to N significant L-R pairs"),
+        out_path           = file.path(out_dir,
+                               paste0(sample_id, "_liana_cci_network.png"))
       )
-      in_deg  <- stats::setNames(
-        tapply(net_df$n_interactions, net_df$target, sum, default = 0),
-        unique(net_df$target)
-      )
-      all_nodes <- unique(c(net_df$source, net_df$target))
-      node_size <- vapply(all_nodes, function(n)
-        (out_deg[n] %||% 0) + (in_deg[n] %||% 0), numeric(1))
-
-      g <- igraph::graph_from_data_frame(net_df, directed = TRUE)
-
-      # Add focus cell types as isolated nodes if they have no edges at all
-      if (!is.null(focus_celltype)) {
-        missing_focus <- setdiff(focus_celltype, igraph::V(g)$name)
-        if (length(missing_focus) > 0) {
-          g <- igraph::add_vertices(g, length(missing_focus), name = missing_focus)
-          node_size <- c(node_size,
-                         stats::setNames(rep(2, length(missing_focus)), missing_focus))
-        }
-      }
-
-      igraph::V(g)$total_degree <- node_size[igraph::V(g)$name]
-      igraph::V(g)$is_focus     <- igraph::V(g)$name %in% (focus_celltype %||% character(0))
-
-      p3 <- ggraph::ggraph(g, layout = "circle") +
-        ggraph::geom_edge_arc(
-          ggplot2::aes(edge_width = n_interactions, edge_colour = edge_color,
-                       edge_alpha = n_interactions),
-          arrow   = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
-          end_cap = ggraph::circle(5, "mm")
-        ) +
-        ggraph::geom_node_point(
-          ggplot2::aes(size = total_degree),
-          color = "grey30", alpha = 0.6
-        ) +
-        ggraph::geom_node_point(
-          data  = function(x) x[x$is_focus, ],
-          ggplot2::aes(size = total_degree),
-          color = "firebrick", alpha = 0.9
-        ) +
-        ggraph::geom_node_label(
-          ggplot2::aes(label = name,
-                       fontface = ifelse(is_focus, "bold", "plain")),
-          size = 2.5, fill = "white", label.padding = grid::unit(0.15, "lines")
-        ) +
-        ggraph::scale_edge_width_continuous(range = c(0.4, 2.5), name = "Interactions (n)") +
-        ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85), guide = "none") +
-        ggraph::scale_edge_colour_discrete(guide = "none") +
-        ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
-        ggplot2::labs(
-          title    = sample_plot_title(sample_id, "CCI Network"),
-          subtitle = paste0("Top 25 pairs + ", paste(focus_celltype %||% "all", collapse = "/"),
-                            " edges; edge width proportional to N significant L-R pairs")
-        ) +
-        ggraph::theme_graph(background = "white", base_size = 11) +
-        ggplot2::theme(
-          plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold", size = 13,
-                                                  margin = ggplot2::margin(b = 6)),
-          plot.subtitle   = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey20"),
-          legend.position = "right",
-          legend.title    = ggplot2::element_text(face = "bold", size = 10),
-          legend.text     = ggplot2::element_text(size = 9),
-          plot.margin     = ggplot2::margin(60, 80, 60, 80)
-        ) +
-        ggplot2::coord_cartesian(clip = "off")
-
-      save_presentation_plot(
-        plot     = p3,
-        filename = file.path(out_dir, paste0(sample_id, "_liana_cci_network.png")),
-        width    = 14,
-        height   = 14,
-        dpi      = 150
-      )
-      cat("\u2713 LIANA CCI network saved\n")
+      cat("\u2713 LIANA CCI network saved (top-25)\n")
     }
   }, error = function(e) {
     cat("\u26A0 LIANA CCI network failed:", conditionMessage(e), "\n")
     message("  Detail: ", conditionMessage(e))
+  })
+
+  # Plot 3a-withBcell: top 25 + every focus-cell-type edge ------------------
+  tryCatch({
+    if (!requireNamespace("ggraph", quietly = TRUE)) {
+      # already warned in 3a
+    } else if (is.null(focus_celltype) || length(focus_celltype) == 0) {
+      cat("\u26A0 LIANA CCI network (top25 + B-cell) skipped: no focus_celltype.\n")
+    } else if (is.null(count_df) || nrow(count_df) == 0) {
+      stop("No interaction count data.")
+    } else {
+      net_top25  <- head(count_df[order(-count_df$n_interactions), ], 25)
+      focus_edges <- count_df[count_df$source %in% focus_celltype |
+                                count_df$target %in% focus_celltype, ]
+      net_merged <- rbind(net_top25, focus_edges)
+      render_cci_network(
+        net_df             = net_merged,
+        highlight_celltype = focus_celltype,
+        title_text         = sample_plot_title(sample_id,
+                               "CCI Network (top 25 + B-cell edges)"),
+        subtitle_text      = paste0("Top 25 sender-receiver pairs plus every edge ",
+                                    "involving ", paste(focus_celltype, collapse = "/"),
+                                    "; edge width \u221D N significant L-R pairs"),
+        out_path           = file.path(out_dir,
+                               paste0(sample_id,
+                                      "_liana_cci_network_top25_with_bcell.png"))
+      )
+      cat("\u2713 LIANA CCI network saved (top-25 + B-cell)\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 LIANA CCI network (top25 + B-cell) failed:",
+        conditionMessage(e), "\n")
   })
 
   # -- Plot 3b: B-cell-focused CCI network (requires ggraph) ----------------
@@ -1074,17 +1426,23 @@ plot_liana_extended <- function(liana_agg,
         chord_path   <- file.path(out_dir, paste0(sample_id, "_liana_chord.png"))
       }
       mat <- stats::xtabs(n_interactions ~ source + target, data = chord_df)
-      grDevices::png(chord_path, width = 2400, height = 2400, res = 200)
-      # Use gap.degree=2 and scale link widths strongly by n_interactions.
-      # chordDiagram uses matrix values as link widths; we also highlight the
-      # focus cell type sector for readability when set.
+      # Wider canvas + reserve outer ring for sector labels so long
+      # cell-type names ("MNP.b.non.classical.monocyte.derived") aren't
+      # cut off at the plot margin.
+      grDevices::png(chord_path, width = 3200, height = 3200, res = 220)
       circlize::circos.clear()
-      circlize::circos.par(gap.degree = 2, track.margin = c(0.005, 0.005))
+      circlize::circos.par(
+        gap.degree   = 3,
+        start.degree = 90,
+        track.margin = c(0.01, 0.01),
+        canvas.xlim  = c(-1.4, 1.4),
+        canvas.ylim  = c(-1.4, 1.4)
+      )
       chord_args <- list(
         x                 = mat,
         transparency      = 0.35,
         annotationTrack   = "grid",
-        preAllocateTracks = list(track.height = circlize::mm_h(4))
+        preAllocateTracks = list(track.height = circlize::mm_h(14))
       )
       if (!is.null(focus_celltype)) {
         focus_in_mat <- intersect(focus_celltype, unique(c(rownames(mat), colnames(mat))))
@@ -1104,13 +1462,14 @@ plot_liana_extended <- function(liana_agg,
           xlim <- circlize::get.cell.meta.data("xlim")
           ylim <- circlize::get.cell.meta.data("ylim")
           sector.name <- circlize::get.cell.meta.data("sector.index")
-          circlize::circos.text(mean(xlim), ylim[1],
+          circlize::circos.text(mean(xlim), ylim[1] + 0.4,
                                 sector.name, facing = "clockwise",
-                                niceFacing = TRUE, adj = c(0, 0.5), cex = 0.7)
+                                niceFacing = TRUE,
+                                adj = c(0, 0.5), cex = 0.8)
         },
         bg.border = NA
       )
-      graphics::title(main = chord_title)
+      graphics::title(main = chord_title, cex.main = 1.4, line = -1)
       grDevices::dev.off()
       circlize::circos.clear()
       cat("\u2713 LIANA chord diagram saved \u2192", chord_path, "\n")
@@ -1383,33 +1742,143 @@ plot_liana_extended <- function(liana_agg,
     names(umap_df)[names(umap_df) == celltype_col] <- "celltype"
     umap_df$cell_ID <- as.character(umap_df$cell_ID)
 
-    active_cts <- unique(c(count_df$source, count_df$target))
-    umap_df$has_interactions <- umap_df$celltype %in% active_cts
-    umap_df$is_focus         <- umap_df$celltype %in% (focus_celltype %||% character(0))
+    # Per-cell L-R activity score:
+    # For each of the top N L-R pairs we add the cell's ligand expression
+    # when its celltype is the pair's source, and its receptor expression
+    # when its celltype is the pair's target. The final score is the sum,
+    # log1p-scaled. Cells from non-participating cell types stay at 0.
+    top_n_lr <- 20L
+    top_lr_agg <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ],
+                      top_n_lr)
 
-    p6 <- ggplot2::ggplot(umap_df[order(umap_df$has_interactions), ],
-             ggplot2::aes(x = umap_1, y = umap_2, color = celltype)) +
-      ggplot2::geom_point(
-        ggplot2::aes(alpha = ifelse(has_interactions, 0.75, 0.2),
-                     size  = ifelse(is_focus, 0.6, 0.3))
+    expr_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+      expr_cache$normalized
+    } else {
+      tryCatch(
+        .giotto_get_expression(gobj, values = "normalized", output = "matrix"),
+        error = function(e) NULL
+      )
+    }
+    if (is.null(expr_mat)) stop("Expression matrix unavailable for L-R activity.")
+
+    cell_ids_all <- as.character(umap_df$cell_ID)
+    valid_cells  <- intersect(cell_ids_all, colnames(expr_mat))
+    ct_by_cell   <- stats::setNames(umap_df$celltype, umap_df$cell_ID)
+    lr_score     <- stats::setNames(rep(0, length(cell_ids_all)), cell_ids_all)
+
+    for (i in seq_len(nrow(top_lr_agg))) {
+      pair          <- top_lr_agg[i, ]
+      ligand_gene   <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
+      receptor_gene <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
+      src_ct        <- as.character(pair$source)
+      tgt_ct        <- as.character(pair$target)
+
+      if (ligand_gene %in% rownames(expr_mat)) {
+        src_cells <- intersect(valid_cells,
+                               cell_ids_all[ct_by_cell[cell_ids_all] == src_ct])
+        if (length(src_cells) > 0) {
+          lr_score[src_cells] <- lr_score[src_cells] +
+            as.numeric(expr_mat[ligand_gene, src_cells, drop = TRUE])
+        }
+      }
+      if (receptor_gene %in% rownames(expr_mat)) {
+        tgt_cells <- intersect(valid_cells,
+                               cell_ids_all[ct_by_cell[cell_ids_all] == tgt_ct])
+        if (length(tgt_cells) > 0) {
+          lr_score[tgt_cells] <- lr_score[tgt_cells] +
+            as.numeric(expr_mat[receptor_gene, tgt_cells, drop = TRUE])
+        }
+      }
+    }
+
+    umap_df$lr_activity <- log1p(lr_score[umap_df$cell_ID])
+    umap_df$is_focus    <- umap_df$celltype %in% (focus_celltype %||% character(0))
+    umap_df             <- umap_df[order(umap_df$lr_activity), ]
+
+    p6 <- ggplot2::ggplot(umap_df,
+             ggplot2::aes(x = umap_1, y = umap_2, color = lr_activity)) +
+      ggplot2::geom_point(size = 0.35, alpha = 0.85) +
+      ggplot2::scale_color_viridis_c(
+        option = "magma", name = "L-R activity\n(log1p)"
       ) +
-      ggplot2::scale_alpha_identity() +
-      ggplot2::scale_size_identity() +
       ggplot2::labs(
-        title    = sample_plot_title(sample_id, "CCI Overview — UMAP"),
-        subtitle = "Cell types with detected L-R interactions highlighted; B cells shown larger",
-        x = "UMAP 1", y = "UMAP 2", color = "Cell Type"
+        title    = sample_plot_title(sample_id,
+                     "CCI L-R Activity \u2014 UMAP"),
+        subtitle = paste0("Per-cell score = sum of ligand expression (when ",
+                          "sender) + receptor expression (when receiver) ",
+                          "across top ", top_n_lr, " L-R pairs"),
+        x = "UMAP 1", y = "UMAP 2"
       ) +
-      presentation_theme(base_size = 11, legend_position = "right") +
-      ggplot2::guides(color = ggplot2::guide_legend(
-        override.aes = list(size = 3, alpha = 1), ncol = 2))
+      presentation_theme(base_size = 11, legend_position = "right")
 
     save_presentation_plot(
       plot = p6,
-      filename = file.path(out_dir, paste0(sample_id, "_liana_umap_cci.png")),
-      width = 14, height = 11, dpi = 150
+      filename = file.path(out_dir,
+                           paste0(sample_id, "_liana_umap_lr_activity.png")),
+      width = 12, height = 10, dpi = 150
     )
-    cat("\u2713 LIANA CCI UMAP saved\n")
+    cat("\u2713 LIANA UMAP L-R activity saved\n")
+
+    # B-cell-only variant: same score but only keep cells whose type
+    # participates in any B-cell L-R pair; others dimmed. Goes to
+    # B_cell_specific/.
+    if (!is.null(focus_celltype) && length(focus_celltype) > 0) {
+      bcell_lr <- head(
+        agg[(agg$source %in% focus_celltype | agg$target %in% focus_celltype), ][
+          order(agg[(agg$source %in% focus_celltype |
+                       agg$target %in% focus_celltype),
+                    "aggregate_rank"], na.last = TRUE), ],
+        top_n_lr
+      )
+      lr_score_b <- stats::setNames(rep(0, length(cell_ids_all)), cell_ids_all)
+      for (i in seq_len(nrow(bcell_lr))) {
+        pair          <- bcell_lr[i, ]
+        ligand_gene   <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
+        receptor_gene <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
+        src_ct        <- as.character(pair$source)
+        tgt_ct        <- as.character(pair$target)
+        if (ligand_gene %in% rownames(expr_mat)) {
+          src_cells <- intersect(valid_cells,
+                                 cell_ids_all[ct_by_cell[cell_ids_all] == src_ct])
+          if (length(src_cells) > 0) {
+            lr_score_b[src_cells] <- lr_score_b[src_cells] +
+              as.numeric(expr_mat[ligand_gene, src_cells, drop = TRUE])
+          }
+        }
+        if (receptor_gene %in% rownames(expr_mat)) {
+          tgt_cells <- intersect(valid_cells,
+                                 cell_ids_all[ct_by_cell[cell_ids_all] == tgt_ct])
+          if (length(tgt_cells) > 0) {
+            lr_score_b[tgt_cells] <- lr_score_b[tgt_cells] +
+              as.numeric(expr_mat[receptor_gene, tgt_cells, drop = TRUE])
+          }
+        }
+      }
+      umap_df$lr_activity_bcell <- log1p(lr_score_b[umap_df$cell_ID])
+      umap_df <- umap_df[order(umap_df$lr_activity_bcell), ]
+      p6b <- ggplot2::ggplot(umap_df,
+               ggplot2::aes(x = umap_1, y = umap_2, color = lr_activity_bcell)) +
+        ggplot2::geom_point(size = 0.35, alpha = 0.85) +
+        ggplot2::scale_color_viridis_c(
+          option = "magma", name = "B-cell L-R\nactivity (log1p)"
+        ) +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id,
+                       "B-cell CCI L-R Activity \u2014 UMAP"),
+          subtitle = paste0("Per-cell score across top ", nrow(bcell_lr),
+                            " ", paste(focus_celltype, collapse = "/"),
+                            " L-R pairs"),
+          x = "UMAP 1", y = "UMAP 2"
+        ) +
+        presentation_theme(base_size = 11, legend_position = "right")
+      save_presentation_plot(
+        plot = p6b,
+        filename = file.path(bcell_dir,
+                             paste0(sample_id, "_liana_umap_lr_activity_bcell.png")),
+        width = 12, height = 10, dpi = 150
+      )
+      cat("\u2713 LIANA B-cell UMAP L-R activity saved \u2192", bcell_dir, "\n")
+    }
   }, error = function(e) {
     cat("\u26A0 LIANA CCI UMAP failed:", conditionMessage(e), "\n")
     message("  Detail: ", conditionMessage(e))
