@@ -592,12 +592,13 @@ plot_liana_extended <- function(liana_agg,
   # -- Plot 1: LR ranking bar chart ------------------------------------------
   tryCatch({
     top_lr <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], top_n)
-    top_lr$interaction_label <- paste(top_lr$ligand_complex, "\u2192", top_lr$receptor_complex)
+    top_lr$interaction_label  <- paste(top_lr$ligand_complex, "\u2192", top_lr$receptor_complex)
+    top_lr$neg_log10_rank     <- -log10(pmax(top_lr$aggregate_rank, 1e-10))
 
     p1 <- ggplot2::ggplot(top_lr,
              ggplot2::aes(
-               x    = reorder(interaction_label, -aggregate_rank),
-               y    = aggregate_rank,
+               x    = reorder(interaction_label, neg_log10_rank),
+               y    = neg_log10_rank,
                fill = source
              )) +
       ggplot2::geom_col() +
@@ -605,9 +606,9 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
         subtitle = paste0("Top ", top_n,
-                          " interactions ranked by LIANA aggregate rank (lower = more significant)"),
+                          " interactions by LIANA aggregate rank (\u2212log\u2081\u2080; taller = more significant)"),
         x        = "Interaction (Ligand \u2192 Receptor)",
-        y        = "Aggregate Rank",
+        y        = "\u2212log\u2081\u2080(Aggregate Rank)",
         fill     = "Sender"
       ) +
       presentation_theme(base_size = 12, legend_position = "right")
