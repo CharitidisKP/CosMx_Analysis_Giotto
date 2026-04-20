@@ -247,6 +247,12 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   )
 }
 
+.sub_ckpt_exists <- function(dir) {
+  dir.exists(file.path(dir, "giotto")) ||
+    file.exists(file.path(dir, "object.qs")) ||
+    file.exists(file.path(dir, "object.rds"))
+}
+
 parse_dimension_vector <- function(x) {
   if (is.null(x)) {
     return(1:30)
@@ -349,12 +355,13 @@ batch_correct_merged_object <- function(gobj,
                                         k_nn = 15,
                                         resolution = 0.3,
                                         create_plots = TRUE,
-                                        save_object = FALSE) {
+                                        save_object = FALSE,
+                                        force_recompute = FALSE) {
   cat("\n========================================\n")
   cat("MERGED: Batch Correction\n")
   cat("Run:", sample_id, "\n")
   cat("========================================\n\n")
-  
+
   if (is.character(gobj)) {
     manifest_path <- file.path(gobj, "manifest.json")
     if (file.exists(manifest_path)) {
@@ -363,10 +370,12 @@ batch_correct_merged_object <- function(gobj,
       gobj <- .giotto_load(gobj)
     }
   }
-  
-  results_dir <- ensure_dir(file.path(output_dir, "10_Merged", "Batch_Correction"))
+
+  results_dir       <- ensure_dir(file.path(output_dir, "10_Merged", "Batch_Correction"))
   dimensions_to_use <- parse_dimension_vector(dimensions_to_use)
-  
+
+  # Read metadata now for batch_column validation and end-of-run plot detection.
+  # This is refreshed after each sub-checkpoint load below.
   metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
   if (!batch_column %in% names(metadata)) {
     fallback_column <- c("slide_id", "slide_num", "list_ID", "sample_id")[
@@ -377,66 +386,128 @@ batch_correct_merged_object <- function(gobj,
     }
     batch_column <- fallback_column
   }
-  
-  # PCA on the merged object (joinGiottoObjects does not carry over dim reductions)
-  cat("Selecting HVGs for merged PCA...\n")
-  hvg_genes <- tryCatch(
-    .select_sparse_hvgs(
-      gobj           = gobj,
-      n_hvgs         = n_hvgs,
-      sample_id      = sample_id,
-      results_folder = results_dir
-    ),
-    error = function(e) {
-      cat("⚠ HVG selection failed (", conditionMessage(e), ") — using all features\n")
-      NULL
+
+  # Sub-checkpoints — saved inside output_dir alongside the main checkpoints.
+  # Each represents one completed stage so a crash mid-run can resume from
+  # the last successful save rather than restarting from Giotto_Object_Merged.
+  #
+  #   Stage 0  Giotto_Object_Merged           (input — created by merge step)
+  #   Stage 1  Giotto_Object_Merged_PCA       (after HVG selection + PCA)
+  #   Stage 2  Giotto_Object_Merged_Harmony   (after Harmony batch correction)
+  #   Stage 3  Giotto_Object_Merged_Embeddings (after UMAP + tSNE)
+  #   Stage 4  Giotto_Object_BatchCorrected   (after NN + Leiden — final output)
+
+  subckpt_pca        <- file.path(output_dir, "Giotto_Object_Merged_PCA")
+  subckpt_harmony    <- file.path(output_dir, "Giotto_Object_Merged_Harmony")
+  subckpt_embeddings <- file.path(output_dir, "Giotto_Object_Merged_Embeddings")
+
+  resume_stage <- 0L
+  if (!isTRUE(force_recompute)) {
+    if (.sub_ckpt_exists(subckpt_embeddings)) {
+      resume_stage <- 3L
+      cat("\u21a9 Sub-checkpoint found — resuming after UMAP/tSNE\n")
+      cat("  Loading:", subckpt_embeddings, "\n\n")
+      gobj     <- load_giotto_checkpoint(subckpt_embeddings)
+      metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
+    } else if (.sub_ckpt_exists(subckpt_harmony)) {
+      resume_stage <- 2L
+      cat("\u21a9 Sub-checkpoint found — resuming after Harmony\n")
+      cat("  Loading:", subckpt_harmony, "\n\n")
+      gobj     <- load_giotto_checkpoint(subckpt_harmony)
+      metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
+    } else if (.sub_ckpt_exists(subckpt_pca)) {
+      resume_stage <- 1L
+      cat("\u21a9 Sub-checkpoint found — resuming after PCA\n")
+      cat("  Loading:", subckpt_pca, "\n\n")
+      gobj     <- load_giotto_checkpoint(subckpt_pca)
+      metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
     }
-  )
-  cat("Running PCA on merged object (", length(hvg_genes) %||% "all", " features, ", n_pcs, " PCs)...\n", sep = "")
-  gobj <- .giotto_run_pca(gobj, feats_to_use = hvg_genes, n_pcs = n_pcs)
-  cat("✓ PCA complete\n\n")
+  }
 
-  cat("Running Harmony using batch column:", batch_column, "\n")
-  cat("Dimensions:", paste(range(dimensions_to_use), collapse = ":"), "\n\n")
+  if (resume_stage > 0L) {
+    cat("Skipping completed stages (1-", resume_stage, "). ",
+        "Pass force_recompute = TRUE to re-run from scratch.\n\n", sep = "")
+  }
 
-  gobj <- runGiottoHarmony(
-    gobject              = gobj,
-    vars_use             = batch_column,
-    dim_reduction_to_use = "pca",
-    dimensions_to_use    = dimensions_to_use,
-    name                 = "harmony"
-  )
-  
-  # Call Giotto dimension reduction and clustering functions DIRECTLY (no wrappers).
-  # These functions use sys.frame(-2) internally to look up helpers; adding a wrapper
-  # frame shifts the lookup to the wrong environment, causing "accessor not found".
-  cat("Running UMAP on Harmony embedding...\n")
-  gobj <- .run_known_giotto_warning_safe(
-    runUMAP(
-      gobject              = gobj,
-      dim_reduction_to_use = "harmony",
-      dim_reduction_name   = "harmony",
-      dimensions_to_use    = dimensions_to_use,
-      n_neighbors          = umap_n_neighbors,
-      min_dist             = umap_min_dist,
-      name                 = "umap"
+  # ── Stage 1: HVG selection + PCA ──────────────────────────────────────────
+  if (resume_stage < 1L) {
+    cat("Selecting HVGs for merged PCA...\n")
+    hvg_genes <- tryCatch(
+      .select_sparse_hvgs(
+        gobj           = gobj,
+        n_hvgs         = n_hvgs,
+        sample_id      = sample_id,
+        results_folder = results_dir
+      ),
+      error = function(e) {
+        cat("\u26A0 HVG selection failed (", conditionMessage(e), ") \u2014 using all features\n")
+        NULL
+      }
     )
-  )
-  cat("✓ UMAP complete\n\n")
+    cat("Running PCA on merged object (",
+        length(hvg_genes) %||% "all", " features, ", n_pcs, " PCs)...\n", sep = "")
+    gobj <- .giotto_run_pca(gobj, feats_to_use = hvg_genes, n_pcs = n_pcs)
+    cat("\u2713 PCA complete\n\n")
+    save_giotto_checkpoint(gobj, subckpt_pca,
+                           metadata = list(stage = "pca", sample_id = sample_id))
+    cat("\u2713 Sub-checkpoint saved:", subckpt_pca, "\n\n")
+  }
 
-  cat("Running t-SNE on Harmony embedding...\n")
-  gobj <- .run_known_giotto_warning_safe(
-    runtSNE(
+  # ── Stage 2: Harmony ──────────────────────────────────────────────────────
+  if (resume_stage < 2L) {
+    cat("Running Harmony using batch column:", batch_column, "\n")
+    cat("Dimensions:", paste(range(dimensions_to_use), collapse = ":"), "\n\n")
+    gobj <- runGiottoHarmony(
       gobject              = gobj,
-      dim_reduction_to_use = "harmony",
-      dim_reduction_name   = "harmony",
+      vars_use             = batch_column,
+      dim_reduction_to_use = "pca",
       dimensions_to_use    = dimensions_to_use,
-      perplexity           = 30,
-      name                 = "tsne"
+      name                 = "harmony"
     )
-  )
-  cat("✓ t-SNE complete\n\n")
+    cat("\u2713 Harmony complete\n\n")
+    save_giotto_checkpoint(gobj, subckpt_harmony,
+                           metadata = list(stage = "harmony", sample_id = sample_id,
+                                           batch_column = batch_column))
+    cat("\u2713 Sub-checkpoint saved:", subckpt_harmony, "\n\n")
+  }
 
+  # ── Stage 3: UMAP + tSNE ─────────────────────────────────────────────────
+  # Call Giotto dim-reduction functions DIRECTLY (no wrappers) — they use
+  # sys.frame(-2) internally; an extra wrapper frame shifts the lookup to the
+  # wrong environment and causes "accessor not found". (Do-Not-Repeat rule)
+  if (resume_stage < 3L) {
+    cat("Running UMAP on Harmony embedding...\n")
+    gobj <- .run_known_giotto_warning_safe(
+      runUMAP(
+        gobject              = gobj,
+        dim_reduction_to_use = "harmony",
+        dim_reduction_name   = "harmony",
+        dimensions_to_use    = dimensions_to_use,
+        n_neighbors          = umap_n_neighbors,
+        min_dist             = umap_min_dist,
+        name                 = "umap"
+      )
+    )
+    cat("\u2713 UMAP complete\n\n")
+
+    cat("Running t-SNE on Harmony embedding...\n")
+    gobj <- .run_known_giotto_warning_safe(
+      runtSNE(
+        gobject              = gobj,
+        dim_reduction_to_use = "harmony",
+        dim_reduction_name   = "harmony",
+        dimensions_to_use    = dimensions_to_use,
+        perplexity           = 30,
+        name                 = "tsne"
+      )
+    )
+    cat("\u2713 t-SNE complete\n\n")
+    save_giotto_checkpoint(gobj, subckpt_embeddings,
+                           metadata = list(stage = "embeddings", sample_id = sample_id))
+    cat("\u2713 Sub-checkpoint saved:", subckpt_embeddings, "\n\n")
+  }
+
+  # ── Stage 4: NN network + Leiden ─────────────────────────────────────────
   cat("Building nearest-neighbour network on Harmony embedding...\n")
   gobj <- createNearestNetwork(
     gobject              = gobj,
@@ -446,101 +517,89 @@ batch_correct_merged_object <- function(gobj,
     k                    = k_nn,
     name                 = "NN.harmony"
   )
-  cat("✓ NN network complete\n\n")
+  cat("\u2713 NN network complete\n\n")
 
   cat("Running Leiden clustering...\n")
   gobj <- doLeidenCluster(
-    gobject      = gobj,
+    gobject           = gobj,
     nn_network_to_use = "sNN",
-    network_name = "NN.harmony",
-    resolution   = resolution,
-    n_iterations = 1000,
-    name         = "leiden_clust"
+    network_name      = "NN.harmony",
+    resolution        = resolution,
+    n_iterations      = 1000,
+    name              = "leiden_clust"
   )
-  cat("✓ Leiden clustering complete\n\n")
-  
+  cat("\u2713 Leiden clustering complete\n\n")
+
   readr::write_csv(
     tibble::as_tibble(.giotto_pdata_dt(gobj)),
     file.path(results_dir, paste0(sample_id, "_batch_corrected_metadata.csv"))
   )
-  
+
   if (create_plots) {
     batch_plot_cols <- c(batch_column, "leiden_clust")
 
-    pca_df    <- embedding_to_tibble(gobj, reduction_method = "pca",     name = NULL,      color_columns = batch_plot_cols)
-    harmony_df <- embedding_to_tibble(gobj, reduction_method = "harmony", name = "harmony", color_columns = batch_plot_cols)
-    umap_df   <- embedding_to_tibble(gobj, reduction_method = "umap",    name = "umap",    color_columns = batch_plot_cols)
+    pca_df     <- embedding_to_tibble(gobj, reduction_method = "pca",
+                                      name = NULL,      color_columns = batch_plot_cols)
+    harmony_df <- embedding_to_tibble(gobj, reduction_method = "harmony",
+                                      name = "harmony", color_columns = batch_plot_cols)
+    umap_df    <- embedding_to_tibble(gobj, reduction_method = "umap",
+                                      name = "umap",    color_columns = batch_plot_cols)
 
-    save_embedding_plot(
-      pca_df,
+    save_embedding_plot(pca_df,
       color_column = batch_column,
       title = paste(sample_id, "- PCA by", batch_column, "(before Harmony)"),
-      output_file = file.path(results_dir, paste0(sample_id, "_pca_by_", batch_column, ".png"))
-    )
-    save_embedding_plot(
-      harmony_df,
+      output_file  = file.path(results_dir, paste0(sample_id, "_pca_by_", batch_column, ".png")))
+    save_embedding_plot(harmony_df,
       color_column = batch_column,
       title = paste(sample_id, "- Harmony dims by", batch_column),
-      output_file = file.path(results_dir, paste0(sample_id, "_harmony_by_", batch_column, ".png"))
-    )
-    save_embedding_plot(
-      umap_df,
+      output_file  = file.path(results_dir, paste0(sample_id, "_harmony_by_", batch_column, ".png")))
+    save_embedding_plot(umap_df,
       color_column = batch_column,
       title = paste(sample_id, "- UMAP by", batch_column),
-      output_file = file.path(results_dir, paste0(sample_id, "_umap_by_", batch_column, ".png"))
-    )
-    save_embedding_plot(
-      umap_df,
+      output_file  = file.path(results_dir, paste0(sample_id, "_umap_by_", batch_column, ".png")))
+    save_embedding_plot(umap_df,
       color_column = "leiden_clust",
       title = paste(sample_id, "- UMAP by Leiden cluster"),
-      output_file = file.path(results_dir, paste0(sample_id, "_umap_by_leiden_clust.png"))
-    )
+      output_file  = file.path(results_dir, paste0(sample_id, "_umap_by_leiden_clust.png")))
 
-    # -------------------------------------------------------------------------
-    # Validation: UMAP coloured by cell type annotation.
-    # This is the key check that Harmony preserved biology: cells of the same
-    # type should still cluster together even when the batch signal is removed.
-    # Auto-detect celltype_ columns if annotation_columns is not supplied.
-    # -------------------------------------------------------------------------
+    # Validation: UMAP coloured by cell type — confirms Harmony preserved biology.
     if (is.null(annotation_columns)) {
       annotation_columns <- grep("^celltype_", names(metadata), value = TRUE)
     }
     ann_cols_present <- annotation_columns[annotation_columns %in% names(metadata)]
 
     if (length(ann_cols_present) > 0) {
-      cat("Generating annotation validation plots for:", paste(ann_cols_present, collapse = ", "), "\n")
+      cat("Generating annotation validation plots for:",
+          paste(ann_cols_present, collapse = ", "), "\n")
       umap_ann <- embedding_to_tibble(gobj, reduction_method = "umap", name = "umap",
                                       color_columns = ann_cols_present)
       for (ann_col in ann_cols_present) {
-        save_embedding_plot(
-          umap_ann,
+        save_embedding_plot(umap_ann,
           color_column = ann_col,
           title = paste(sample_id, "- UMAP by", ann_col, "(biology check)"),
-          output_file = file.path(results_dir, paste0(sample_id, "_umap_by_", ann_col, ".png"))
-        )
+          output_file  = file.path(results_dir,
+                                   paste0(sample_id, "_umap_by_", ann_col, ".png")))
       }
     }
 
-    # Also plot by sample_id if it differs from batch_column (shows sample mixing)
     if ("sample_id" %in% names(metadata) && "sample_id" != batch_column) {
       umap_sample <- embedding_to_tibble(gobj, reduction_method = "umap", name = "umap",
                                          color_columns = "sample_id")
-      save_embedding_plot(
-        umap_sample,
+      save_embedding_plot(umap_sample,
         color_column = "sample_id",
         title = paste(sample_id, "- UMAP by sample_id (mixing check)"),
-        output_file = file.path(results_dir, paste0(sample_id, "_umap_by_sample_id.png"))
-      )
+        output_file  = file.path(results_dir,
+                                 paste0(sample_id, "_umap_by_sample_id.png")))
     }
   }
-  
+
   if (save_object) {
     save_giotto_checkpoint(
-      gobj = gobj,
+      gobj           = gobj,
       checkpoint_dir = file.path(output_dir, "Giotto_Object_BatchCorrected"),
-      metadata = list(stage = "batch_correction", batch_column = batch_column)
+      metadata       = list(stage = "batch_correction", batch_column = batch_column)
     )
   }
-  
+
   gobj
 }
