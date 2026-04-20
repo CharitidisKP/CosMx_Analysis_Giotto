@@ -2412,6 +2412,7 @@ run_cci_analysis <- function(gobj,
                              sample_id,
                              output_dir,
                              celltype_col       = NULL,
+                             focus_celltype     = "^B\\.cell$",
                              sender_celltypes   = NULL,
                              receiver_celltype  = NULL,
                              target_genes       = NULL,
@@ -2489,7 +2490,8 @@ run_cci_analysis <- function(gobj,
     section_out <- .run_cci_section(
       "LIANA",
       function() run_liana(gobj, sample_id, output_dir, celltype_col,
-                           expr_cache = .cci_expr_cache)
+                           expr_cache     = .cci_expr_cache,
+                           focus_celltype = focus_celltype)
     )
     results$liana <- section_out$result
     section_status["liana"] <- section_out$status

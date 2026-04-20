@@ -778,11 +778,18 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
     # gobj so the pipeline checkpoint chain is unaffected.
     "10_cci" = {
       cci_cfg <- cfg$cci %||% list()
+      # Resolve focus cell-type regex from config (mirrors step 11 at L812-825)
+      # so LIANA plots (including the dedicated B-cell CCI network) centre on
+      # the same focal cell type(s) used by downstream B-cell analysis.
+      focus_regex <- cfg$interaction$focus_celltype_regex %||%
+                     cfg$interaction$bcell_regex %||%
+                     "^B\\.cell$"
       runtime_env$run_cci_analysis(
         gobj = gobj,
         sample_id = sample_id,
         output_dir = output_dir,
         celltype_col = cfg$interaction$annotation_column %||% NULL,
+        focus_celltype = focus_regex,
         sender_celltypes = cci_cfg$sender_celltypes %||% NULL,
         receiver_celltype = cci_cfg$receiver_celltype %||% NULL,
         target_genes = cci_cfg$target_genes %||% NULL,
