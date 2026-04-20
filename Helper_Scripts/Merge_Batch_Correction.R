@@ -282,7 +282,10 @@ embedding_to_tibble <- function(gobj, reduction_method, name = NULL, color_colum
   
   metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
   metadata <- dplyr::select(metadata, dplyr::any_of(c("cell_ID", color_columns)))
-  
+
+  coord_df$cell_ID <- as.character(coord_df$cell_ID)
+  metadata$cell_ID <- as.character(metadata$cell_ID)
+
   dplyr::left_join(coord_df, metadata, by = "cell_ID")
 }
 
