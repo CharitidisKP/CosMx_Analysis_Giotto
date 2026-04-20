@@ -567,8 +567,8 @@ plot_liana_extended <- function(liana_agg,
 
   source_col   <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
   target_col   <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
-  ligand_col   <- .first_existing_column(liana_agg, c("ligand_complex", "ligand", "Ligand"))
-  receptor_col <- .first_existing_column(liana_agg, c("receptor_complex", "receptor", "Receptor"))
+  ligand_col   <- .first_existing_column(liana_agg, c("ligand_complex",   "ligand.complex",   "ligand",   "Ligand"))
+  receptor_col <- .first_existing_column(liana_agg, c("receptor_complex", "receptor.complex", "receptor", "Receptor"))
   rank_col     <- .first_existing_column(liana_agg, c("aggregate_rank", "rank", "mean_rank"))
 
   if (is.null(source_col) || is.null(target_col) ||
@@ -1001,25 +1001,37 @@ run_liana <- function(gobj,
         stop("Could not identify LIANA plot columns for the selected methods.")
       }
       
+      top_n_groups  <- 15L
+      src_col_dp    <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
+      tgt_col_dp    <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
+      top_sources   <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
+        seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
+      top_targets   <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
+        seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
+
       p <- liana::liana_dotplot(
         liana_agg,
-        source_groups = NULL,   # all senders
-        target_groups = NULL,   # all receivers
+        source_groups = top_sources,
+        target_groups = top_targets,
         ntop          = 20,
         specificity   = specificity_col,
         magnitude     = magnitude_col
       ) +
         ggplot2::labs(
-          title = sample_plot_title(sample_id, "Top LIANA Ligand-Receptor Interactions"),
-          subtitle = "Top-ranked sender and receiver pairs across the selected LIANA scoring methods."
+          title    = sample_plot_title(sample_id, "Top LIANA Ligand-Receptor Interactions"),
+          subtitle = paste0("Top ", top_n_groups, " senders/receivers by interaction count.")
         ) +
-        presentation_theme(base_size = 12, legend_position = "right")
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::theme(
+          axis.text.x = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
+          axis.text.y = ggplot2::element_text(size = 7)
+        )
       save_presentation_plot(
-        plot = p,
+        plot     = p,
         filename = file.path(out_dir, paste0(sample_id, "_liana_dotplot.png")),
-        width = 14,
-        height = 10,
-        dpi = 150
+        width    = 22,
+        height   = 14,
+        dpi      = 150
       )
       cat("\u2713 LIANA dotplot saved\n")
     }, error = function(e) {
