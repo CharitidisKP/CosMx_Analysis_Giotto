@@ -757,13 +757,15 @@ plot_liana_extended <- function(liana_agg,
           subtitle = paste0("Top 25 pairs + ", paste(focus_celltype, collapse = "/"),
                             " edges; edge width proportional to N significant L-R pairs")
         ) +
-        presentation_theme(base_size = 11, legend_position = "right") +
+        ggraph::theme_graph(background = "white", base_size = 11) +
         ggplot2::theme(
-          axis.line   = ggplot2::element_blank(),
-          axis.text   = ggplot2::element_blank(),
-          axis.ticks  = ggplot2::element_blank(),
-          axis.title  = ggplot2::element_blank(),
-          panel.border = ggplot2::element_blank()
+          plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold", size = 13,
+                                                  margin = ggplot2::margin(b = 6)),
+          plot.subtitle   = ggplot2::element_text(hjust = 0.5, size = 10, color = "grey20"),
+          legend.position = "right",
+          legend.title    = ggplot2::element_text(face = "bold", size = 10),
+          legend.text     = ggplot2::element_text(size = 9),
+          plot.margin     = ggplot2::margin(12, 16, 12, 12)
         )
 
       save_presentation_plot(
@@ -938,24 +940,28 @@ plot_liana_extended <- function(liana_agg,
     cat("\u26A0 LIANA spatial LR map failed:", conditionMessage(e), "\n")
   })
 
-  # -- Plot 6: UMAP CCI overview + B cell spatial overlay ----------------------
+  # -- Plot 6a: UMAP CCI overview -----------------------------------------------
   tryCatch({
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
 
-    # -- 6a: UMAP colored by cell type, B cells highlighted -------------------
     umap_coords <- tryCatch(
       as.data.frame(.giotto_get_dim_reduction(gobj, reduction_method = "umap",
                                               name = "umap", output = "data.table")),
       error = function(e) NULL
     )
     if (!is.null(umap_coords)) {
+      # Guard: dim reduction output may not use "cell_ID" as column name
+      if (!"cell_ID" %in% names(umap_coords)) names(umap_coords)[1] <- "cell_ID"
       umap_cols <- setdiff(names(umap_coords), "cell_ID")
-      umap_df   <- merge(
+      umap_cols <- umap_cols[seq_len(min(2, length(umap_cols)))]
+      if (length(umap_cols) < 2) stop("UMAP output has fewer than 2 dimension columns.")
+
+      umap_df <- merge(
         umap_coords[, c("cell_ID", umap_cols[1], umap_cols[2])],
         meta[, c("cell_ID", celltype_col)],
         by = "cell_ID"
       )
-      names(umap_df)[2:3]                          <- c("umap_1", "umap_2")
+      names(umap_df)[2:3]                            <- c("umap_1", "umap_2")
       names(umap_df)[names(umap_df) == celltype_col] <- "celltype"
       umap_df$cell_ID <- as.character(umap_df$cell_ID)
 
@@ -987,8 +993,19 @@ plot_liana_extended <- function(liana_agg,
       )
       cat("\u2713 LIANA CCI UMAP saved\n")
     }
+  }, error = function(e) {
+    cat("\u26A0 LIANA CCI UMAP failed:", conditionMessage(e), "\n")
+    message("  Detail: ", conditionMessage(e))
+  })
 
-    # -- 6b: B cell spatial interaction overlay (when focus_celltype is set) --
+  # -- Plot 6b: B cell spatial interaction overlay ----------------------------
+  tryCatch({
+    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+    if (is.null(focus_celltype)) {
+      cat("  Skipping B cell spatial overlay (no focus_celltype set).\n")
+      return(invisible(NULL))
+    }
+
     spat <- tryCatch(
       as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
       error = function(e) NULL
@@ -1003,6 +1020,11 @@ plot_liana_extended <- function(liana_agg,
     )
     names(cell_spat)[names(cell_spat) == celltype_col] <- "celltype"
 
+    if (!any(focus_celltype %in% cell_spat$celltype)) {
+      cat("  Skipping B cell spatial overlay (focus cell type not found in spatial data).\n")
+      return(invisible(NULL))
+    }
+
     centroids <- stats::aggregate(
       cbind(sdimx, sdimy) ~ celltype,
       data = cell_spat, FUN = mean, na.rm = TRUE
@@ -1015,79 +1037,67 @@ plot_liana_extended <- function(liana_agg,
       s
     }
 
-    if (!is.null(focus_celltype) && any(focus_celltype %in% cell_spat$celltype)) {
+    focus_pairs_all <- count_df[count_df$source %in% focus_celltype |
+                                  count_df$target %in% focus_celltype, ]
+    focus_seg       <- .build_seg_df(focus_pairs_all, centroids)
+    focus_cells     <- cell_spat[cell_spat$celltype %in% focus_celltype, ]
+    partner_cts     <- setdiff(unique(c(focus_pairs_all$source, focus_pairs_all$target)),
+                               focus_celltype)
+    partner_cells   <- cell_spat[cell_spat$celltype %in% partner_cts, ]
+    label_cts       <- unique(c(focus_celltype,
+                                head(focus_pairs_all[order(-focus_pairs_all$n_interactions),
+                                                     "target"], 8)))
+    label_pts       <- centroids[centroids$celltype %in% label_cts, ]
 
-      focus_pairs_all <- count_df[count_df$source %in% focus_celltype |
-                                    count_df$target %in% focus_celltype, ]
-      focus_seg       <- .build_seg_df(focus_pairs_all, centroids)
+    p6b <- ggplot2::ggplot() +
+      ggplot2::geom_point(data = cell_spat,
+                          ggplot2::aes(x = sdimx, y = sdimy),
+                          color = "grey82", size = 0.2, alpha = 0.3) +
+      ggplot2::geom_point(data = partner_cells,
+                          ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
+                          size = 0.5, alpha = 0.5) +
+      ggplot2::geom_point(data = focus_cells,
+                          ggplot2::aes(x = sdimx, y = sdimy),
+                          color = "firebrick", size = 1.0, alpha = 0.85) +
+      {if (nrow(focus_seg) > 0)
+        ggplot2::geom_segment(
+          data  = focus_seg,
+          ggplot2::aes(x = x_start, y = y_start, xend = x_end, yend = y_end,
+                       size = n_interactions),
+          color = "black", alpha = 0.85,
+          arrow = grid::arrow(length = grid::unit(4, "mm"), type = "closed")
+        )
+      } +
+      {if (nrow(focus_seg) > 0)
+        ggplot2::scale_size_continuous(range = c(0.5, 4), name = "Interactions (n)")
+      } +
+      ggplot2::geom_label(
+        data = label_pts,
+        ggplot2::aes(x = sdimx, y = sdimy, label = celltype),
+        size = 2.5, alpha = 0.85, label.padding = grid::unit(0.15, "lines"),
+        fontface = "bold"
+      ) +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id,
+                     paste0("Spatial CCI \u2014 ", paste(focus_celltype, collapse = "/"),
+                            " interactions")),
+        subtitle = paste0("Red = ", paste(focus_celltype, collapse = "/"),
+                          " cells; arrows = centroid-level interaction strength"),
+        x = "x", y = "y", color = "Partner cell type"
+      ) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::guides(color = ggplot2::guide_legend(
+        override.aes = list(size = 2, alpha = 1), ncol = 2))
 
-      focus_cells     <- cell_spat[cell_spat$celltype %in% focus_celltype, ]
-      partner_cts     <- unique(c(focus_pairs_all$source, focus_pairs_all$target))
-      partner_cts     <- setdiff(partner_cts, focus_celltype)
-      partner_cells   <- cell_spat[cell_spat$celltype %in% partner_cts, ]
-
-      # Highlight label table — centroid of focus + top partners
-      label_cts <- unique(c(focus_celltype,
-                             head(focus_pairs_all[order(-focus_pairs_all$n_interactions),
-                                                  "target"], 8)))
-      label_pts <- centroids[centroids$celltype %in% label_cts, ]
-
-      p6b <- ggplot2::ggplot() +
-        # All cells: gray background
-        ggplot2::geom_point(data = cell_spat,
-                            ggplot2::aes(x = sdimx, y = sdimy),
-                            color = "grey82", size = 0.2, alpha = 0.3) +
-        # Partner cells colored by type
-        ggplot2::geom_point(data = partner_cells,
-                            ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
-                            size = 0.5, alpha = 0.5) +
-        # Focus cells on top
-        ggplot2::geom_point(data = focus_cells,
-                            ggplot2::aes(x = sdimx, y = sdimy),
-                            color = "firebrick", size = 1.0, alpha = 0.85) +
-        # Arrows from focus → each partner centroid
-        {if (nrow(focus_seg) > 0)
-          ggplot2::geom_segment(
-            data  = focus_seg,
-            ggplot2::aes(x = x_start, y = y_start,
-                         xend = x_end, yend = y_end,
-                         size = n_interactions),
-            color = "black", alpha = 0.85,
-            arrow = grid::arrow(length = grid::unit(4, "mm"), type = "closed")
-          )
-        } +
-        {if (nrow(focus_seg) > 0)
-          ggplot2::scale_size_continuous(range = c(0.5, 4), name = "Interactions (n)")
-        } +
-        # Centroid labels for focus + top partners
-        ggplot2::geom_label(
-          data = label_pts,
-          ggplot2::aes(x = sdimx, y = sdimy, label = celltype),
-          size = 2.5, alpha = 0.85, label.padding = grid::unit(0.15, "lines"),
-          fontface = "bold"
-        ) +
-        ggplot2::labs(
-          title    = sample_plot_title(sample_id,
-                       paste0("Spatial CCI \u2014 ", paste(focus_celltype, collapse = "/"),
-                              " interactions")),
-          subtitle = paste0("Red = ", paste(focus_celltype, collapse = "/"),
-                            " cells; arrows = centroid-level interaction strength"),
-          x = "x", y = "y", color = "Partner cell type"
-        ) +
-        presentation_theme(base_size = 11, legend_position = "right") +
-        ggplot2::guides(color = ggplot2::guide_legend(
-          override.aes = list(size = 2, alpha = 1), ncol = 2))
-
-      save_presentation_plot(
-        plot = p6b,
-        filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_bcell_cci.png")),
-        width = 16, height = 13, dpi = 150
-      )
-      cat("\u2713 LIANA B cell spatial CCI map saved\n")
-    }
+    save_presentation_plot(
+      plot = p6b,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_bcell_cci.png")),
+      width = 16, height = 13, dpi = 150
+    )
+    cat("\u2713 LIANA B cell spatial CCI map saved\n")
 
   }, error = function(e) {
-    cat("\u26A0 LIANA spatial CCI map failed:", conditionMessage(e), "\n")
+    cat("\u26A0 LIANA B cell spatial CCI map failed:", conditionMessage(e), "\n")
     message("  Detail: ", conditionMessage(e))
   })
 
@@ -1298,8 +1308,22 @@ run_liana <- function(gobj,
     write.csv(liana_agg,
               file.path(out_dir, paste0(sample_id, "_liana_aggregate.csv")),
               row.names = FALSE)
-    
-    resolved_focus <- NULL  # safe default if dotplot block errors before assignment
+
+    # Resolve focus cell type BEFORE the dotplot tryCatch so it survives any dotplot failure
+    {
+      src_col_early <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
+      tgt_col_early <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
+      all_cts_early <- unique(c(liana_agg[[src_col_early]], liana_agg[[tgt_col_early]]))
+      resolved_focus <- if (!is.null(focus_celltype) && focus_celltype %in% all_cts_early) {
+        focus_celltype
+      } else if (!is.null(focus_celltype)) {
+        hits <- all_cts_early[grepl(focus_celltype, all_cts_early, ignore.case = TRUE)]
+        if (length(hits) > 0) hits else NULL
+      } else {
+        NULL
+      }
+      cat("  Focus cell type resolved to:", paste(resolved_focus %||% "none", collapse = ", "), "\n")
+    }
 
     # Dot plot of top interactions
     tryCatch({
@@ -1322,11 +1346,11 @@ run_liana <- function(gobj,
           "lr_means"
         )
       )
-      
+
       if (is.null(specificity_col) || is.null(magnitude_col)) {
         stop("Could not identify LIANA plot columns for the selected methods.")
       }
-      
+
       src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
       tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
 
@@ -1339,17 +1363,7 @@ run_liana <- function(gobj,
         error = function(e) NULL
       )
 
-      # Resolve focus cell type name against actual cell types present in results
       all_cts <- unique(c(liana_agg[[src_col_dp]], liana_agg[[tgt_col_dp]]))
-      resolved_focus <- if (!is.null(focus_celltype) && focus_celltype %in% all_cts) {
-        focus_celltype
-      } else if (!is.null(focus_celltype)) {
-        # Fuzzy match: find cell types containing the focus string (case-insensitive)
-        hits <- all_cts[grepl(focus_celltype, all_cts, ignore.case = TRUE)]
-        if (length(hits) > 0) hits else NULL
-      } else {
-        NULL
-      }
 
       if (!is.null(resolved_focus)) {
         # Focus mode: B cell as sender, limit receivers to top 15 by interaction count
