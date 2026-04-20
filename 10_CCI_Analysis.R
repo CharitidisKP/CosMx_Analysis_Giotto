@@ -551,6 +551,327 @@ run_insitucor <- function(gobj,
 
 
 # ==============================================================================
+# SECTION 1 helper — Extended LIANA visualizations
+# ==============================================================================
+
+plot_liana_extended <- function(liana_agg,
+                                meta,
+                                gobj,
+                                expr_cache,
+                                out_dir,
+                                sample_id,
+                                celltype_col,
+                                top_n = 20) {
+
+  if (is.null(liana_agg) || nrow(liana_agg) == 0) return(invisible(NULL))
+
+  source_col   <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
+  target_col   <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
+  ligand_col   <- .first_existing_column(liana_agg, c("ligand_complex", "ligand", "Ligand"))
+  receptor_col <- .first_existing_column(liana_agg, c("receptor_complex", "receptor", "Receptor"))
+  rank_col     <- .first_existing_column(liana_agg, c("aggregate_rank", "rank", "mean_rank"))
+
+  if (is.null(source_col) || is.null(target_col) ||
+      is.null(ligand_col) || is.null(receptor_col) || is.null(rank_col)) {
+    cat("\u26A0 plot_liana_extended: could not resolve required LIANA columns; skipping extended plots.\n")
+    return(invisible(NULL))
+  }
+
+  agg <- liana_agg
+  agg$source           <- agg[[source_col]]
+  agg$target           <- agg[[target_col]]
+  agg$ligand_complex   <- agg[[ligand_col]]
+  agg$receptor_complex <- agg[[receptor_col]]
+  agg$aggregate_rank   <- agg[[rank_col]]
+
+  count_df <- tryCatch(
+    dplyr::count(agg, source, target, name = "n_interactions"),
+    error = function(e) NULL
+  )
+
+  # -- Plot 1: LR ranking bar chart ------------------------------------------
+  tryCatch({
+    top_lr <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], top_n)
+    top_lr$interaction_label <- paste(top_lr$ligand_complex, "\u2192", top_lr$receptor_complex)
+
+    p1 <- ggplot2::ggplot(top_lr,
+             ggplot2::aes(
+               x    = reorder(interaction_label, -aggregate_rank),
+               y    = aggregate_rank,
+               fill = source
+             )) +
+      ggplot2::geom_col() +
+      ggplot2::coord_flip() +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
+        subtitle = paste0("Top ", top_n,
+                          " interactions ranked by LIANA aggregate rank (lower = more significant)"),
+        x        = "Interaction (Ligand \u2192 Receptor)",
+        y        = "Aggregate Rank",
+        fill     = "Sender"
+      ) +
+      presentation_theme(base_size = 12, legend_position = "right")
+
+    save_presentation_plot(
+      plot     = p1,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_lr_ranking.png")),
+      width    = 12,
+      height   = 8,
+      dpi      = 150
+    )
+    cat("\u2713 LIANA LR ranking plot saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA LR ranking plot failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 2: CCI heatmap ---------------------------------------------------
+  tryCatch({
+    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+
+    p2 <- ggplot2::ggplot(count_df,
+             ggplot2::aes(x = source, y = target, fill = n_interactions)) +
+      ggplot2::geom_tile(color = "white") +
+      ggplot2::geom_text(ggplot2::aes(label = n_interactions), color = "white", size = 3) +
+      ggplot2::scale_fill_viridis_c(option = "plasma", name = "# Interactions") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
+        subtitle = "Number of significant L-R pairs per sender-receiver combination",
+        x        = "Sender",
+        y        = "Receiver"
+      ) +
+      ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)) +
+      presentation_theme(base_size = 12, legend_position = "right")
+
+    save_presentation_plot(
+      plot     = p2,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_cci_heatmap.png")),
+      width    = 10,
+      height   = 9,
+      dpi      = 150
+    )
+    cat("\u2713 LIANA CCI heatmap saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA CCI heatmap failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 3: CCI network graph (requires ggraph) ---------------------------
+  tryCatch({
+    if (!requireNamespace("ggraph", quietly = TRUE)) {
+      cat("\u26A0 LIANA CCI network skipped: 'ggraph' is not installed.\n")
+    } else if (is.null(count_df) || nrow(count_df) == 0) {
+      stop("No interaction count data.")
+    } else {
+      g <- igraph::graph_from_data_frame(count_df, directed = TRUE)
+
+      p3 <- ggraph::ggraph(g, layout = "circle") +
+        ggraph::geom_edge_arc(
+          ggplot2::aes(width = n_interactions),
+          arrow  = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
+          end_cap = ggraph::circle(4, "mm"),
+          alpha  = 0.7,
+          color  = "steelblue"
+        ) +
+        ggraph::geom_node_label(ggplot2::aes(label = name), size = 3) +
+        ggraph::scale_edge_width_continuous(range = c(0.5, 3), name = "# Interactions") +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id, "CCI Network"),
+          subtitle = "Edge width proportional to number of significant L-R pairs"
+        ) +
+        presentation_theme(base_size = 12, legend_position = "right")
+
+      save_presentation_plot(
+        plot     = p3,
+        filename = file.path(out_dir, paste0(sample_id, "_liana_cci_network.png")),
+        width    = 10,
+        height   = 10,
+        dpi      = 150
+      )
+      cat("\u2713 LIANA CCI network saved\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 LIANA CCI network failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 4: Chord diagram (requires circlize) -----------------------------
+  tryCatch({
+    if (!requireNamespace("circlize", quietly = TRUE)) {
+      cat("\u26A0 LIANA chord diagram skipped: 'circlize' is not installed.\n")
+    } else if (is.null(count_df) || nrow(count_df) == 0) {
+      stop("No interaction count data.")
+    } else {
+      mat <- stats::xtabs(n_interactions ~ source + target, data = count_df)
+      chord_path <- file.path(out_dir, paste0(sample_id, "_liana_chord.png"))
+      grDevices::png(chord_path, width = 2400, height = 2400, res = 200)
+      circlize::chordDiagram(
+        mat,
+        transparency     = 0.3,
+        annotationTrack  = c("grid", "name"),
+        preAllocateTracks = 1
+      )
+      graphics::title(main = paste0(sample_id, " \u2014 CCI Chord Diagram"))
+      grDevices::dev.off()
+      cat("\u2713 LIANA chord diagram saved\n")
+    }
+  }, error = function(e) {
+    tryCatch(grDevices::dev.off(), error = function(e2) NULL)
+    cat("\u26A0 LIANA chord diagram failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 5: Spatial LR expression map ------------------------------------
+  tryCatch({
+    spat <- tryCatch(
+      as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
+      error = function(e) NULL
+    )
+    if (is.null(spat) || !all(c("cell_ID", "sdimx", "sdimy") %in% names(spat))) {
+      stop("Spatial locations unavailable.")
+    }
+
+    top_pair <- head(agg[order(agg$aggregate_rank, na.last = TRUE), ], 1)
+    if (nrow(top_pair) == 0) stop("No interactions to map.")
+
+    ligand_gene   <- strsplit(as.character(top_pair$ligand_complex[1]),   "_")[[1]][1]
+    receptor_gene <- strsplit(as.character(top_pair$receptor_complex[1]), "_")[[1]][1]
+    sender_ct     <- as.character(top_pair$source[1])
+    receiver_ct   <- as.character(top_pair$target[1])
+
+    expr_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+      expr_cache$normalized
+    } else {
+      tryCatch(
+        .giotto_get_expression(gobj, values = "normalized", output = "matrix"),
+        error = function(e) NULL
+      )
+    }
+    if (is.null(expr_mat)) stop("Expression matrix unavailable.")
+
+    sender_ids   <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                    meta[[celltype_col]] == sender_ct]
+    receiver_ids <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                    meta[[celltype_col]] == receiver_ct]
+
+    extract_expr_vec <- function(gene, cell_ids) {
+      ids <- intersect(as.character(cell_ids), colnames(expr_mat))
+      if (length(ids) == 0 || !gene %in% rownames(expr_mat)) return(NULL)
+      vals <- expr_mat[gene, ids, drop = TRUE]
+      data.frame(cell_ID = ids, expression = as.numeric(vals), stringsAsFactors = FALSE)
+    }
+
+    lig_df <- extract_expr_vec(ligand_gene,   sender_ids)
+    rec_df <- extract_expr_vec(receptor_gene, receiver_ids)
+    if (is.null(lig_df) && is.null(rec_df)) stop("No expression data for top L-R pair.")
+
+    panels <- Filter(Negate(is.null), list(
+      if (!is.null(lig_df)) {
+        lig_df$panel <- paste0("Ligand: ", ligand_gene, " (", sender_ct, ")"); lig_df
+      },
+      if (!is.null(rec_df)) {
+        rec_df$panel <- paste0("Receptor: ", receptor_gene, " (", receiver_ct, ")"); rec_df
+      }
+    ))
+    panel_df <- merge(do.call(rbind, panels),
+                      spat[, c("cell_ID", "sdimx", "sdimy")],
+                      by = "cell_ID")
+
+    p5 <- ggplot2::ggplot(panel_df,
+             ggplot2::aes(x = sdimx, y = sdimy, color = expression)) +
+      ggplot2::geom_point(size = 0.8, alpha = 0.8) +
+      ggplot2::facet_wrap(~panel) +
+      ggplot2::scale_color_viridis_c(option = "magma", name = "Expression") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id,
+                     paste0("Spatial Expression: ", ligand_gene, " \u2192 ", receptor_gene)),
+        subtitle = "Normalized expression of top-ranked L-R pair in sender/receiver cells",
+        x        = "x",
+        y        = "y"
+      ) +
+      presentation_theme(base_size = 12, legend_position = "right")
+
+    save_presentation_plot(
+      plot     = p5,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_lr.png")),
+      width    = 14,
+      height   = 7,
+      dpi      = 150
+    )
+    cat("\u2713 LIANA spatial LR map saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA spatial LR map failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 6: Spatial CCI map -----------------------------------------------
+  tryCatch({
+    spat <- tryCatch(
+      as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
+      error = function(e) NULL
+    )
+    if (is.null(spat) || !all(c("cell_ID", "sdimx", "sdimy") %in% names(spat))) {
+      stop("Spatial locations unavailable.")
+    }
+    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+
+    cell_spat <- merge(
+      spat[, c("cell_ID", "sdimx", "sdimy")],
+      meta[, c("cell_ID", celltype_col)],
+      by = "cell_ID"
+    )
+    names(cell_spat)[names(cell_spat) == celltype_col] <- "celltype"
+
+    centroids <- stats::aggregate(
+      cbind(sdimx, sdimy) ~ celltype,
+      data  = cell_spat,
+      FUN   = mean,
+      na.rm = TRUE
+    )
+
+    top_pairs <- head(count_df[order(-count_df$n_interactions), ], 10)
+    seg_df <- merge(top_pairs,  centroids, by.x = "source", by.y = "celltype")
+    names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_start", "y_start")
+    seg_df <- merge(seg_df, centroids, by.x = "target", by.y = "celltype")
+    names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_end", "y_end")
+
+    p6 <- ggplot2::ggplot() +
+      ggplot2::geom_point(
+        data = cell_spat,
+        ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
+        size = 0.5, alpha = 0.5
+      ) +
+      ggplot2::geom_segment(
+        data = seg_df,
+        ggplot2::aes(
+          x = x_start, y = y_start, xend = x_end, yend = y_end,
+          linewidth = n_interactions
+        ),
+        color = "black", alpha = 0.7,
+        arrow = grid::arrow(length = grid::unit(3, "mm"), type = "open")
+      ) +
+      ggplot2::scale_linewidth_continuous(range = c(0.5, 3), name = "# Interactions") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "Spatial CCI Map"),
+        subtitle = "Arrows connect cell-type centroids; width proportional to # significant L-R pairs",
+        x        = "x",
+        y        = "y",
+        color    = "Cell Type"
+      ) +
+      presentation_theme(base_size = 12, legend_position = "right")
+
+    save_presentation_plot(
+      plot     = p6,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_cci_map.png")),
+      width    = 12,
+      height   = 10,
+      dpi      = 150
+    )
+    cat("\u2713 LIANA spatial CCI map saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA spatial CCI map failed:", conditionMessage(e), "\n")
+  })
+
+  invisible(NULL)
+}
+
+
+# ==============================================================================
 # SECTION 1 — LIANA: consensus ligand-receptor scoring
 # ==============================================================================
 
@@ -704,7 +1025,17 @@ run_liana <- function(gobj,
     }, error = function(e) {
       cat("\u26A0 LIANA dotplot failed:", conditionMessage(e), "\n")
     })
-    
+
+    plot_liana_extended(
+      liana_agg    = liana_agg,
+      meta         = meta,
+      gobj         = gobj,
+      expr_cache   = expr_cache,
+      out_dir      = out_dir,
+      sample_id    = sample_id,
+      celltype_col = celltype_col
+    )
+
     cat("\u2713 LIANA complete. Results saved to:", out_dir, "\n")
     invisible(liana_agg)
   } else {
