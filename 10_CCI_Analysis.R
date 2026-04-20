@@ -604,6 +604,12 @@ plot_liana_extended <- function(liana_agg,
     if (!is.null(extra) && nrow(extra) > 0) top_lr <- rbind(top_lr, extra)
     top_lr$interaction_label  <- paste(top_lr$ligand_complex, "\u2192", top_lr$receptor_complex)
     top_lr$neg_log10_rank     <- -log10(pmax(top_lr$aggregate_rank, 1e-10))
+    top_lr$is_focus           <- !is.null(focus_celltype) & top_lr$source %in% focus_celltype
+
+    n_rows    <- nrow(top_lr)
+    n_senders <- length(unique(top_lr$source))
+    p1_w      <- max(14, ceiling(n_rows * 0.32) + 6)
+    p1_h      <- max(8,  ceiling(n_rows * 0.28))
 
     p1 <- ggplot2::ggplot(top_lr,
              ggplot2::aes(
@@ -612,7 +618,11 @@ plot_liana_extended <- function(liana_agg,
                fill = source
              )) +
       ggplot2::geom_col() +
-      ggplot2::coord_flip() +
+      ggplot2::geom_col(
+        data   = top_lr[top_lr$is_focus, ],
+        color  = "black", linewidth = 0.5, fill = NA
+      ) +
+      ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
         subtitle = paste0("Top ", top_n,
@@ -621,13 +631,15 @@ plot_liana_extended <- function(liana_agg,
         y        = "\u2212log\u2081\u2080(Aggregate Rank)",
         fill     = "Sender"
       ) +
-      presentation_theme(base_size = 12, legend_position = "right")
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1)) +
+      ggplot2::theme(plot.margin = ggplot2::margin(8, 8, 8, max(80, max(nchar(top_lr$interaction_label)) * 5)))
 
     save_presentation_plot(
       plot     = p1,
       filename = file.path(out_dir, paste0(sample_id, "_liana_lr_ranking.png")),
-      width    = 12,
-      height   = 8,
+      width    = p1_w,
+      height   = p1_h,
       dpi      = 150
     )
     cat("\u2713 LIANA LR ranking plot saved\n")
@@ -679,26 +691,64 @@ plot_liana_extended <- function(liana_agg,
     } else if (is.null(count_df) || nrow(count_df) == 0) {
       stop("No interaction count data.")
     } else {
-      # Limit to top 25 source-target pairs to keep the network readable
+      # Top 25 pairs, always including focus_celltype edges
       net_df <- head(count_df[order(-count_df$n_interactions), ], 25)
+      if (!is.null(focus_celltype)) {
+        focus_edges <- count_df[count_df$source %in% focus_celltype |
+                                  count_df$target %in% focus_celltype, ]
+        net_df <- rbind(net_df, focus_edges)
+        net_df <- net_df[!duplicated(paste(net_df$source, net_df$target)), ]
+      }
+      net_df$edge_color <- net_df$source
+
+      # Node size = total degree (outgoing + incoming)
+      out_deg <- stats::setNames(
+        tapply(net_df$n_interactions, net_df$source, sum, default = 0),
+        unique(net_df$source)
+      )
+      in_deg  <- stats::setNames(
+        tapply(net_df$n_interactions, net_df$target, sum, default = 0),
+        unique(net_df$target)
+      )
+      all_nodes <- unique(c(net_df$source, net_df$target))
+      node_size <- vapply(all_nodes, function(n)
+        (out_deg[n] %||% 0) + (in_deg[n] %||% 0), numeric(1))
+
       g <- igraph::graph_from_data_frame(net_df, directed = TRUE)
+      igraph::V(g)$total_degree <- node_size[igraph::V(g)$name]
+      igraph::V(g)$is_focus     <- igraph::V(g)$name %in% (focus_celltype %||% character(0))
 
       p3 <- ggraph::ggraph(g, layout = "circle") +
         ggraph::geom_edge_arc(
-          ggplot2::aes(edge_width = n_interactions, edge_alpha = n_interactions),
+          ggplot2::aes(edge_width = n_interactions, edge_colour = edge_color,
+                       edge_alpha = n_interactions),
           arrow   = grid::arrow(length = grid::unit(3, "mm"), type = "closed"),
-          end_cap = ggraph::circle(5, "mm"),
-          color   = "steelblue",
-          fold    = TRUE
+          end_cap = ggraph::circle(5, "mm")
         ) +
-        ggraph::geom_node_label(ggplot2::aes(label = name), size = 2.8, fill = "white") +
-        ggraph::scale_edge_width_continuous(range = c(0.5, 3), name = "Interactions (n)") +
-        ggraph::scale_edge_alpha_continuous(range = c(0.3, 0.9), guide = "none") +
+        ggraph::geom_node_point(
+          ggplot2::aes(size = total_degree),
+          color = "grey30", alpha = 0.6
+        ) +
+        ggraph::geom_node_point(
+          data  = function(x) x[x$is_focus, ],
+          ggplot2::aes(size = total_degree),
+          color = "firebrick", alpha = 0.9
+        ) +
+        ggraph::geom_node_label(
+          ggplot2::aes(label = name,
+                       fontface = ifelse(is_focus, "bold", "plain")),
+          size = 2.5, fill = "white", label.padding = grid::unit(0.15, "lines")
+        ) +
+        ggraph::scale_edge_width_continuous(range = c(0.4, 2.5), name = "Interactions (n)") +
+        ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85), guide = "none") +
+        ggraph::scale_edge_colour_discrete(guide = "none") +
+        ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "CCI Network"),
-          subtitle = "Top 25 source-receiver pairs; edge width proportional to N significant L-R pairs"
+          subtitle = paste0("Top 25 pairs + ", paste(focus_celltype, collapse = "/"),
+                            " edges; edge width proportional to N significant L-R pairs")
         ) +
-        presentation_theme(base_size = 12, legend_position = "right")
+        presentation_theme(base_size = 11, legend_position = "right")
 
       save_presentation_plot(
         plot     = p3,
@@ -855,7 +905,7 @@ plot_liana_extended <- function(liana_agg,
     cat("\u26A0 LIANA spatial LR map failed:", conditionMessage(e), "\n")
   })
 
-  # -- Plot 6: Spatial CCI map -----------------------------------------------
+  # -- Plot 6: Spatial CCI map (global centroid arrows + B cell overlay) ------
   tryCatch({
     spat <- tryCatch(
       as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
@@ -874,68 +924,239 @@ plot_liana_extended <- function(liana_agg,
     names(cell_spat)[names(cell_spat) == celltype_col] <- "celltype"
 
     if (nrow(cell_spat) == 0) {
-      stop(paste0("cell_spat merge produced 0 rows. ",
-                  "Check that cell_ID values match between spatial locations and metadata. ",
-                  "spat nrow=", nrow(spat), " meta nrow=", nrow(meta)))
+      stop(paste0("cell_spat merge produced 0 rows (spat n=", nrow(spat),
+                  ", meta n=", nrow(meta), "). cell_ID mismatch?"))
     }
 
     centroids <- stats::aggregate(
       cbind(sdimx, sdimy) ~ celltype,
-      data  = cell_spat,
-      FUN   = mean,
-      na.rm = TRUE
+      data = cell_spat, FUN = mean, na.rm = TRUE
     )
 
-    top_pairs <- head(count_df[order(-count_df$n_interactions), ], 10)
-    seg_df    <- merge(top_pairs, centroids, by.x = "source", by.y = "celltype")
-    names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_start", "y_start")
-    seg_df    <- merge(seg_df, centroids, by.x = "target", by.y = "celltype")
-    names(seg_df)[names(seg_df) %in% c("sdimx", "sdimy")] <- c("x_end", "y_end")
+    .build_seg_df <- function(pairs_df, cent_df) {
+      s <- merge(pairs_df, cent_df, by.x = "source", by.y = "celltype")
+      names(s)[names(s) %in% c("sdimx", "sdimy")] <- c("x_start", "y_start")
+      s <- merge(s, cent_df, by.x = "target", by.y = "celltype")
+      names(s)[names(s) %in% c("sdimx", "sdimy")] <- c("x_end", "y_end")
+      s
+    }
+
+    # -- 6a: Global centroid map (top 15 pairs, labeled) ----------------------
+    top_pairs <- head(count_df[order(-count_df$n_interactions), ], 15)
+    seg_df    <- .build_seg_df(top_pairs, centroids)
 
     p6 <- ggplot2::ggplot() +
       ggplot2::geom_point(
         data = cell_spat,
         ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
-        size = 0.4, alpha = 0.4
+        size = 0.3, alpha = 0.35
       ) +
       {if (nrow(seg_df) > 0)
         ggplot2::geom_segment(
           data  = seg_df,
-          ggplot2::aes(
-            x = x_start, y = y_start, xend = x_end, yend = y_end,
-            size = n_interactions
-          ),
-          color = "black", alpha = 0.75,
+          ggplot2::aes(x = x_start, y = y_start, xend = x_end, yend = y_end,
+                       size = n_interactions),
+          color = "black", alpha = 0.8,
           arrow = grid::arrow(length = grid::unit(3, "mm"), type = "open")
         )
       } +
       {if (nrow(seg_df) > 0)
-        ggplot2::scale_size_continuous(range = c(0.5, 3), name = "Interactions (n)")
+        ggplot2::scale_size_continuous(range = c(0.5, 3.5), name = "Interactions (n)")
       } +
+      ggplot2::geom_text(
+        data = centroids,
+        ggplot2::aes(x = sdimx, y = sdimy, label = celltype),
+        size = 2.0, color = "grey10", fontface = "bold",
+        check_overlap = TRUE
+      ) +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Spatial CCI Map"),
-        subtitle = paste0("Arrows connect cell-type centroids (top ", nrow(seg_df),
-                          " pairs); width proportional to N L-R pairs"),
-        x        = "x",
-        y        = "y",
-        color    = "Cell Type"
+        subtitle = paste0("Global centroids (top 15 pairs); arrows show most active sender-receiver"),
+        x = "x", y = "y", color = "Cell Type"
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
       ggplot2::guides(color = ggplot2::guide_legend(
-        override.aes = list(size = 2, alpha = 1), ncol = 2
-      ))
+        override.aes = list(size = 2, alpha = 1), ncol = 2))
 
     save_presentation_plot(
-      plot     = p6,
+      plot = p6,
       filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_cci_map.png")),
-      width    = 14,
-      height   = 11,
-      dpi      = 150
+      width = 16, height = 13, dpi = 150
     )
     cat("\u2713 LIANA spatial CCI map saved\n")
+
+    # -- 6b: B cell spatial interaction overlay (when focus_celltype is set) --
+    if (!is.null(focus_celltype) && any(focus_celltype %in% cell_spat$celltype)) {
+
+      focus_pairs_all <- count_df[count_df$source %in% focus_celltype |
+                                    count_df$target %in% focus_celltype, ]
+      focus_seg       <- .build_seg_df(focus_pairs_all, centroids)
+
+      focus_cells     <- cell_spat[cell_spat$celltype %in% focus_celltype, ]
+      partner_cts     <- unique(c(focus_pairs_all$source, focus_pairs_all$target))
+      partner_cts     <- setdiff(partner_cts, focus_celltype)
+      partner_cells   <- cell_spat[cell_spat$celltype %in% partner_cts, ]
+
+      # Highlight label table — centroid of focus + top partners
+      label_cts <- unique(c(focus_celltype,
+                             head(focus_pairs_all[order(-focus_pairs_all$n_interactions),
+                                                  "target"], 8)))
+      label_pts <- centroids[centroids$celltype %in% label_cts, ]
+
+      p6b <- ggplot2::ggplot() +
+        # All cells: gray background
+        ggplot2::geom_point(data = cell_spat,
+                            ggplot2::aes(x = sdimx, y = sdimy),
+                            color = "grey82", size = 0.2, alpha = 0.3) +
+        # Partner cells colored by type
+        ggplot2::geom_point(data = partner_cells,
+                            ggplot2::aes(x = sdimx, y = sdimy, color = celltype),
+                            size = 0.5, alpha = 0.5) +
+        # Focus cells on top
+        ggplot2::geom_point(data = focus_cells,
+                            ggplot2::aes(x = sdimx, y = sdimy),
+                            color = "firebrick", size = 1.0, alpha = 0.85) +
+        # Arrows from focus → each partner centroid
+        {if (nrow(focus_seg) > 0)
+          ggplot2::geom_segment(
+            data  = focus_seg,
+            ggplot2::aes(x = x_start, y = y_start,
+                         xend = x_end, yend = y_end,
+                         size = n_interactions),
+            color = "black", alpha = 0.85,
+            arrow = grid::arrow(length = grid::unit(4, "mm"), type = "closed")
+          )
+        } +
+        {if (nrow(focus_seg) > 0)
+          ggplot2::scale_size_continuous(range = c(0.5, 4), name = "Interactions (n)")
+        } +
+        # Centroid labels for focus + top partners
+        ggplot2::geom_label(
+          data = label_pts,
+          ggplot2::aes(x = sdimx, y = sdimy, label = celltype),
+          size = 2.5, alpha = 0.85, label.padding = grid::unit(0.15, "lines"),
+          fontface = "bold"
+        ) +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id,
+                       paste0("Spatial CCI \u2014 ", paste(focus_celltype, collapse = "/"),
+                              " interactions")),
+          subtitle = paste0("Red = ", paste(focus_celltype, collapse = "/"),
+                            " cells; arrows = centroid-level interaction strength"),
+          x = "x", y = "y", color = "Partner cell type"
+        ) +
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::guides(color = ggplot2::guide_legend(
+          override.aes = list(size = 2, alpha = 1), ncol = 2))
+
+      save_presentation_plot(
+        plot = p6b,
+        filename = file.path(out_dir, paste0(sample_id, "_liana_spatial_bcell_cci.png")),
+        width = 16, height = 13, dpi = 150
+      )
+      cat("\u2713 LIANA B cell spatial CCI map saved\n")
+    }
+
   }, error = function(e) {
     cat("\u26A0 LIANA spatial CCI map failed:", conditionMessage(e), "\n")
     message("  Detail: ", conditionMessage(e))
+  })
+
+  # -- Plot 7: Dominance scatter (outgoing vs incoming per cell type) ---------
+  tryCatch({
+    if (!requireNamespace("ggrepel", quietly = TRUE)) {
+      cat("\u26A0 LIANA dominance scatter skipped: 'ggrepel' is not installed.\n")
+    } else if (is.null(count_df) || nrow(count_df) == 0) {
+      stop("No interaction count data.")
+    } else {
+
+    out_per <- stats::aggregate(n_interactions ~ source, data = count_df, FUN = sum)
+    in_per  <- stats::aggregate(n_interactions ~ target, data = count_df, FUN = sum)
+    dom_df  <- merge(out_per, in_per, by.x = "source", by.y = "target", all = TRUE)
+    names(dom_df) <- c("celltype", "outgoing", "incoming")
+    dom_df[is.na(dom_df)] <- 0
+    dom_df$total    <- dom_df$outgoing + dom_df$incoming
+    dom_df$is_focus <- dom_df$celltype %in% (focus_celltype %||% character(0))
+
+    p7 <- ggplot2::ggplot(dom_df,
+             ggplot2::aes(x = outgoing, y = incoming,
+                          size = total, color = celltype,
+                          label = celltype)) +
+      ggplot2::geom_point(alpha = 0.75) +
+      ggplot2::geom_point(
+        data  = dom_df[dom_df$is_focus, ],
+        color = "firebrick", shape = 21, stroke = 2, fill = NA
+      ) +
+      ggrepel::geom_text_repel(
+        data  = rbind(
+          head(dom_df[order(-dom_df$total), ], 8),
+          dom_df[dom_df$is_focus, ]
+        ),
+        size = 3, max.overlaps = 20, show.legend = FALSE
+      ) +
+      ggplot2::geom_abline(slope = 1, intercept = 0,
+                           linetype = "dashed", color = "grey50") +
+      ggplot2::scale_size_continuous(range = c(2, 10), guide = "none") +
+      ggplot2::scale_color_discrete(guide = "none") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "CCI Sender/Receiver Dominance"),
+        subtitle = "x = total outgoing L-R pairs as sender; y = total incoming as receiver; diagonal = balanced",
+        x        = "Outgoing interactions (as sender)",
+        y        = "Incoming interactions (as receiver)"
+      ) +
+      presentation_theme(base_size = 12, legend_position = "none")
+
+    save_presentation_plot(
+      plot = p7,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_dominance.png")),
+      width = 10, height = 9, dpi = 150
+    )
+    cat("\u2713 LIANA dominance scatter saved\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 LIANA dominance scatter failed:", conditionMessage(e), "\n")
+  })
+
+  # -- Plot 8: Top sender-receiver pairs (information flow bar chart) ---------
+  tryCatch({
+    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+
+    n_pairs  <- min(25L, nrow(count_df))
+    flow_df  <- head(count_df[order(-count_df$n_interactions), ], n_pairs)
+    flow_df$pair_label <- paste0(flow_df$source, " \u2192 ", flow_df$target)
+    flow_df$is_focus   <- flow_df$source %in% (focus_celltype %||% character(0)) |
+                          flow_df$target %in% (focus_celltype %||% character(0))
+
+    p8 <- ggplot2::ggplot(flow_df,
+             ggplot2::aes(
+               x    = reorder(pair_label, n_interactions),
+               y    = n_interactions,
+               fill = source,
+               color = is_focus
+             )) +
+      ggplot2::geom_col(linewidth = 0.4) +
+      ggplot2::scale_color_manual(values = c("TRUE" = "black", "FALSE" = NA),
+                                  guide = "none") +
+      ggplot2::coord_flip(clip = "off") +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id, "CCI Information Flow"),
+        subtitle = paste0("Top ", n_pairs, " sender-receiver pairs by total L-R interactions"),
+        x        = "Sender \u2192 Receiver",
+        y        = "N significant L-R pairs",
+        fill     = "Sender"
+      ) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1)) +
+      ggplot2::theme(plot.margin = ggplot2::margin(8, 8, 8, 160))
+
+    save_presentation_plot(
+      plot = p8,
+      filename = file.path(out_dir, paste0(sample_id, "_liana_information_flow.png")),
+      width = 14, height = 10, dpi = 150
+    )
+    cat("\u2713 LIANA information flow saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA information flow failed:", conditionMessage(e), "\n")
   })
 
   invisible(NULL)
@@ -1047,6 +1268,8 @@ run_liana <- function(gobj,
               file.path(out_dir, paste0(sample_id, "_liana_aggregate.csv")),
               row.names = FALSE)
     
+    resolved_focus <- NULL  # safe default if dotplot block errors before assignment
+
     # Dot plot of top interactions
     tryCatch({
       specificity_col <- .first_existing_column(
@@ -1076,6 +1299,15 @@ run_liana <- function(gobj,
       src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
       tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
 
+      # Build interaction count table (needed for focus-mode receiver selection)
+      count_df <- tryCatch(
+        dplyr::count(
+          data.frame(source = liana_agg[[src_col_dp]], target = liana_agg[[tgt_col_dp]]),
+          source, target, name = "n_interactions"
+        ),
+        error = function(e) NULL
+      )
+
       # Resolve focus cell type name against actual cell types present in results
       all_cts <- unique(c(liana_agg[[src_col_dp]], liana_agg[[tgt_col_dp]]))
       resolved_focus <- if (!is.null(focus_celltype) && focus_celltype %in% all_cts) {
@@ -1089,19 +1321,27 @@ run_liana <- function(gobj,
       }
 
       if (!is.null(resolved_focus)) {
-        # Focus mode: show interactions where focus cell type is the sender
-        dp_sources  <- resolved_focus
-        dp_targets  <- NULL   # all receivers
-        dp_subtitle <- paste0("B cell (", paste(resolved_focus, collapse = ", "),
-                              ") as sender \u2014 top 20 L-R pairs by rank")
+        # Focus mode: B cell as sender, limit receivers to top 15 by interaction count
+        focus_pairs  <- count_df[count_df$source %in% resolved_focus, ]
+        dp_sources   <- resolved_focus
+        dp_targets   <- head(focus_pairs[order(-focus_pairs$n_interactions), "target"], 15)
+        if (length(dp_targets) == 0) dp_targets <- NULL
+        n_dp_targets <- max(15L, length(dp_targets %||% unique(liana_agg[[tgt_col_dp]])))
+        dp_subtitle  <- paste0(paste(resolved_focus, collapse = ", "),
+                               " as sender \u2014 top 20 L-R pairs, top ", length(dp_targets %||% character(0)),
+                               " receivers by interaction count")
       } else {
         top_n_groups <- 15L
         dp_sources   <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
           seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
         dp_targets   <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
           seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
-        dp_subtitle  <- paste0("Top 15 senders/receivers by interaction count")
+        n_dp_targets <- top_n_groups
+        dp_subtitle  <- "Top 15 senders/receivers by interaction count"
       }
+
+      dp_width  <- max(22, n_dp_targets * 1.5 + 8)
+      dp_height <- max(12, 20 * 0.5 + 4)
 
       p <- liana::liana_dotplot(
         liana_agg,
@@ -1115,18 +1355,18 @@ run_liana <- function(gobj,
           title    = sample_plot_title(sample_id, "LIANA Ligand-Receptor Interactions"),
           subtitle = dp_subtitle
         ) +
-        presentation_theme(base_size = 11, legend_position = "right") +
+        presentation_theme(base_size = 10, legend_position = "right") +
         ggplot2::theme(
-          axis.text.x  = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7),
-          axis.text.y  = ggplot2::element_text(size = 7),
-          strip.text.x = ggplot2::element_text(size = 7, angle = 90, hjust = 0),
-          strip.text.y = ggplot2::element_text(size = 7)
+          axis.text.x  = ggplot2::element_text(angle = 90, hjust = 1, vjust = 0.5, size = 8),
+          axis.text.y  = ggplot2::element_text(size = 8),
+          strip.text.x = ggplot2::element_text(size = 8, angle = 90, hjust = 0, vjust = 0.5),
+          strip.text.y = ggplot2::element_text(size = 8)
         )
       save_presentation_plot(
         plot     = p,
         filename = file.path(out_dir, paste0(sample_id, "_liana_dotplot.png")),
-        width    = 22,
-        height   = 14,
+        width    = dp_width,
+        height   = dp_height,
         dpi      = 150
       )
       cat("\u2713 LIANA dotplot saved\n")
