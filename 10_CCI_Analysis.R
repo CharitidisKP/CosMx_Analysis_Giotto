@@ -1007,6 +1007,120 @@ plot_liana_extended <- function(liana_agg,
     cat("\u26A0 LIANA LR ranking plot failed:", conditionMessage(e), "\n")
   })
 
+  # -- Plot 1b: LIANA dotplot (main + B-cell-specific) -----------------------
+  # Capped at 8 targets for legibility; x-axis rotated 45° via
+  # presentation_theme(x_angle = 45) so rotation survives liana_dotplot's
+  # internal theme.
+  render_liana_dotplot <- function(source_groups, target_groups,
+                                   title_text, subtitle_text, out_path) {
+    if (!requireNamespace("liana", quietly = TRUE)) {
+      cat("\u26A0 LIANA dotplot skipped: 'liana' not installed.\n")
+      return(invisible(FALSE))
+    }
+    specificity_col <- .first_existing_column(
+      liana_agg,
+      c("natmi.edge_specificity", "connectome.edge_specificity",
+        "cellphonedb.pvalue", "lr_means")
+    )
+    magnitude_col <- .first_existing_column(
+      liana_agg,
+      c("sca.LRscore", "connectome.scaled_weight",
+        "logfc.logfc_comb", "natmi.edge_average", "lr_means")
+    )
+    if (is.null(specificity_col) || is.null(magnitude_col)) {
+      stop("Could not identify LIANA plot columns for the selected methods.")
+    }
+
+    n_targets <- length(target_groups %||% unique(agg$target))
+    dp_width  <- max(22, n_targets * 2.8 + 10)
+    dp_height <- max(16, 20 * 0.6 + 8)
+
+    p <- liana::liana_dotplot(
+      liana_agg,
+      source_groups = source_groups,
+      target_groups = target_groups,
+      ntop          = 20,
+      specificity   = specificity_col,
+      magnitude     = magnitude_col
+    ) +
+      ggplot2::labs(title = title_text, subtitle = subtitle_text) +
+      presentation_theme(base_size = 11, legend_position = "right",
+                         x_angle = 45) +
+      ggplot2::theme(
+        axis.text.x  = ggplot2::element_text(size = 10),
+        axis.text.y  = ggplot2::element_text(size = 10),
+        strip.text.x = ggplot2::element_text(size = 10, angle = 45,
+                                             hjust = 0, vjust = 0,
+                                             margin = ggplot2::margin(b = 6)),
+        strip.text.y = ggplot2::element_text(size = 10),
+        strip.clip   = "off",
+        plot.margin  = ggplot2::margin(t = 70, r = 20, b = 70, l = 20)
+      )
+    save_presentation_plot(plot = p, filename = out_path,
+                           width = dp_width, height = dp_height, dpi = 150)
+    TRUE
+  }
+
+  # Main dotplot: top 8 senders x top 8 receivers (by interaction count).
+  tryCatch({
+    src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
+    tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
+    top_n_groups <- 8L
+
+    dp_sources <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
+      seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
+    dp_targets <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
+      seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
+
+    render_liana_dotplot(
+      source_groups = dp_sources,
+      target_groups = dp_targets,
+      title_text    = sample_plot_title(sample_id,
+                        "LIANA Ligand-Receptor Interactions"),
+      subtitle_text = paste0("Top ", top_n_groups,
+                             " senders \u00D7 top ", top_n_groups,
+                             " receivers by interaction count"),
+      out_path      = file.path(out_dir,
+                       paste0(sample_id, "_liana_dotplot.png"))
+    )
+    cat("\u2713 LIANA dotplot saved\n")
+  }, error = function(e) {
+    cat("\u26A0 LIANA dotplot failed:", conditionMessage(e), "\n")
+  })
+
+  # B-cell dotplot: focus_celltype as sender, top 10 receivers.
+  tryCatch({
+    if (is.null(focus_celltype) || length(focus_celltype) == 0) {
+      cat("\u26A0 LIANA B-cell dotplot skipped: no focus_celltype resolved.\n")
+    } else {
+      focus_pairs <- count_df[count_df$source %in% focus_celltype, ]
+      if (nrow(focus_pairs) == 0) {
+        cat("\u26A0 LIANA B-cell dotplot skipped: no ",
+            paste(focus_celltype, collapse = "/"),
+            " sender edges.\n", sep = "")
+      } else {
+        bcell_targets <- head(
+          focus_pairs[order(-focus_pairs$n_interactions), "target"], 10
+        )
+        render_liana_dotplot(
+          source_groups = focus_celltype,
+          target_groups = bcell_targets,
+          title_text    = sample_plot_title(sample_id,
+                            "B-cell LIANA Ligand-Receptor Interactions"),
+          subtitle_text = paste0(paste(focus_celltype, collapse = "/"),
+                                 " as sender \u2014 top 20 L-R pairs, top ",
+                                 length(bcell_targets),
+                                 " receivers by interaction count"),
+          out_path      = file.path(bcell_dir,
+                            paste0(sample_id, "_liana_dotplot_bcell.png"))
+        )
+        cat("\u2713 LIANA B-cell dotplot saved \u2192", bcell_dir, "\n")
+      }
+    }
+  }, error = function(e) {
+    cat("\u26A0 LIANA B-cell dotplot failed:", conditionMessage(e), "\n")
+  })
+
   # -- Plot 2: CCI heatmap ---------------------------------------------------
   tryCatch({
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
@@ -2182,107 +2296,9 @@ run_liana <- function(gobj,
       cat("  Focus cell type resolved to:", paste(resolved_focus %||% "none", collapse = ", "), "\n")
     }
 
-    # Dot plot of top interactions
-    tryCatch({
-      specificity_col <- .first_existing_column(
-        liana_agg,
-        c(
-          "natmi.edge_specificity",
-          "connectome.edge_specificity",
-          "cellphonedb.pvalue",
-          "lr_means"
-        )
-      )
-      magnitude_col <- .first_existing_column(
-        liana_agg,
-        c(
-          "sca.LRscore",
-          "connectome.scaled_weight",
-          "logfc.logfc_comb",
-          "natmi.edge_average",
-          "lr_means"
-        )
-      )
-
-      if (is.null(specificity_col) || is.null(magnitude_col)) {
-        stop("Could not identify LIANA plot columns for the selected methods.")
-      }
-
-      src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
-      tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
-
-      # Build interaction count table (needed for focus-mode receiver selection)
-      count_df <- tryCatch(
-        dplyr::count(
-          data.frame(source = liana_agg[[src_col_dp]], target = liana_agg[[tgt_col_dp]]),
-          source, target, name = "n_interactions"
-        ),
-        error = function(e) NULL
-      )
-
-      all_cts <- unique(c(liana_agg[[src_col_dp]], liana_agg[[tgt_col_dp]]))
-
-      if (!is.null(resolved_focus)) {
-        # Focus mode: B cell as sender, limit receivers to top 15 by interaction count
-        focus_pairs  <- count_df[count_df$source %in% resolved_focus, ]
-        dp_sources   <- resolved_focus
-        dp_targets   <- head(focus_pairs[order(-focus_pairs$n_interactions), "target"], 15)
-        if (length(dp_targets) == 0) dp_targets <- NULL
-        n_dp_targets <- max(15L, length(dp_targets %||% unique(liana_agg[[tgt_col_dp]])))
-        dp_subtitle  <- paste0(paste(resolved_focus, collapse = ", "),
-                               " as sender \u2014 top 20 L-R pairs, top ", length(dp_targets %||% character(0)),
-                               " receivers by interaction count")
-      } else {
-        top_n_groups <- 15L
-        dp_sources   <- names(sort(table(liana_agg[[src_col_dp]]), decreasing = TRUE))[
-          seq_len(min(top_n_groups, length(unique(liana_agg[[src_col_dp]]))))]
-        dp_targets   <- names(sort(table(liana_agg[[tgt_col_dp]]), decreasing = TRUE))[
-          seq_len(min(top_n_groups, length(unique(liana_agg[[tgt_col_dp]]))))]
-        n_dp_targets <- top_n_groups
-        dp_subtitle  <- "Top 15 senders/receivers by interaction count"
-      }
-
-      # Width: 3.2 inches per target cell type + generous margin for rotated
-      # facet strip labels at the top and rotated x-axis cell-type labels
-      # at the bottom; minimum 36"
-      dp_width  <- max(36, n_dp_targets * 3.2 + 14)
-      dp_height <- max(18, 20 * 0.65 + 10)
-
-      p <- liana::liana_dotplot(
-        liana_agg,
-        source_groups = dp_sources,
-        target_groups = dp_targets,
-        ntop          = 20,
-        specificity   = specificity_col,
-        magnitude     = magnitude_col
-      ) +
-        ggplot2::labs(
-          title    = sample_plot_title(sample_id, "LIANA Ligand-Receptor Interactions"),
-          subtitle = dp_subtitle
-        ) +
-        presentation_theme(base_size = 11, legend_position = "right") +
-        ggplot2::theme(
-          axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1,
-                                               size = 9),
-          axis.text.y  = ggplot2::element_text(size = 9),
-          strip.text.x = ggplot2::element_text(size = 9, angle = 45,
-                                               hjust = 0, vjust = 0,
-                                               margin = ggplot2::margin(b = 4)),
-          strip.text.y = ggplot2::element_text(size = 9),
-          strip.clip   = "off",
-          plot.margin  = ggplot2::margin(t = 60, r = 20, b = 60, l = 20)
-        )
-      save_presentation_plot(
-        plot     = p,
-        filename = file.path(out_dir, paste0(sample_id, "_liana_dotplot.png")),
-        width    = dp_width,
-        height   = dp_height,
-        dpi      = 150
-      )
-      cat("\u2713 LIANA dotplot saved\n")
-    }, error = function(e) {
-      cat("\u26A0 LIANA dotplot failed:", conditionMessage(e), "\n")
-    })
+    # Dotplots (main + B-cell) are rendered inside plot_liana_extended()
+    # so that manual re-runs on a cached liana_aggregate.csv also regenerate
+    # them without re-running the full LIANA pipeline.
 
     plot_liana_extended(
       liana_agg      = liana_agg,
