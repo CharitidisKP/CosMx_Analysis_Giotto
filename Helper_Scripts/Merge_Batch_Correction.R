@@ -451,7 +451,7 @@ batch_correct_merged_object <- function(gobj,
   cat("Running Leiden clustering...\n")
   gobj <- doLeidenCluster(
     gobject      = gobj,
-    nn_network_to_use = "kNN",
+    nn_network_to_use = "sNN",
     network_name = "NN.harmony",
     resolution   = resolution,
     n_iterations = 1000,
