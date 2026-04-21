@@ -467,105 +467,35 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
   )
 }
 
-# Giotto-native outlined polygon renderer.
+# Polygon coordinate extractor — returns a data.frame with columns
+# geom, part, x, y, hole, cell_ID (one row per polygon vertex), or NULL
+# when no polygon data are available on the Giotto object.
 # NOTE: a sibling copy lives in 07_Annotation.R — keep the two in sync.
-.spat_in_situ_outlined <- function(gobj,
-                                    fill_col,
-                                    fill_as_factor,
-                                    colour_map   = NULL,
-                                    gradient     = c("lightgrey", "red"),
-                                    legend_title = "Cell Type",
-                                    title_txt) {
-  fn <- NULL
-  if (requireNamespace("Giotto", quietly = TRUE) &&
-      exists("spatInSituPlotPoints", envir = asNamespace("Giotto"),
-             inherits = FALSE)) {
-    fn <- get("spatInSituPlotPoints", envir = asNamespace("Giotto"))
-  } else if (requireNamespace("GiottoVisuals", quietly = TRUE) &&
-             exists("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"),
-                    inherits = FALSE)) {
-    fn <- get("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"))
-  } else if (exists("spatInSituPlotPoints", mode = "function")) {
-    fn <- get("spatInSituPlotPoints", mode = "function")
+.extract_polygon_df <- function(gobj) {
+  poly_sv <- tryCatch({
+    p <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell",
+                                      return_giottoPolygon = FALSE)
+    if (inherits(p, "giottoPolygon")) p@spatVector else p
+  }, error = function(e) {
+    tryCatch({
+      gp <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell")
+      if (inherits(gp, "giottoPolygon")) gp@spatVector else NULL
+    }, error = function(e2) NULL)
+  })
+  if (is.null(poly_sv)) {
+    poly_sv <- tryCatch(gobj@polygon$cell@spatVector, error = function(e) NULL)
   }
-  if (is.null(fn)) return(NULL)
+  if (is.null(poly_sv)) return(NULL)
 
-  # Giotto's spatInSituPlotPoints() arg names drift between releases — probe
-  # the function's formals and only pass arguments it actually accepts.
-  accepted <- names(formals(fn))
-  pick <- function(val, candidates) {
-    hit <- intersect(candidates, accepted)
-    if (!length(hit)) return(NULL)
-    stats::setNames(list(val), hit[1])
-  }
+  poly_attr <- tryCatch(as.data.frame(poly_sv), error = function(e) NULL)
+  if (is.null(poly_attr) || nrow(poly_attr) == 0) return(NULL)
+  poly_coords <- tryCatch(terra::geom(poly_sv, df = TRUE), error = function(e) NULL)
+  if (is.null(poly_coords) || nrow(poly_coords) == 0) return(NULL)
 
-  args <- list(
-    gobject                = gobj,
-    show_polygon           = TRUE,
-    polygon_feat_type      = "cell",
-    polygon_fill           = fill_col,
-    polygon_fill_as_factor = fill_as_factor,
-    polygon_alpha          = 0.75,
-    show_image             = FALSE,
-    return_plot            = TRUE,
-    save_plot              = FALSE
-  )
-  args <- c(args, pick("grey20",
-    c("polygon_line_color", "polygon_color",
-      "polygon_stroke_color", "polygon_border_color")))
-  args <- c(args, pick(0.15,
-    c("polygon_line_size", "polygon_stroke_size",
-      "polygon_border_size", "polygon_size")))
-  if (fill_as_factor && !is.null(colour_map)) {
-    args <- c(args, pick(colour_map,
-      c("polygon_fill_code", "polygon_fill_colors",
-        "polygon_fill_values")))
-  } else if (!fill_as_factor) {
-    args <- c(args, pick(gradient,
-      c("polygon_fill_gradient", "polygon_fill_gradient_colors",
-        "polygon_gradient")))
-  }
-  args <- args[names(args) %in% accepted | names(args) == "gobject"]
-
-  p <- tryCatch(do.call(fn, args), error = function(e) NULL)
-  if (is.null(p)) return(NULL)
-  if (!inherits(p, "ggplot") && !is.null(p$ggobj)) p <- p$ggobj
-  if (!inherits(p, "ggplot")) return(NULL)
-
-  p +
-    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
-    ggplot2::guides(
-      fill  = ggplot2::guide_legend(title = legend_title, ncol = 1,
-                                    override.aes = list(size = 4)),
-      color = ggplot2::guide_legend(title = legend_title, ncol = 1,
-                                    override.aes = list(size = 4))
-    ) +
-    presentation_theme(base_size = 11, legend_position = "right") +
-    ggplot2::theme(
-      axis.title = ggplot2::element_blank(),
-      axis.text  = ggplot2::element_blank(),
-      axis.ticks = ggplot2::element_blank(),
-      panel.grid = ggplot2::element_blank()
-    )
-}
-
-
-.giotto_add_cell_metadata <- function(gobj, new_metadata,
-                                       by_column = TRUE,
-                                       column_cell_ID = "cell_ID") {
-  fn <- NULL
-  if (requireNamespace("Giotto", quietly = TRUE) &&
-      exists("addCellMetadata", envir = asNamespace("Giotto"), inherits = FALSE)) {
-    fn <- get("addCellMetadata", envir = asNamespace("Giotto"))
-  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
-             exists("addCellMetadata", envir = asNamespace("GiottoClass"),
-                    inherits = FALSE)) {
-    fn <- get("addCellMetadata", envir = asNamespace("GiottoClass"))
-  } else {
-    fn <- get("addCellMetadata", mode = "function")
-  }
-  fn(gobject = gobj, new_metadata = new_metadata,
-     by_column = by_column, column_cell_ID = column_cell_ID)
+  id_col <- intersect(c("poly_ID", "cell_ID", "id"), names(poly_attr))
+  if (length(id_col) == 0) return(NULL)
+  poly_coords$cell_ID <- poly_attr[[id_col[1]]][poly_coords$geom]
+  poly_coords
 }
 
 
@@ -586,69 +516,35 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 }
 
 
-# Spatial polygon plots for the focus population (B cells by default):
-#  (A) B-cell vs other highlight,
-#  (B) per-gene expression polygon plots for marker genes present on the panel,
-#  (C) combined multi-panel figure via patchwork.
-# All outputs land in results_dir. Skips gracefully if polygons or the
-# annotation column are missing.
+# Per-gene spatial expression plots with the focus population (B cells by
+# default) outlined on top. Two outputs per surviving marker gene:
+#   * all-FOV image        -> results_dir/B_annotated_gene_expression/<sample>_<GENE>.png
+#   * one image per FOV    -> results_dir/B_annotated_gene_expression/<GENE>/<sample>_<GENE>_FOV_<n>.png
+#     (only for FOVs that actually contain at least one B cell)
+# Skips gracefully if polygons, the annotation column, or the marker
+# lists are missing.
 plot_bcell_spatial_and_markers <- function(gobj,
                                            sample_id,
                                            results_dir,
                                            annotation_column,
                                            bcell_regex,
-                                           bcell_markers    = character(),
-                                           subtype_markers  = character()) {
+                                           bcell_markers     = character(),
+                                           subtype_markers   = character(),
+                                           highlight_label   = "B cells",
+                                           highlight_colour  = "mediumblue") {
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!annotation_column %in% names(meta)) {
     message("  \u26A0 annotation column '", annotation_column,
             "' missing; skipping B-cell spatial plots")
     return(invisible(NULL))
   }
-  ct <- as.character(meta[[annotation_column]])
-  is_bcell <- grepl(bcell_regex, ct, ignore.case = TRUE)
+  is_bcell <- grepl(bcell_regex, as.character(meta[[annotation_column]]),
+                    ignore.case = TRUE)
   if (!any(is_bcell)) {
     message("  \u26A0 No cells match bcell_regex; skipping B-cell spatial plots")
     return(invisible(NULL))
   }
 
-  # (A) Highlight plot — two-level factor
-  flag_df <- data.frame(
-    cell_ID = meta$cell_ID,
-    .bcell_flag = factor(ifelse(is_bcell, "B cell", "Other"),
-                         levels = c("B cell", "Other")),
-    stringsAsFactors = FALSE
-  )
-  gobj_h <- tryCatch(
-    .giotto_add_cell_metadata(gobj, new_metadata = flag_df,
-                              by_column = TRUE, column_cell_ID = "cell_ID"),
-    error = function(e) { message("  \u26A0 addCellMetadata failed: ",
-                                  conditionMessage(e)); NULL })
-  if (!is.null(gobj_h)) {
-    title_h <- paste0(sample_id, " \u2014 B cells highlighted (",
-                       annotation_column, ")")
-    p_h <- .spat_in_situ_outlined(
-      gobj          = gobj_h,
-      fill_col      = ".bcell_flag",
-      fill_as_factor = TRUE,
-      colour_map    = c("B cell" = "#E41A1C", "Other" = "#DDDDDD"),
-      legend_title  = "Population",
-      title_txt     = title_h
-    )
-    if (!is.null(p_h)) {
-      save_presentation_plot(
-        plot     = p_h,
-        filename = file.path(results_dir,
-                              paste0(sample_id, "_bcells_highlight_spatial.png")),
-        width = 20, height = 10, dpi = 300
-      )
-      cat("  \u2713 B-cell highlight spatial saved\n")
-    } else {
-      message("  \u26A0 spatInSituPlotPoints unavailable; B-cell highlight skipped")
-    }
-  }
-
-  # (B) Per-gene polygon plots
   candidates <- unique(c(bcell_markers, subtype_markers))
   candidates <- candidates[nzchar(candidates)]
   if (!length(candidates)) return(invisible(NULL))
@@ -660,63 +556,86 @@ plot_bcell_spatial_and_markers <- function(gobj,
     message("  \u26A0 Expression matrix unavailable; per-gene plots skipped")
     return(invisible(NULL))
   }
-  keep    <- intersect(candidates, rownames(expr))
+  genes   <- intersect(candidates, rownames(expr))
   missing <- setdiff(candidates, rownames(expr))
   if (length(missing)) {
     message("  \u2139 Marker genes not on panel: ",
             paste(missing, collapse = ", "))
   }
-  if (!length(keep)) return(invisible(NULL))
+  if (!length(genes)) return(invisible(NULL))
 
-  plots <- list()
-  for (g in keep) {
-    title_g <- paste0(sample_id, " \u2014 ", g, " expression")
-    p_g <- .spat_in_situ_outlined(
-      gobj           = gobj,
-      fill_col       = g,
-      fill_as_factor = FALSE,
-      legend_title   = g,
-      title_txt      = title_g
-    )
-    if (!is.null(p_g)) {
-      save_presentation_plot(
-        plot     = p_g,
-        filename = file.path(results_dir,
-                              paste0(sample_id, "_bcell_marker_", g, ".png")),
-        width = 14, height = 10, dpi = 300
+  poly_df <- .extract_polygon_df(gobj)
+  if (is.null(poly_df)) {
+    message("  \u26A0 No cell polygons on object; B-cell spatial plots skipped")
+    return(invisible(NULL))
+  }
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom, poly_df$part,
+                              sep = "_")
+  bcell_ids <- meta$cell_ID[is_bcell]
+  poly_df$.is_bcell <- poly_df$cell_ID %in% bcell_ids
+  if ("fov" %in% names(meta)) {
+    poly_df$fov <- unname(stats::setNames(meta$fov, meta$cell_ID)[poly_df$cell_ID])
+  } else {
+    poly_df$fov <- NA_integer_
+  }
+  fov_with_bcells <- sort(unique(meta$fov[is_bcell & !is.na(meta$fov)]))
+
+  viz_root <- ensure_dir(file.path(results_dir, "B_annotated_gene_expression"))
+
+  make_plot <- function(gene, df, fov_tag = NULL) {
+    df$expr <- unname(expr[gene, ][df$cell_ID])
+    bcell_df <- df[df$.is_bcell, , drop = FALSE]
+    title_txt <- paste0(sample_id, " - ", gene, " expression",
+                        if (!is.null(fov_tag)) paste0(" (FOV ", fov_tag, ")") else "")
+    subtitle_txt <- paste0(highlight_label, " highlighted from ",
+                           annotation_column, " annotation")
+    ggplot2::ggplot() +
+      ggplot2::geom_polygon(
+        data = df,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = expr),
+        colour = "grey30", linewidth = 0.08
+      ) +
+      ggplot2::geom_polygon(
+        data = bcell_df,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+        fill = NA, colour = highlight_colour, linewidth = 0.15
+      ) +
+      ggplot2::scale_fill_gradient(low = "lightgrey", high = "red", name = gene) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(title = title_txt, subtitle = subtitle_txt,
+                    x = NULL, y = NULL) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
       )
-      plots[[g]] <- p_g
+  }
+
+  for (g in genes) {
+    save_presentation_plot(
+      plot     = make_plot(g, poly_df),
+      filename = file.path(viz_root, paste0(sample_id, "_", g, ".png")),
+      width = 14, height = 10, dpi = 600
+    )
+    if (length(fov_with_bcells)) {
+      gene_dir <- ensure_dir(file.path(viz_root, g))
+      for (fv in fov_with_bcells) {
+        df_fv <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
+        if (!nrow(df_fv)) next
+        save_presentation_plot(
+          plot     = make_plot(g, df_fv, fov_tag = fv),
+          filename = file.path(gene_dir,
+                               paste0(sample_id, "_", g, "_FOV_", fv, ".png")),
+          width = 10, height = 10, dpi = 600
+        )
+      }
     }
   }
-  if (length(plots)) {
-    cat("  \u2713 Per-gene polygon plots saved (", length(plots),
-        " gene(s))\n", sep = "")
-  }
-
-  # (C) Combined multi-panel via patchwork
-  if (length(plots) >= 2 && requireNamespace("patchwork", quietly = TRUE)) {
-    dims <- tryCatch(optimal_grid_dims(length(plots)),
-                     error = function(e) {
-                       ncol <- ceiling(sqrt(length(plots)))
-                       list(ncol = ncol, nrow = ceiling(length(plots) / ncol))
-                     })
-    combo <- tryCatch(
-      patchwork::wrap_plots(plots, ncol = dims$ncol, nrow = dims$nrow),
-      error = function(e) NULL
-    )
-    if (!is.null(combo)) {
-      save_presentation_plot(
-        plot     = combo,
-        filename = file.path(results_dir,
-                              paste0(sample_id, "_bcell_markers_panel.png")),
-        width  = dims$ncol * 6,
-        height = dims$nrow * 5,
-        dpi    = 300
-      )
-      cat("  \u2713 Combined B-cell marker panel saved\n")
-    }
-  }
-  invisible(plots)
+  cat("  \u2713 B-cell gene overlay plots saved (", length(genes),
+      " gene(s), ", length(fov_with_bcells), " B-cell FOV(s))\n", sep = "")
+  invisible(genes)
 }
 
 
