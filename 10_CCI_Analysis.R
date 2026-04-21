@@ -565,11 +565,19 @@ run_insitucor <- function(gobj,
 # InSituCor visualisation helper
 # ------------------------------------------------------------------
 #
-# Produces four plots for an InSituCor result:
-#   1. {id}_insitucor_module_sizes.png       — module size + mean weight bars
-#   2. {id}_insitucor_celltype_involvement.png — ggplot heatmap
-#   3. {id}_insitucor_spatial_modules.png    — polygon spatial map per top module
-#   4. {id}_insitucor_module_network.png     — module co-expression network
+# Produces the following plots + CSVs for an InSituCor result:
+#   Plots
+#   1. {id}_insitucor_module_sizes.png                 — module size + mean weight bars
+#   2. {id}_insitucor_celltype_involvement.png         — cell-type x module heatmap
+#   3. spatial_modules/{id}_insitucor_spatial_<m>.png  — per-module polygon spatial map
+#   4. {id}_insitucor_module_network.png               — module co-expression network
+#   5. {id}_insitucor_module_correlation_heatmap.png   — module x module correlation heatmap
+#   6. {id}_insitucor_gene_weights_panel.png           — per-module gene-weight facets
+#   7. {id}_insitucor_spatial_modules_combined.png     — combined spatial overlay (patchwork)
+#   CSVs (in addition to {id}_insitucor_modules.csv and _module_stats.csv written by caller)
+#   - {id}_insitucor_celltype_involvement.csv          — long celltype/module/involvement
+#   - {id}_insitucor_cell_module_scores.csv            — wide cell_ID x module weighted scores
+#   - {id}_insitucor_module_cor.csv                    — module correlation matrix
 # Safe to call whenever cor_results contains `modules` (others optional).
 
 plot_insitucor_results <- function(cor_results,
@@ -607,6 +615,58 @@ plot_insitucor_results <- function(cor_results,
             row.names = FALSE)
 
   top_modules <- head(module_stats, top_n_modules)
+
+  # -- Plot 6: per-module gene-weight panel -------------------------------
+  # Complements plot 1 (which only annotates the top-3 genes) by showing
+  # the full weight distribution inside each top module.
+  tryCatch({
+    gw_df <- modules_df[modules_df$module %in% top_modules$module, , drop = FALSE]
+    gw_df <- as.data.frame(gw_df, stringsAsFactors = FALSE)
+    gw_df$module <- factor(gw_df$module, levels = top_modules$module)
+    # Per-facet gene ordering (highest weight first)
+    gw_df <- gw_df[order(gw_df$module, -gw_df$weight), ]
+    gw_df$gene_ord <- factor(
+      paste(gw_df$module, gw_df$gene, sep = "__"),
+      levels = unique(paste(gw_df$module, gw_df$gene, sep = "__"))
+    )
+    n_mod <- length(levels(gw_df$module))
+    ncol_facet <- min(3L, n_mod)
+    p_gw <- ggplot2::ggplot(
+        gw_df,
+        ggplot2::aes(x = gene_ord, y = weight, fill = weight)
+      ) +
+      ggplot2::geom_col(color = "grey30", linewidth = 0.15) +
+      ggplot2::scale_x_discrete(labels = function(x) sub(".*__", "", x)) +
+      ggplot2::scale_fill_viridis_c(option = "C", name = "Weight") +
+      ggplot2::facet_wrap(~ module, scales = "free", ncol = ncol_facet) +
+      ggplot2::coord_flip() +
+      ggplot2::labs(
+        title    = sample_plot_title(sample_id,
+                     "InSituCor Gene Weights per Module"),
+        subtitle = paste0("All genes in each of the top ", n_mod,
+                          " modules (by gene count)"),
+        x = NULL, y = "Weight"
+      ) +
+      presentation_theme(base_size = 10) +
+      ggplot2::theme(
+        axis.text.y = ggplot2::element_text(size = 7),
+        strip.text  = ggplot2::element_text(face = "bold", size = 9),
+        panel.spacing = grid::unit(0.6, "lines")
+      )
+    n_row_facet <- ceiling(n_mod / ncol_facet)
+    save_presentation_plot(
+      plot     = p_gw,
+      filename = file.path(out_dir,
+                           paste0(sample_id, "_insitucor_gene_weights_panel.png")),
+      width    = max(12, 4.2 * ncol_facet),
+      height   = max(8,  3.0 * n_row_facet),
+      dpi      = 150
+    )
+    cat("  \u2713 InSituCor gene-weight panel saved\n")
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor gene-weight panel failed:",
+        conditionMessage(e), "\n")
+  })
 
   # -- Plot 1: module sizes with top-3 genes annotated --------------------
   tryCatch({
@@ -668,6 +728,26 @@ plot_insitucor_results <- function(cor_results,
       inv_long$celltype <- factor(inv_long$celltype, levels = rownames(inv_mat))
       inv_long$module   <- factor(inv_long$module,   levels = colnames(inv_mat))
 
+      # Persist the numeric values used to build the heatmap so downstream
+      # scripts can do module-celltype querying without re-loading the RDS.
+      tryCatch({
+        inv_out <- data.frame(
+          celltype    = as.character(inv_long$celltype),
+          module      = as.character(inv_long$module),
+          involvement = as.numeric(inv_long$involvement),
+          stringsAsFactors = FALSE
+        )
+        write.csv(
+          inv_out,
+          file.path(out_dir,
+                    paste0(sample_id, "_insitucor_celltype_involvement.csv")),
+          row.names = FALSE
+        )
+      }, error = function(e) {
+        cat("  \u26A0 celltype_involvement CSV failed:",
+            conditionMessage(e), "\n")
+      })
+
       p2 <- ggplot2::ggplot(inv_long,
                ggplot2::aes(x = module, y = celltype, fill = involvement)) +
         ggplot2::geom_tile(color = "grey90", linewidth = 0.2) +
@@ -702,7 +782,48 @@ plot_insitucor_results <- function(cor_results,
         conditionMessage(e), "\n")
   })
 
+  # -- Per-cell module scores CSV (numeric, no polygons required) --------
+  # Writes wide cell_ID x module score matrix using the same log1p-normalised
+  # weighted aggregate as the spatial plots below. Saved regardless of
+  # whether polygons are available.
+  tryCatch({
+    all_mod_ids <- unique(module_stats$module)
+    cell_total  <- rowSums(counts)
+    cell_total[cell_total == 0] <- 1
+    score_mat <- matrix(0, nrow = nrow(counts), ncol = length(all_mod_ids),
+                        dimnames = list(rownames(counts), all_mod_ids))
+    for (mod_id in all_mod_ids) {
+      genes_in_mod   <- modules_df$gene[modules_df$module == mod_id]
+      weights_in_mod <- modules_df$weight[modules_df$module == mod_id]
+      keep <- genes_in_mod %in% colnames(counts)
+      genes_in_mod   <- genes_in_mod[keep]
+      weights_in_mod <- weights_in_mod[keep]
+      if (length(genes_in_mod) == 0) next
+      sub_mat  <- counts[, genes_in_mod, drop = FALSE]
+      sub_norm <- log1p(sub_mat / cell_total * 1e4)
+      score_mat[, mod_id] <- as.numeric(sub_norm %*% weights_in_mod)
+    }
+    cell_scores_df <- data.frame(
+      cell_ID = rownames(score_mat),
+      score_mat,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    write.csv(
+      cell_scores_df,
+      file.path(out_dir,
+                paste0(sample_id, "_insitucor_cell_module_scores.csv")),
+      row.names = FALSE
+    )
+    cat("  \u2713 InSituCor per-cell module scores CSV saved (",
+        nrow(score_mat), " cells x ", ncol(score_mat), " modules)\n", sep = "")
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor per-cell module scores CSV failed:",
+        conditionMessage(e), "\n")
+  })
+
   # -- Plot 3: spatial polygon maps of aggregate module expression --------
+  spatial_plots <- list()
   tryCatch({
     poly_df <- .cci_extract_polygon_df(gobj)
     if (is.null(poly_df) || nrow(poly_df) == 0) {
@@ -760,6 +881,7 @@ plot_insitucor_results <- function(cor_results,
             filename = file.path(mod_spatial_dir, fname),
             width    = 12, height = 10, dpi = 180
           )
+          spatial_plots[[as.character(mod_id)]] <- p3
           n_saved <- n_saved + 1L
         }, error = function(e) {
           cat("  \u26A0 InSituCor spatial module ", mod_id,
@@ -774,6 +896,108 @@ plot_insitucor_results <- function(cor_results,
         conditionMessage(e), "\n")
   })
 
+  # -- Plot 7: combined spatial modules overlay ---------------------------
+  # Stitches the per-module spatial maps (plot 3) into a single multi-panel
+  # PNG. Requires `patchwork`; silently skipped otherwise.
+  tryCatch({
+    if (length(spatial_plots) >= 2) {
+      if (!requireNamespace("patchwork", quietly = TRUE)) {
+        cat("  \u26A0 InSituCor combined spatial overlay skipped: 'patchwork' not installed.\n")
+      } else {
+        ncol_panel <- if (length(spatial_plots) <= 4) 2L else min(3L, length(spatial_plots))
+        combined <- patchwork::wrap_plots(spatial_plots, ncol = ncol_panel) +
+          patchwork::plot_annotation(
+            title    = sample_plot_title(sample_id,
+                         "InSituCor Modules - Combined Spatial Overlay"),
+            subtitle = paste0(length(spatial_plots),
+                              " top modules; weighted log1p aggregate expression")
+          )
+        n_row_panel <- ceiling(length(spatial_plots) / ncol_panel)
+        save_presentation_plot(
+          plot     = combined,
+          filename = file.path(out_dir,
+                               paste0(sample_id,
+                                      "_insitucor_spatial_modules_combined.png")),
+          width    = max(14, 6 * ncol_panel),
+          height   = max(10, 5 * n_row_panel),
+          dpi      = 150
+        )
+        cat("  \u2713 InSituCor combined spatial modules overlay saved\n")
+      }
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor combined spatial overlay failed:",
+        conditionMessage(e), "\n")
+  })
+
+  # Resolve module-correlation matrix once; used by both the CSV export,
+  # the new correlation heatmap (plot 5), and the existing network (plot 4).
+  mod_cor <- cor_results$modulecor %||% cor_results$moduleCor %||%
+             cor_results$module_cor %||% NULL
+
+  # -- Module correlation CSV + heatmap (plot 5) --------------------------
+  tryCatch({
+    if (is.null(mod_cor)) {
+      cat("  \u26A0 InSituCor module correlation heatmap/CSV skipped: no modulecor slot.\n")
+    } else {
+      mc_full <- as.matrix(mod_cor)
+      write.csv(
+        mc_full,
+        file.path(out_dir,
+                  paste0(sample_id, "_insitucor_module_cor.csv")),
+        row.names = TRUE
+      )
+
+      mc_long <- as.data.frame(mc_full)
+      mc_long$module_row <- rownames(mc_full)
+      mc_long <- tidyr::pivot_longer(
+        mc_long,
+        cols      = -module_row,
+        names_to  = "module_col",
+        values_to = "cor"
+      )
+      mc_long$module_row <- factor(mc_long$module_row, levels = rownames(mc_full))
+      mc_long$module_col <- factor(mc_long$module_col, levels = colnames(mc_full))
+
+      p_cor <- ggplot2::ggplot(
+          mc_long,
+          ggplot2::aes(x = module_col, y = module_row, fill = cor)
+        ) +
+        ggplot2::geom_tile(color = "grey90", linewidth = 0.2) +
+        ggplot2::scale_fill_gradient2(
+          low = "#2166AC", mid = "white", high = "#B2182B",
+          midpoint = 0, limits = c(-1, 1), name = "Pearson r",
+          na.value = "grey85"
+        ) +
+        ggplot2::coord_fixed() +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id,
+                       "InSituCor Module Correlation Matrix"),
+          subtitle = "Pairwise module-score correlations (diverging palette)",
+          x = NULL, y = NULL
+        ) +
+        presentation_theme(base_size = 11, legend_position = "right") +
+        ggplot2::theme(
+          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y = ggplot2::element_text(size = 9)
+        )
+      n_mods_cor <- nrow(mc_full)
+      save_presentation_plot(
+        plot     = p_cor,
+        filename = file.path(out_dir,
+                             paste0(sample_id,
+                                    "_insitucor_module_correlation_heatmap.png")),
+        width    = max(9, n_mods_cor * 0.45 + 3),
+        height   = max(8, n_mods_cor * 0.42 + 2),
+        dpi      = 150
+      )
+      cat("  \u2713 InSituCor module correlation heatmap saved\n")
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor module correlation heatmap/CSV failed:",
+        conditionMessage(e), "\n")
+  })
+
   # -- Plot 4: module co-expression network -------------------------------
   tryCatch({
     if (!requireNamespace("ggraph", quietly = TRUE)) {
@@ -783,8 +1007,6 @@ plot_insitucor_results <- function(cor_results,
       # or — if an insitucor $condcor / $modulecor matrix exists — by its
       # off-diagonal correlations.
       mod_net_edges <- NULL
-      mod_cor <- cor_results$modulecor %||% cor_results$moduleCor %||%
-                 cor_results$module_cor %||% NULL
       if (!is.null(mod_cor)) {
         mc <- as.matrix(mod_cor)
         diag(mc) <- NA
