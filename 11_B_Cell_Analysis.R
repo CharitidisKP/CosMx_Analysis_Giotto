@@ -30,6 +30,12 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   source(pipeline_utils)
 }
 
+arrange_feature_plots <- file.path(current_script_dir(), "Helper_Scripts",
+                                    "Arrange_Feature_plots.R")
+if (!exists("optimal_grid_dims") && file.exists(arrange_feature_plots)) {
+  source(arrange_feature_plots)
+}
+
 .giotto_pdata_dt <- function(gobj) {
   accessor <- NULL
   
@@ -461,6 +467,241 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
   )
 }
 
+# Giotto-native outlined polygon renderer.
+# NOTE: a sibling copy lives in 07_Annotation.R — keep the two in sync.
+.spat_in_situ_outlined <- function(gobj,
+                                    fill_col,
+                                    fill_as_factor,
+                                    colour_map   = NULL,
+                                    gradient     = c("lightgrey", "red"),
+                                    legend_title = "Cell Type",
+                                    title_txt) {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("spatInSituPlotPoints", envir = asNamespace("Giotto"),
+             inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoVisuals", quietly = TRUE) &&
+             exists("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"),
+                    inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"))
+  } else if (exists("spatInSituPlotPoints", mode = "function")) {
+    fn <- get("spatInSituPlotPoints", mode = "function")
+  }
+  if (is.null(fn)) return(NULL)
+
+  args <- list(
+    gobject                = gobj,
+    show_polygon           = TRUE,
+    polygon_feat_type      = "cell",
+    polygon_fill           = fill_col,
+    polygon_fill_as_factor = fill_as_factor,
+    polygon_alpha          = 0.75,
+    polygon_line_color     = "grey20",
+    polygon_line_size      = 0.15,
+    show_image             = FALSE,
+    return_plot            = TRUE,
+    save_plot              = FALSE
+  )
+  if (fill_as_factor && !is.null(colour_map)) {
+    args$polygon_fill_code <- colour_map
+  } else if (!fill_as_factor) {
+    args$polygon_fill_gradient <- gradient
+  }
+
+  p <- tryCatch(do.call(fn, args), error = function(e) NULL)
+  if (is.null(p)) return(NULL)
+  if (!inherits(p, "ggplot") && !is.null(p$ggobj)) p <- p$ggobj
+  if (!inherits(p, "ggplot")) return(NULL)
+
+  p +
+    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+    ggplot2::guides(
+      fill  = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4)),
+      color = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4))
+    ) +
+    presentation_theme(base_size = 11, legend_position = "right") +
+    ggplot2::theme(
+      axis.title = ggplot2::element_blank(),
+      axis.text  = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      panel.grid = ggplot2::element_blank()
+    )
+}
+
+
+.giotto_add_cell_metadata <- function(gobj, new_metadata,
+                                       by_column = TRUE,
+                                       column_cell_ID = "cell_ID") {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("addCellMetadata", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    fn <- get("addCellMetadata", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("addCellMetadata", envir = asNamespace("GiottoClass"),
+                    inherits = FALSE)) {
+    fn <- get("addCellMetadata", envir = asNamespace("GiottoClass"))
+  } else {
+    fn <- get("addCellMetadata", mode = "function")
+  }
+  fn(gobject = gobj, new_metadata = new_metadata,
+     by_column = by_column, column_cell_ID = column_cell_ID)
+}
+
+
+.giotto_get_expression <- function(gobj, values = "normalized",
+                                    output = "matrix") {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getExpression", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    fn <- get("getExpression", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getExpression", envir = asNamespace("GiottoClass"),
+                    inherits = FALSE)) {
+    fn <- get("getExpression", envir = asNamespace("GiottoClass"))
+  } else {
+    fn <- get("getExpression", mode = "function")
+  }
+  fn(gobject = gobj, values = values, output = output)
+}
+
+
+# Spatial polygon plots for the focus population (B cells by default):
+#  (A) B-cell vs other highlight,
+#  (B) per-gene expression polygon plots for marker genes present on the panel,
+#  (C) combined multi-panel figure via patchwork.
+# All outputs land in results_dir. Skips gracefully if polygons or the
+# annotation column are missing.
+plot_bcell_spatial_and_markers <- function(gobj,
+                                           sample_id,
+                                           results_dir,
+                                           annotation_column,
+                                           bcell_regex,
+                                           bcell_markers    = character(),
+                                           subtype_markers  = character()) {
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (!annotation_column %in% names(meta)) {
+    message("  \u26A0 annotation column '", annotation_column,
+            "' missing; skipping B-cell spatial plots")
+    return(invisible(NULL))
+  }
+  ct <- as.character(meta[[annotation_column]])
+  is_bcell <- grepl(bcell_regex, ct, ignore.case = TRUE)
+  if (!any(is_bcell)) {
+    message("  \u26A0 No cells match bcell_regex; skipping B-cell spatial plots")
+    return(invisible(NULL))
+  }
+
+  # (A) Highlight plot — two-level factor
+  flag_df <- data.frame(
+    cell_ID = meta$cell_ID,
+    .bcell_flag = factor(ifelse(is_bcell, "B cell", "Other"),
+                         levels = c("B cell", "Other")),
+    stringsAsFactors = FALSE
+  )
+  gobj_h <- tryCatch(
+    .giotto_add_cell_metadata(gobj, new_metadata = flag_df,
+                              by_column = TRUE, column_cell_ID = "cell_ID"),
+    error = function(e) { message("  \u26A0 addCellMetadata failed: ",
+                                  conditionMessage(e)); NULL })
+  if (!is.null(gobj_h)) {
+    title_h <- paste0(sample_id, " \u2014 B cells highlighted (",
+                       annotation_column, ")")
+    p_h <- .spat_in_situ_outlined(
+      gobj          = gobj_h,
+      fill_col      = ".bcell_flag",
+      fill_as_factor = TRUE,
+      colour_map    = c("B cell" = "#E41A1C", "Other" = "#DDDDDD"),
+      legend_title  = "Population",
+      title_txt     = title_h
+    )
+    if (!is.null(p_h)) {
+      save_presentation_plot(
+        plot     = p_h,
+        filename = file.path(results_dir,
+                              paste0(sample_id, "_bcells_highlight_spatial.png")),
+        width = 20, height = 10, dpi = 300
+      )
+      cat("  \u2713 B-cell highlight spatial saved\n")
+    } else {
+      message("  \u26A0 spatInSituPlotPoints unavailable; B-cell highlight skipped")
+    }
+  }
+
+  # (B) Per-gene polygon plots
+  candidates <- unique(c(bcell_markers, subtype_markers))
+  candidates <- candidates[nzchar(candidates)]
+  if (!length(candidates)) return(invisible(NULL))
+
+  expr <- tryCatch(.giotto_get_expression(gobj, values = "normalized",
+                                          output = "matrix"),
+                   error = function(e) NULL)
+  if (is.null(expr)) {
+    message("  \u26A0 Expression matrix unavailable; per-gene plots skipped")
+    return(invisible(NULL))
+  }
+  keep    <- intersect(candidates, rownames(expr))
+  missing <- setdiff(candidates, rownames(expr))
+  if (length(missing)) {
+    message("  \u2139 Marker genes not on panel: ",
+            paste(missing, collapse = ", "))
+  }
+  if (!length(keep)) return(invisible(NULL))
+
+  plots <- list()
+  for (g in keep) {
+    title_g <- paste0(sample_id, " \u2014 ", g, " expression")
+    p_g <- .spat_in_situ_outlined(
+      gobj           = gobj,
+      fill_col       = g,
+      fill_as_factor = FALSE,
+      legend_title   = g,
+      title_txt      = title_g
+    )
+    if (!is.null(p_g)) {
+      save_presentation_plot(
+        plot     = p_g,
+        filename = file.path(results_dir,
+                              paste0(sample_id, "_bcell_marker_", g, ".png")),
+        width = 14, height = 10, dpi = 300
+      )
+      plots[[g]] <- p_g
+    }
+  }
+  if (length(plots)) {
+    cat("  \u2713 Per-gene polygon plots saved (", length(plots),
+        " gene(s))\n", sep = "")
+  }
+
+  # (C) Combined multi-panel via patchwork
+  if (length(plots) >= 2 && requireNamespace("patchwork", quietly = TRUE)) {
+    dims <- tryCatch(optimal_grid_dims(length(plots)),
+                     error = function(e) {
+                       ncol <- ceiling(sqrt(length(plots)))
+                       list(ncol = ncol, nrow = ceiling(length(plots) / ncol))
+                     })
+    combo <- tryCatch(
+      patchwork::wrap_plots(plots, ncol = dims$ncol, nrow = dims$nrow),
+      error = function(e) NULL
+    )
+    if (!is.null(combo)) {
+      save_presentation_plot(
+        plot     = combo,
+        filename = file.path(results_dir,
+                              paste0(sample_id, "_bcell_markers_panel.png")),
+        width  = dims$ncol * 6,
+        height = dims$nrow * 5,
+        dpi    = 300
+      )
+      cat("  \u2713 Combined B-cell marker panel saved\n")
+    }
+  }
+  invisible(plots)
+}
+
+
 run_bcell_microenvironment_analysis <- function(gobj,
                                                 sample_id,
                                                 output_dir,
@@ -469,6 +710,8 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 spatial_network_name = "Delaunay_network",
                                                 number_of_simulations = 250,
                                                 max_network_edges = 70,
+                                                bcell_markers = character(),
+                                                subtype_markers = character(),
                                                 save_object = FALSE) {
   cat("\n========================================\n")
   cat("STEP 11: Focused Cell-Type Microenvironment\n")
@@ -624,6 +867,20 @@ run_bcell_microenvironment_analysis <- function(gobj,
     )
   })
   
+  tryCatch({
+    plot_bcell_spatial_and_markers(
+      gobj              = gobj,
+      sample_id         = sample_id,
+      results_dir       = results_dir,
+      annotation_column = annotation_column,
+      bcell_regex       = bcell_regex,
+      bcell_markers     = bcell_markers,
+      subtype_markers   = subtype_markers
+    )
+  }, error = function(e) {
+    message("B-cell spatial/marker plots skipped: ", conditionMessage(e))
+  })
+
   if (save_object) {
     save_giotto_checkpoint(
       gobj = gobj,

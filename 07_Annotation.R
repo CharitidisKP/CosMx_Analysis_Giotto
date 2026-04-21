@@ -434,7 +434,11 @@ select_best_annotation <- function(gobj,
   cat(strrep("-", 95), "\n\n")
 
   # ── Interactive or auto selection ───────────────────────────────────────
-  use_interactive <- interactive() || isatty(stdin())
+  # Both `interactive()` AND a real TTY must be present before we prompt.
+  # Previously this used `||`, which tripped `menu()` in RStudio-sourced
+  # batch runs (interactive() TRUE, no operator at stdin) and could leave
+  # the selection JSON unwritten when menu() returned empty/errored.
+  use_interactive <- interactive() && isatty(stdin())
 
   if (use_interactive && nrow(scores_df) > 1) {
     choices <- sprintf(
@@ -444,10 +448,17 @@ select_best_annotation <- function(gobj,
       scores_df$mean_confidence,
       scores_df$n_cell_types
     )
-    chosen_idx <- menu(choices,
-                       title = paste0("Select annotation for ", sample_id,
-                                      " (0 = auto-select best):"))
-    if (chosen_idx == 0L) {
+    chosen_idx <- tryCatch(
+      menu(choices,
+           title = paste0("Select annotation for ", sample_id,
+                          " (0 = auto-select best):")),
+      error = function(e) {
+        cat("  [menu() failed: ", conditionMessage(e),
+            " — auto-selecting row 1]\n", sep = "")
+        0L
+      }
+    )
+    if (!is.numeric(chosen_idx) || is.na(chosen_idx) || chosen_idx == 0L) {
       chosen_idx <- 1L
       cat("  Auto-selecting row 1 (highest composite score).\n")
     }
@@ -571,11 +582,86 @@ select_best_annotation <- function(gobj,
 }
 
 
+# Helper: Giotto-native outlined polygon renderer -------------------------
+#
+# Thin wrapper around spatInSituPlotPoints() that produces the "outlined
+# cells" look used across steps 07 and 11. Resolves the function via
+# namespace lookup (Giotto -> GiottoClass -> search path) so the helper
+# works across install variants. Returns a styled ggplot, or NULL if the
+# Giotto path cannot be used (caller should fall back).
+#
+# NOTE: a copy of this function lives in 11_B_Cell_Analysis.R.
+# Keep the two in sync.
+
+.spat_in_situ_outlined <- function(gobj,
+                                    fill_col,
+                                    fill_as_factor,
+                                    colour_map   = NULL,
+                                    gradient     = c("lightgrey", "red"),
+                                    legend_title = "Cell Type",
+                                    title_txt) {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("spatInSituPlotPoints", envir = asNamespace("Giotto"),
+             inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoVisuals", quietly = TRUE) &&
+             exists("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"),
+                    inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"))
+  } else if (exists("spatInSituPlotPoints", mode = "function")) {
+    fn <- get("spatInSituPlotPoints", mode = "function")
+  }
+  if (is.null(fn)) return(NULL)
+
+  args <- list(
+    gobject                = gobj,
+    show_polygon           = TRUE,
+    polygon_feat_type      = "cell",
+    polygon_fill           = fill_col,
+    polygon_fill_as_factor = fill_as_factor,
+    polygon_alpha          = 0.75,
+    polygon_line_color     = "grey20",
+    polygon_line_size      = 0.15,
+    show_image             = FALSE,
+    return_plot            = TRUE,
+    save_plot              = FALSE
+  )
+  if (fill_as_factor && !is.null(colour_map)) {
+    args$polygon_fill_code <- colour_map
+  } else if (!fill_as_factor) {
+    args$polygon_fill_gradient <- gradient
+  }
+
+  p <- tryCatch(do.call(fn, args), error = function(e) NULL)
+  if (is.null(p)) return(NULL)
+  if (!inherits(p, "ggplot") && !is.null(p$ggobj)) p <- p$ggobj
+  if (!inherits(p, "ggplot")) return(NULL)
+
+  p +
+    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+    ggplot2::guides(
+      fill  = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4)),
+      color = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4))
+    ) +
+    presentation_theme(base_size = 11, legend_position = "right") +
+    ggplot2::theme(
+      axis.title = ggplot2::element_blank(),
+      axis.text  = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      panel.grid = ggplot2::element_blank()
+    )
+}
+
+
 # Helper: polygon-based spatial annotation plot ---------------------------
 #
-# Primary renderer for annotation spatial plots.  Extracts cell outlines
-# from the Giotto object and colours them by cell type.  Falls back to
-# spatPlot2D() (point cloud) if polygon data are unavailable.
+# Primary renderer for annotation spatial plots. Prefers Giotto's native
+# spatInSituPlotPoints() (outlined cells); falls back to a ggplot2 polygon
+# renderer built from the extracted polygon table; final fallback is
+# spatPlot2D() as a point cloud when no polygon data is available.
 
 .plot_spatial_annotation_polygons <- function(gobj,
                                                celltype_col,
@@ -587,17 +673,37 @@ select_best_annotation <- function(gobj,
                                                width  = 20,
                                                height = 10,
                                                dpi    = 300) {
+  title_txt <- paste0(sample_id, " \u2014 ", profile_name, " (", ann_type, ")")
+  fname     <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
+
+  # 1) Primary path: Giotto spatInSituPlotPoints with outlined styling.
+  p_giotto <- .spat_in_situ_outlined(
+    gobj           = gobj,
+    fill_col       = celltype_col,
+    fill_as_factor = TRUE,
+    colour_map     = colour_map,
+    legend_title   = "Cell Type",
+    title_txt      = title_txt
+  )
+  if (!is.null(p_giotto)) {
+    save_presentation_plot(
+      plot     = p_giotto,
+      filename = file.path(out_dir, fname),
+      width    = width,
+      height   = height,
+      dpi      = dpi
+    )
+    cat("  \u2713 Spatial polygons saved:", fname, "\n")
+    return(invisible(p_giotto))
+  }
+
+  cat("  \u2139 spatInSituPlotPoints unavailable; trying ggplot polygon renderer\n")
   poly_coords <- .extract_polygon_df(gobj)
 
   if (!is.null(poly_coords)) {
     meta     <- as.data.frame(pDataDT(gobj))[, c("cell_ID", celltype_col)]
     plot_df  <- merge(poly_coords, meta, by = "cell_ID", all.x = TRUE)
     plot_df[[celltype_col]] <- factor(plot_df[[celltype_col]], levels = names(colour_map))
-
-    title_txt <- sample_plot_title(
-      sample_id,
-      paste("Spatial Annotation -", profile_name, ann_type)
-    )
 
     wrapped_levels <- pretty_plot_label(names(colour_map), width = 24)
     wrapped_cmap   <- stats::setNames(unname(colour_map), wrapped_levels)
@@ -611,7 +717,7 @@ select_best_annotation <- function(gobj,
       ggplot2::aes(x = x, y = y,
                    group = interaction(geom, part),
                    fill  = CellType_label)) +
-      ggplot2::geom_polygon(colour = NA, linewidth = 0) +
+      ggplot2::geom_polygon(colour = "grey20", linewidth = 0.15, alpha = 0.75) +
       ggplot2::scale_fill_manual(
         values   = wrapped_cmap,
         na.value = "grey85",
@@ -621,7 +727,7 @@ select_best_annotation <- function(gobj,
       ggplot2::coord_equal() +
       ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
       ggplot2::guides(fill = ggplot2::guide_legend(
-        ncol = 2, override.aes = list(size = 4))) +
+        ncol = 1, override.aes = list(size = 4))) +
       presentation_theme(base_size = 11, legend_position = "right") +
       ggplot2::theme(
         axis.title = ggplot2::element_blank(),
@@ -630,7 +736,6 @@ select_best_annotation <- function(gobj,
         panel.grid = ggplot2::element_blank()
       )
 
-    fname <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
     save_presentation_plot(
       plot     = p,
       filename = file.path(out_dir, fname),
@@ -638,11 +743,11 @@ select_best_annotation <- function(gobj,
       height   = height,
       dpi      = dpi
     )
-    cat("  \u2713 Spatial polygons saved:", fname, "\n")
+    cat("  \u2713 Spatial polygons saved (ggplot fallback):", fname, "\n")
     return(invisible(p))
   }
 
-  # ── Fallback: point cloud via spatPlot2D ──────────────────────────────
+  # ── Final fallback: point cloud via spatPlot2D ────────────────────────
   cat("  \u26A0 Polygon data not available; falling back to point plot\n")
   tryCatch(
     suppressWarnings(
@@ -780,7 +885,7 @@ plot_bcell_highlights <- function(gobj,
                    group = interaction(geom, part),
                    fill  = !!rlang::sym(celltype_col),
                    alpha = !!rlang::sym(celltype_col))) +
-      ggplot2::geom_polygon(colour = NA, linewidth = 0) +
+      ggplot2::geom_polygon(colour = "grey20", linewidth = 0.15) +
       ggplot2::scale_fill_manual(
         values = hi_colours, drop = FALSE,
         name   = "Cell Type",
@@ -789,11 +894,12 @@ plot_bcell_highlights <- function(gobj,
       ggplot2::scale_alpha_manual(values = hi_alpha, guide = "none") +
       ggplot2::coord_equal() +
       ggplot2::labs(
-        title    = sample_plot_title(sample_id, "B Cell Highlight \u2014 Spatial"),
+        title    = paste0(sample_id, " \u2014 B cells highlighted (", ann_type, ")"),
         subtitle = paste("Highlighted:", paste(bcell_types, collapse = ", ")),
         x = NULL, y = NULL
       ) +
       ggplot2::guides(fill = ggplot2::guide_legend(
+        title = "Cell Type",
         override.aes = list(size = 4, alpha = 1), ncol = 1)) +
       presentation_theme(base_size = 12, legend_position = "right") +
       ggplot2::theme(
@@ -2459,6 +2565,27 @@ annotate_cells <- function(gobj,
     cat("  \u26A0 Could not write annotation_diagnostics.json:",
         conditionMessage(e), "\n")
   })
+
+  # ── Leiden comparator spatial plot ───────────────────────────────────────
+  # One per-sample polygon plot coloured by leiden_clust so the user can
+  # compare the unsupervised clustering against the annotation outputs.
+  if ("leiden_clust" %in% names(pDataDT(gobj))) {
+    tryCatch({
+      leiden_vec <- as.character(pDataDT(gobj)[["leiden_clust"]])
+      .plot_spatial_annotation_polygons(
+        gobj         = gobj,
+        celltype_col = "leiden_clust",
+        colour_map   = .build_colour_map(leiden_vec),
+        profile_name = "leiden",
+        sample_id    = sample_id,
+        out_dir      = file.path(output_dir, "07_Annotation"),
+        ann_type     = "clusters"
+      )
+      cat("  \u2713 Spatial (leiden comparator) saved\n")
+    }, error = function(e) {
+      cat("  \u26A0 Spatial (leiden) failed:", conditionMessage(e), "\n")
+    })
+  }
 
   # ── Auto-select best annotation ──────────────────────────────────────────
   cat("Selecting best annotation based on confidence and LN composition...\n")

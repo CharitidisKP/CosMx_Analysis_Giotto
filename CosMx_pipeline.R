@@ -881,6 +881,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       focus_regex <- cfg$interaction$focus_celltype_regex %||%
         cfg$interaction$bcell_regex %||%
         "^B\\.cell$"
+      marker_genes_cfg <- cfg$parameters$visualization$marker_genes %||% list()
       runtime_env$run_bcell_microenvironment_analysis(
         gobj = gobj,
         sample_id = sample_id,
@@ -890,6 +891,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
         number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
         max_network_edges = cfg$interaction$max_network_edges %||% 70,
+        bcell_markers = as.character(marker_genes_cfg$b_cells %||% character()),
+        subtype_markers = as.character(marker_genes_cfg$b_cell_subtypes %||% character()),
         save_object = TRUE
       )
     },
