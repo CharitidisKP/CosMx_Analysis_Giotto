@@ -830,7 +830,10 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       sample_id = sample_id,
       output_dir = output_dir,
       celltype_col = cfg$interaction$annotation_column %||% NULL,
-      n_simulations = cfg$interaction$number_of_simulations %||% 250
+      n_simulations = cfg$interaction$number_of_simulations %||% 250,
+      max_delaunay_distance = as.numeric(
+        cfg$parameters$spatial_network$max_delaunay_distance %||% 50
+      )
     ),
     # FIX #2: run_cci_analysis() does NOT mutate the Giotto object.  All CCI
     # outputs (InSituCor modules, LIANA tables, NicheNet ligand activities,
@@ -878,37 +881,59 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
     # carries it forward.  focus_celltype_regex allows switching the focused
     # cell type via config without touching code.
     "11_bcell" = {
-      focus_regex <- cfg$interaction$focus_celltype_regex %||%
-        cfg$interaction$bcell_regex %||%
-        "^B\\.cell$"
       marker_genes_cfg <- cfg$parameters$visualization$marker_genes %||% list()
       bcsub <- cfg$parameters$bcell_subclustering %||% list()
-      runtime_env$run_bcell_microenvironment_analysis(
-        gobj = gobj,
-        sample_id = sample_id,
-        output_dir = output_dir,
-        annotation_column = cfg$interaction$annotation_column %||% NULL,
-        bcell_regex = focus_regex,
-        spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
-        number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
-        max_network_edges = cfg$interaction$max_network_edges %||% 70,
-        bcell_markers = as.character(marker_genes_cfg$b_cells %||% character()),
-        subtype_markers = as.character(marker_genes_cfg$b_cell_subtypes %||% character()),
-        bcell_subcluster_enabled            = isTRUE(bcsub$enabled %||% TRUE),
-        bcell_subcluster_min_cells          = as.integer(bcsub$min_cells          %||% 50L),
-        bcell_subcluster_fallback_min_cells = as.integer(bcsub$fallback_min_cells %||% 20L),
-        bcell_subcluster_n_hvgs             = as.integer(bcsub$n_hvgs             %||% 250L),
-        bcell_subcluster_n_pcs              = as.integer(bcsub$n_pcs              %||% 20L),
-        bcell_subcluster_umap_n_neighbors   = as.integer(bcsub$umap_n_neighbors   %||% 15L),
-        bcell_subcluster_umap_min_dist      = as.numeric(bcsub$umap_min_dist      %||% 0.3),
-        bcell_subcluster_k_nn               = as.integer(bcsub$k_nn               %||% 10L),
-        bcell_subcluster_resolution         = as.numeric(bcsub$resolution         %||% 0.4),
-        bcell_subcluster_resolution_sweep   = bcsub$resolution_sweep,
-        scripts_dir = cfg$paths$scripts_dir,
-        python_path = cfg$paths$python_path,
-        seed = cfg$reproducibility$seed %||% 42,
-        save_object = TRUE
-      )
+
+      # Build focus-analysis list — multi-focus mode if focus_analyses
+      # is defined, single-focus fallback otherwise.
+      focus_list <- cfg$interaction$focus_analyses
+      if (is.null(focus_list) || length(focus_list) == 0) {
+        legacy_regex <- cfg$interaction$focus_celltype_regex %||%
+                        cfg$interaction$bcell_regex %||%
+                        "^B\\.cell$"
+        focus_list <- list(list(
+          label             = "BCell",
+          regex             = legacy_regex,
+          run_subclustering = TRUE
+        ))
+      }
+
+      last_gobj <- gobj
+      for (fa in focus_list) {
+        fa_label <- as.character(fa$label %||% "Focus")
+        fa_regex <- as.character(fa$regex %||% "^B\\.cell$")
+        fa_sub   <- isTRUE(fa$run_subclustering %||% FALSE)
+        cat(sprintf("\n[step 11] focus: %s (subclustering: %s)\n",
+                    fa_label, fa_sub))
+        last_gobj <- runtime_env$run_bcell_microenvironment_analysis(
+          gobj = gobj,
+          sample_id = sample_id,
+          output_dir = output_dir,
+          annotation_column = cfg$interaction$annotation_column %||% NULL,
+          bcell_regex = fa_regex,
+          focus_label = fa_label,
+          spatial_network_name = cfg$interaction$spatial_network_name %||% "Delaunay_network",
+          number_of_simulations = cfg$interaction$number_of_simulations %||% 250,
+          max_network_edges = cfg$interaction$max_network_edges %||% 70,
+          bcell_markers = as.character(marker_genes_cfg$b_cells %||% character()),
+          subtype_markers = as.character(marker_genes_cfg$b_cell_subtypes %||% character()),
+          bcell_subcluster_enabled            = fa_sub && isTRUE(bcsub$enabled %||% TRUE),
+          bcell_subcluster_min_cells          = as.integer(bcsub$min_cells          %||% 50L),
+          bcell_subcluster_fallback_min_cells = as.integer(bcsub$fallback_min_cells %||% 20L),
+          bcell_subcluster_n_hvgs             = as.integer(bcsub$n_hvgs             %||% 250L),
+          bcell_subcluster_n_pcs              = as.integer(bcsub$n_pcs              %||% 20L),
+          bcell_subcluster_umap_n_neighbors   = as.integer(bcsub$umap_n_neighbors   %||% 15L),
+          bcell_subcluster_umap_min_dist      = as.numeric(bcsub$umap_min_dist      %||% 0.3),
+          bcell_subcluster_k_nn               = as.integer(bcsub$k_nn               %||% 10L),
+          bcell_subcluster_resolution         = as.numeric(bcsub$resolution         %||% 0.4),
+          bcell_subcluster_resolution_sweep   = bcsub$resolution_sweep,
+          scripts_dir = cfg$paths$scripts_dir,
+          python_path = cfg$paths$python_path,
+          seed = cfg$reproducibility$seed %||% 42,
+          save_object = TRUE
+        )
+      }
+      last_gobj
     },
     "12_spatial_de" = {
       spatial_de_cfg <- cfg$spatial_de %||% list()

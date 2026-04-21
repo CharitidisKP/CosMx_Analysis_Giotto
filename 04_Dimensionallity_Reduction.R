@@ -386,7 +386,33 @@ dimensionality_reduction <- function(gobj,
       output_path = file.path(results_folder, paste0(sample_id, "_tsne_by_genes.png")),
       sample_id = sample_id
     )
-    
+
+    # UMAP coloured by FOV — batch-drift / spatial-batch indicator.
+    # Hide legend when there are too many FOVs for a readable key.
+    if ("fov" %in% names(pDataDT(gobj))) {
+      umap_fov <- .prepare_dim_plot_data(gobj, "umap", "fov")
+      umap_fov$fov <- factor(umap_fov$fov)
+      n_fov <- length(levels(umap_fov$fov))
+      fov_plot <- ggplot(umap_fov, aes(x = dim1, y = dim2, color = fov)) +
+        geom_point(size = 0.35, alpha = 0.7) +
+        scale_color_viridis_d(option = "turbo") +
+        labs(
+          title = sample_plot_title(sample_id, "UMAP Embedding Colored By FOV"),
+          x = embedding_axis_label("UMAP", 1),
+          y = embedding_axis_label("UMAP", 2),
+          color = "FOV"
+        ) +
+        presentation_theme(base_size = 12) +
+        (if (n_fov > 20) theme(legend.position = "none")
+         else guides(color = guide_legend(ncol = 1, override.aes = list(size = 3))))
+      save_presentation_plot(
+        plot = fov_plot,
+        filename = file.path(results_folder,
+                             paste0(sample_id, "_umap_by_fov.png")),
+        width = 12, height = 8, dpi = 300, bg = "white"
+      )
+    }
+
     cat("✓ Plots saved\n\n")
   }, error = function(e) {
     cat("⚠ Plotting warning:", conditionMessage(e), "\n\n")

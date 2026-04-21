@@ -739,6 +739,10 @@ plot_bcell_neighbourhoods <- function(gobj,
   subtitle_common <- paste0(.pretty(highlight_label), " highlighted from ",
                             .pretty(annotation_column), " annotation")
 
+  celltype_lookup <- setNames(as.character(cells[[annotation_column]]),
+                              cells$cell_ID)
+  composition_rows <- list()
+
   for (i in seq_len(nrow(clust_summary))) {
     row <- clust_summary[i, , drop = FALSE]
     member_ids <- bcells_df$cell_ID[bcells_df$cluster_id == row$cluster_id]
@@ -791,7 +795,66 @@ plot_bcell_neighbourhoods <- function(gobj,
       )
     save_presentation_plot(p, filename = out_png,
                            width = 10, height = 10, dpi = 600)
+
+    # Track neighbourhood composition: fraction of each cell type among
+    # non-B-cell neighbours of this B-cell cluster.
+    nbr_non_bcell <- setdiff(nbr_ids, member_ids)
+    if (length(nbr_non_bcell)) {
+      ct <- celltype_lookup[nbr_non_bcell]
+      ct <- ct[!is.na(ct) & nzchar(ct)]
+      if (length(ct)) {
+        tab <- as.data.frame(table(ct))
+        names(tab) <- c("celltype", "n")
+        tab$cluster_label <- sprintf("Cluster %d (%d B)", i, row$n_bcells)
+        composition_rows[[length(composition_rows) + 1L]] <- tab
+      }
+    }
   }
+
+  # Neighbourhood-composition stacked bar — one figure over all clusters
+  if (length(composition_rows)) {
+    tryCatch({
+      comp_df <- do.call(rbind, composition_rows)
+      totals <- aggregate(n ~ cluster_label, data = comp_df, FUN = sum)
+      names(totals)[2] <- "total"
+      comp_df <- merge(comp_df, totals, by = "cluster_label")
+      comp_df$frac <- comp_df$n / comp_df$total
+      cluster_order <- totals$cluster_label[order(-totals$total)]
+      comp_df$cluster_label <- factor(comp_df$cluster_label,
+                                       levels = cluster_order)
+      p_comp <- ggplot2::ggplot(comp_df,
+          ggplot2::aes(x = cluster_label, y = frac,
+                       fill = .pretty(celltype))) +
+        ggplot2::geom_col() +
+        ggplot2::scale_y_continuous(labels = scales::percent_format()) +
+        ggplot2::labs(
+          title    = paste0(sample_id, " - neighbourhood composition"),
+          subtitle = "Non-B-cell neighbour cell-type fractions per B-cell cluster",
+          x = NULL, y = "Fraction of non-B-cell neighbours",
+          fill = "Cell type"
+        ) +
+        presentation_theme(base_size = 11) +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45,
+                                                            hjust = 1))
+      save_presentation_plot(
+        plot     = p_comp,
+        filename = file.path(results_dir,
+                             paste0(sample_id,
+                                    "_bcell_neighbourhood_composition.png")),
+        width    = max(10, 0.45 * length(cluster_order) + 4),
+        height   = 7, dpi = 300
+      )
+      readr::write_csv(
+        comp_df,
+        file.path(results_dir,
+                  paste0(sample_id, "_bcell_neighbourhood_composition.csv"))
+      )
+      cat("  \u2713 Neighbourhood composition plot + CSV saved\n")
+    }, error = function(e) {
+      cat("  \u26A0 Neighbourhood composition failed: ", conditionMessage(e), "\n")
+    })
+  }
+
   cat("  \u2713 B-cell neighbourhood plots saved (", nrow(clust_summary),
       " cluster(s))\n", sep = "")
   invisible(nrow(clust_summary))
@@ -1198,6 +1261,95 @@ run_bcell_subclustering <- function(gobj,
     message("B-cell subtype UMAP plots skipped: ", conditionMessage(e))
   })
 
+  # Subcluster x spatial-proximity crosstab: which cell types surround
+  # each B-cell subcluster?
+  tryCatch({
+    if (!requireNamespace("FNN", quietly = TRUE)) {
+      message("  FNN not available; subcluster proximity crosstab skipped")
+    } else {
+      parent_sl <- as.data.frame(.giotto_get_spatial_locations(gobj,
+                                                                output = "data.table"))
+      parent_meta <- as.data.frame(.giotto_pdata_dt(gobj))
+      parent_df <- merge(
+        parent_sl[, c("cell_ID", "sdimx", "sdimy")],
+        parent_meta[, c("cell_ID", annotation_column), drop = FALSE],
+        by = "cell_ID", sort = FALSE
+      )
+      names(parent_df)[names(parent_df) == annotation_column] <- "celltype"
+      sub_meta <- as.data.frame(.giotto_pdata_dt(gobj_bcell))
+      bcell_sub <- merge(
+        sub_meta[, c("cell_ID", "leiden_bcell_subcluster")],
+        parent_df[, c("cell_ID", "sdimx", "sdimy")],
+        by = "cell_ID", sort = FALSE
+      )
+      xy_parent <- as.matrix(parent_df[, c("sdimx", "sdimy")])
+      rownames(xy_parent) <- parent_df$cell_ID
+      xy_q <- as.matrix(bcell_sub[, c("sdimx", "sdimy")])
+      k_prox <- min(15, max(2, nrow(xy_parent) - 1))
+      nn <- FNN::get.knnx(data = xy_parent, query = xy_q, k = k_prox + 1)
+      nbr_ids <- matrix(rownames(xy_parent)[nn$nn.index],
+                        nrow = nrow(xy_q))
+      rows <- list()
+      for (i in seq_len(nrow(bcell_sub))) {
+        nbrs <- nbr_ids[i, -1]             # drop self
+        nbrs <- setdiff(nbrs, bcell_sub$cell_ID)  # exclude B cells
+        if (!length(nbrs)) next
+        ct <- parent_df$celltype[match(nbrs, parent_df$cell_ID)]
+        ct <- ct[!is.na(ct) & nzchar(ct)]
+        if (!length(ct)) next
+        tab <- as.data.frame(table(ct))
+        names(tab) <- c("celltype", "n")
+        tab$frac <- tab$n / sum(tab$n)
+        tab$subcluster <- as.character(bcell_sub$leiden_bcell_subcluster[i])
+        rows[[length(rows) + 1L]] <- tab[, c("subcluster", "celltype", "frac")]
+      }
+      if (length(rows)) {
+        all_rows <- do.call(rbind, rows)
+        # Mean fraction per subcluster × celltype across member B cells
+        agg <- aggregate(frac ~ subcluster + celltype, data = all_rows,
+                         FUN = mean)
+        agg$subcluster <- factor(agg$subcluster,
+                                  levels = sort(unique(agg$subcluster)))
+        p_ct <- ggplot2::ggplot(agg,
+            ggplot2::aes(x = subcluster, y = .pretty(celltype),
+                         fill = frac)) +
+          ggplot2::geom_tile(colour = "white") +
+          ggplot2::geom_text(
+            ggplot2::aes(label = sprintf("%.0f%%", 100 * frac)),
+            size = 2.8, colour = "grey20"
+          ) +
+          ggplot2::scale_fill_gradient(
+            low = "white", high = "#4C72B0",
+            name = "Mean fraction\n(k neighbours)"
+          ) +
+          ggplot2::labs(
+            title = paste0(sample_id, " - B-cell subcluster x proximity"),
+            subtitle = sprintf("Mean cell-type composition of k = %d nearest non-B neighbours",
+                               k_prox),
+            x = "B-cell subcluster", y = "Neighbour cell type"
+          ) +
+          presentation_theme(base_size = 11)
+        save_presentation_plot(
+          plot     = p_ct,
+          filename = file.path(subcluster_dir,
+              paste0(sample_id, "_bcell_subcluster_proximity_crosstab.png")),
+          width    = max(8, 0.5 * length(levels(agg$subcluster)) + 4),
+          height   = max(6, 0.35 * length(unique(agg$celltype)) + 3),
+          dpi      = 300
+        )
+        readr::write_csv(
+          agg,
+          file.path(subcluster_dir,
+              paste0(sample_id, "_bcell_subcluster_proximity_crosstab.csv"))
+        )
+        cat("  B-cell subcluster proximity crosstab saved\n")
+      }
+    }
+  }, error = function(e) {
+    message("B-cell subcluster proximity crosstab skipped: ",
+            conditionMessage(e))
+  })
+
   if (save_object) {
     save_giotto_checkpoint(
       gobj           = gobj_bcell,
@@ -1207,7 +1359,7 @@ run_bcell_subclustering <- function(gobj,
         stage             = "bcell_subcluster",
         annotation_column = annotation_column,
         bcell_regex       = bcell_regex,
-        n_bcells          = length(bcell_ids)
+        n_bcells          = n_bcells
       )
     )
   }
@@ -1221,6 +1373,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 output_dir,
                                                 annotation_column = NULL,
                                                 bcell_regex = "^B\\.cell$",
+                                                focus_label = "BCell",
                                                 spatial_network_name = "Delaunay_network",
                                                 number_of_simulations = 250,
                                                 max_network_edges = 70,
@@ -1242,10 +1395,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
   cat("STEP 11: Focused Cell-Type Microenvironment\n")
-  cat("Sample:", sample_id, "\n")
-  cat("Focus regex:", bcell_regex, "\n")
+  cat("Sample:      ", sample_id, "\n")
+  cat("Focus label: ", focus_label, "\n")
+  cat("Focus regex: ", bcell_regex, "\n")
   cat("========================================\n\n")
-  
+
   if (is.character(gobj)) {
     manifest_path <- file.path(gobj, "manifest.json")
     if (file.exists(manifest_path)) {
@@ -1254,8 +1408,10 @@ run_bcell_microenvironment_analysis <- function(gobj,
       gobj <- .giotto_load(gobj)
     }
   }
-  
-  results_dir <- ensure_dir(file.path(output_dir, "11_BCell_Microenvironment"))
+
+  results_dir <- ensure_dir(file.path(
+    output_dir, paste0("11_", focus_label, "_Microenvironment")
+  ))
   metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
   annotation_column <- detect_annotation_column(metadata, annotation_column)
   
@@ -1463,8 +1619,15 @@ run_bcell_microenvironment_analysis <- function(gobj,
   if (save_object) {
     save_giotto_checkpoint(
       gobj = gobj,
-      checkpoint_dir = file.path(output_dir, "Giotto_Object_BCell_Analysis"),
-      metadata = list(stage = "bcell_microenvironment", annotation_column = annotation_column)
+      checkpoint_dir = file.path(
+        output_dir, paste0("Giotto_Object_", focus_label, "_Analysis")
+      ),
+      metadata = list(
+        stage             = paste0(tolower(focus_label), "_microenvironment"),
+        focus_label       = focus_label,
+        focus_regex       = bcell_regex,
+        annotation_column = annotation_column
+      )
     )
   }
   
@@ -1472,11 +1635,14 @@ run_bcell_microenvironment_analysis <- function(gobj,
   # object, then return the (possibly modified) gobj for pipeline checkpoint
   # consistency.  Previously this returned a list, causing the pipeline to
   # lose any object modifications (e.g. spatial network creation).
-  attr(gobj, "bcell_analysis") <- list(
+  attr_name <- paste0(tolower(focus_label), "_analysis")
+  attr(gobj, attr_name) <- list(
+    focus_label       = focus_label,
+    focus_regex       = bcell_regex,
     annotation_column = annotation_column,
-    abundance_table = abundance_table,
-    enrichment_table = enrichment_table,
-    bcell_table = bcell_table
+    abundance_table   = abundance_table,
+    enrichment_table  = enrichment_table,
+    focus_table       = bcell_table
   )
   invisible(gobj)
 }

@@ -563,8 +563,111 @@ create_visualizations <- function(gobj,
     cat("⚠ HTML report generation warning\n")
   })
   
+  # Multi-panel per-sample overview (patchwork: UMAP + spatial + composition)
+  tryCatch({
+    if (!requireNamespace("patchwork", quietly = TRUE)) {
+      cat("\u26A0 patchwork not installed; skipping multi-panel overview\n")
+    } else {
+      meta_ov <- as.data.frame(pDataDT(gobj))
+      meta_cols <- names(meta_ov)
+      # Prefer selected celltype, then best supervised, then leiden_clust
+      colour_col <- NULL
+      if ("celltype" %in% meta_cols &&
+          sum(!is.na(meta_ov$celltype) & nzchar(meta_ov$celltype)) > 0) {
+        colour_col <- "celltype"
+      } else {
+        sup_cols <- grep("^celltype_.*_supervised$", meta_cols, value = TRUE)
+        if (length(sup_cols)) {
+          colour_col <- sup_cols[1]
+        } else if ("leiden_clust" %in% meta_cols) {
+          colour_col <- "leiden_clust"
+        }
+      }
+      have_umap <- tryCatch({
+        !is.null(getDimReduction(gobject = gobj, spat_unit = "cell",
+                                 feat_type = "rna", reduction = "cells",
+                                 reduction_method = "umap", name = "umap",
+                                 output = "matrix"))
+      }, error = function(e) FALSE)
+      have_spat <- all(c("sdimx", "sdimy") %in%
+                       names(getSpatialLocations(gobj, output = "data.table")))
+
+      if (!is.null(colour_col) && have_umap && have_spat) {
+        umap_mat <- getDimReduction(gobject = gobj, spat_unit = "cell",
+                                    feat_type = "rna", reduction = "cells",
+                                    reduction_method = "umap", name = "umap",
+                                    output = "matrix")
+        spat_dt <- as.data.frame(getSpatialLocations(gobj, output = "data.table"))
+        ids <- rownames(umap_mat)
+        if (is.null(ids) || !length(ids)) ids <- meta_ov$cell_ID[seq_len(nrow(umap_mat))]
+        ov <- data.frame(
+          cell_ID = ids,
+          umap1 = umap_mat[, 1], umap2 = umap_mat[, 2],
+          stringsAsFactors = FALSE
+        )
+        ov <- merge(ov, spat_dt[, c("cell_ID", "sdimx", "sdimy")], by = "cell_ID")
+        ov <- merge(ov, meta_ov[, c("cell_ID", colour_col)], by = "cell_ID")
+        ov[[colour_col]] <- factor(ov[[colour_col]])
+
+        p_umap <- ggplot2::ggplot(ov,
+            ggplot2::aes(x = umap1, y = umap2,
+                         colour = .data[[colour_col]])) +
+          ggplot2::geom_point(size = 0.35, alpha = 0.8) +
+          ggplot2::labs(title = "UMAP", x = "UMAP 1", y = "UMAP 2") +
+          presentation_theme(base_size = 10) +
+          ggplot2::guides(colour = ggplot2::guide_legend(
+            ncol = 1, override.aes = list(size = 2.5), title = NULL
+          ))
+
+        p_spat <- ggplot2::ggplot(ov,
+            ggplot2::aes(x = sdimx, y = sdimy,
+                         colour = .data[[colour_col]])) +
+          ggplot2::geom_point(size = 0.25, alpha = 0.85) +
+          ggplot2::coord_fixed() +
+          ggplot2::labs(title = "Spatial", x = NULL, y = NULL) +
+          presentation_theme(base_size = 10) +
+          ggplot2::theme(legend.position = "none",
+                         axis.text = ggplot2::element_blank(),
+                         axis.ticks = ggplot2::element_blank(),
+                         panel.grid = ggplot2::element_blank())
+
+        comp_tbl <- as.data.frame(table(ov[[colour_col]]))
+        names(comp_tbl) <- c("label", "n")
+        comp_tbl <- comp_tbl[order(-comp_tbl$n), ]
+        comp_tbl$label <- factor(comp_tbl$label, levels = comp_tbl$label)
+        p_comp <- ggplot2::ggplot(comp_tbl,
+            ggplot2::aes(x = label, y = n, fill = label)) +
+          ggplot2::geom_col() +
+          ggplot2::labs(title = "Composition", x = NULL, y = "Cells") +
+          presentation_theme(base_size = 10) +
+          ggplot2::theme(
+            axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+            legend.position = "none"
+          )
+
+        overview <- patchwork::wrap_plots(
+          p_umap, p_spat, p_comp,
+          design = "AAB\nAAB\nCCC", heights = c(1, 1, 0.8)
+        ) +
+          patchwork::plot_annotation(
+            title = sample_plot_title(sample_id, "Sample overview"),
+            subtitle = paste0("Coloured by: ", colour_col)
+          )
+        save_presentation_plot(
+          plot     = overview,
+          filename = file.path(results_folder,
+                               paste0(sample_id, "_overview_multipanel.png")),
+          width    = 16, height = 12, dpi = 300
+        )
+        cat("  \u2713 Multi-panel overview saved\n")
+      }
+    }
+  }, error = function(e) {
+    cat("\u26A0 Multi-panel overview failed:", conditionMessage(e), "\n")
+  })
+
   cat("\n✓ All visualizations complete for", sample_id, "\n\n")
-  
+
   return(gobj)
 }
 

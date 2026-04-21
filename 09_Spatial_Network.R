@@ -283,16 +283,17 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
 build_spatial_network <- function(gobj,
                                   sample_id,
                                   output_dir,
-                                  celltype_col      = NULL,
-                                  marker_list       = NULL,
-                                  network_methods   = c("Delaunay", "kNN"),
-                                  knn_k             = 6,
-                                  n_simulations     = 1000,
-                                  enrich_methods    = c("PAGE", "rank"),
-                                  expression_values = "normalized",
-                                  create_plots      = TRUE,
-                                  random_seed       = 42,
-                                  min_page_genes    = 5) {
+                                  celltype_col           = NULL,
+                                  marker_list            = NULL,
+                                  network_methods        = c("Delaunay", "kNN"),
+                                  knn_k                  = 6,
+                                  n_simulations          = 1000,
+                                  enrich_methods         = c("PAGE", "rank"),
+                                  expression_values      = "normalized",
+                                  create_plots           = TRUE,
+                                  random_seed            = 42,
+                                  min_page_genes         = 5,
+                                  max_delaunay_distance  = 50) {
   
   set.seed(random_seed)
   
@@ -402,21 +403,53 @@ build_spatial_network <- function(gobj,
   network_names <- character(0)
   
   if ("Delaunay" %in% network_methods) {
-    cat("Building Delaunay spatial network...\n")
+    cat(sprintf("Building Delaunay spatial network (max edge length: %g um)...\n",
+                max_delaunay_distance))
     tryCatch({
-      gobj <- createSpatialNetwork(gobject = gobj, method = "Delaunay",
-                                   minimum_k = 2, name = "Delaunay_network")
+      # Try passing maximum_distance_delaunay (supported in Giotto >= 4.0);
+      # if the argument is rejected fall back to an uncapped build and
+      # filter edges post-hoc.
+      built <- tryCatch({
+        createSpatialNetwork(gobject                   = gobj,
+                             method                    = "Delaunay",
+                             minimum_k                 = 2,
+                             maximum_distance_delaunay = max_delaunay_distance,
+                             name                      = "Delaunay_network")
+      }, error = function(e) {
+        cat("  note: maximum_distance_delaunay not supported by this Giotto version; falling back to post-hoc edge filtering\n")
+        NULL
+      })
+      if (is.null(built)) {
+        gobj <- createSpatialNetwork(gobject = gobj, method = "Delaunay",
+                                     minimum_k = 2, name = "Delaunay_network")
+      } else {
+        gobj <- built
+      }
       network_names <- c(network_names, "Delaunay_network")
-      cat("\u2713 Delaunay network created\n")
       del_net <- getSpatialNetwork(gobj, name = "Delaunay_network",
                                    output = "networkDT")
-      cat(sprintf("  Edges: %d  |  Unique nodes: %d\n",
+      if ("distance" %in% names(del_net)) {
+        edge_len <- as.numeric(del_net$distance)
+      } else {
+        edge_len <- sqrt((del_net$sdimx_end - del_net$sdimx_begin)^2 +
+                         (del_net$sdimy_end - del_net$sdimy_begin)^2)
+      }
+      n_before <- nrow(del_net)
+      over_cap <- edge_len > max_delaunay_distance
+      if (any(over_cap, na.rm = TRUE)) {
+        cat(sprintf("  Pruning %d/%d edges exceeding %g um cap (post-hoc)\n",
+                    sum(over_cap, na.rm = TRUE), n_before, max_delaunay_distance))
+        del_net <- del_net[!over_cap, , drop = FALSE]
+      }
+      cat(sprintf("  Edges kept: %d  |  Unique nodes: %d  |  max length: %.1f um\n",
                   nrow(del_net),
-                  length(unique(c(del_net$from, del_net$to)))))
+                  length(unique(c(del_net$from, del_net$to))),
+                  if (nrow(del_net)) max(edge_len[!over_cap], na.rm = TRUE) else 0))
       write.csv(del_net,
                 file.path(net_folder, paste0(sample_id, "_delaunay_network.csv")),
                 row.names = FALSE)
       cat("  \u2713 Saved: Delaunay network edges\n\n")
+      cat("\u2713 Delaunay network created\n")
     }, error = function(e) cat("\u26A0 Delaunay failed:", conditionMessage(e), "\n\n"))
   }
   
@@ -446,11 +479,144 @@ build_spatial_network <- function(gobj,
   } else { network_names[1] }
   
   cat("Primary network for downstream steps:", primary_network, "\n\n")
-  
-  
-  # ============================================================================ 
-  # SECTION 2 — NEIGHBOURHOOD ENRICHMENT (cellProximityEnrichment) 
-  # ============================================================================ 
+
+
+  # ============================================================================
+  # SECTION 1b — NETWORK DIAGNOSTICS (edge-length + degree distributions)
+  # ============================================================================
+
+  tryCatch({
+    diag_net <- getSpatialNetwork(gobj, name = primary_network,
+                                  output = "networkDT")
+    if (is.null(diag_net) || nrow(diag_net) == 0) {
+      cat("\u26A0 No edges in ", primary_network, "; skipping diagnostics\n\n")
+    } else {
+      # Edge length
+      if ("distance" %in% names(diag_net)) {
+        elen <- as.numeric(diag_net$distance)
+      } else {
+        elen <- sqrt((diag_net$sdimx_end - diag_net$sdimx_begin)^2 +
+                     (diag_net$sdimy_end - diag_net$sdimy_begin)^2)
+      }
+      elen_df <- data.frame(distance = elen)
+
+      # Overall edge-length histogram
+      p_elen <- ggplot2::ggplot(elen_df, ggplot2::aes(x = distance)) +
+        ggplot2::geom_histogram(bins = 60, fill = "#4C72B0",
+                                colour = "white", linewidth = 0.2) +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id,
+                        paste0("Edge-length distribution - ", primary_network)),
+          subtitle = sprintf("n = %d edges; median = %.1f; max = %.1f",
+                             nrow(elen_df), stats::median(elen),
+                             max(elen, na.rm = TRUE)),
+          x = "Edge length (um)", y = "Edges"
+        ) +
+        presentation_theme(base_size = 12)
+      save_presentation_plot(
+        plot     = p_elen,
+        filename = file.path(net_folder,
+                             paste0(sample_id, "_edge_length_hist.png")),
+        width    = 9, height = 6, dpi = 300
+      )
+
+      # Per-FOV edge-length histograms (subfolder)
+      meta_fov <- as.data.frame(pDataDT(gobj))
+      if ("fov" %in% names(meta_fov)) {
+        fov_lookup <- setNames(meta_fov$fov, meta_fov$cell_ID)
+        diag_net$fov_from <- fov_lookup[diag_net$from]
+        diag_net$fov_to   <- fov_lookup[diag_net$to]
+        diag_net$fov_same <- diag_net$fov_from == diag_net$fov_to
+        within_fov <- diag_net[!is.na(diag_net$fov_same) & diag_net$fov_same, ,
+                               drop = FALSE]
+        if ("distance" %in% names(within_fov)) {
+          within_fov$.elen <- as.numeric(within_fov$distance)
+        } else {
+          within_fov$.elen <- sqrt(
+            (within_fov$sdimx_end - within_fov$sdimx_begin)^2 +
+            (within_fov$sdimy_end - within_fov$sdimy_begin)^2
+          )
+        }
+        fov_dir <- file.path(net_folder, "edge_length_per_fov")
+        dir.create(fov_dir, recursive = TRUE, showWarnings = FALSE)
+        fovs <- sort(unique(within_fov$fov_from))
+        n_written <- 0L
+        for (fv in fovs) {
+          sub_df <- within_fov[within_fov$fov_from == fv, , drop = FALSE]
+          if (nrow(sub_df) < 20) next
+          p_fv <- ggplot2::ggplot(sub_df,
+              ggplot2::aes(x = .elen)) +
+            ggplot2::geom_histogram(bins = 50, fill = "#4C72B0",
+                                    colour = "white", linewidth = 0.2) +
+            ggplot2::labs(
+              title    = sample_plot_title(sample_id,
+                           paste0("Edge-length - FOV ", fv)),
+              subtitle = sprintf("n = %d within-FOV edges; median = %.1f",
+                                 nrow(sub_df), stats::median(sub_df$.elen)),
+              x = "Edge length (um)", y = "Edges"
+            ) +
+            presentation_theme(base_size = 11)
+          save_presentation_plot(
+            plot     = p_fv,
+            filename = file.path(fov_dir,
+              paste0(sample_id, "_edge_length_fov_", fv, ".png")),
+            width    = 7, height = 5, dpi = 200
+          )
+          n_written <- n_written + 1L
+        }
+        cat(sprintf("  \u2713 Per-FOV edge-length histograms: %d saved under %s/\n",
+                    n_written, basename(fov_dir)))
+      }
+
+      # Degree distribution per cell type
+      if (celltype_col %in% names(meta_fov)) {
+        deg_tbl <- c(
+          table(as.character(diag_net$from)),
+          table(as.character(diag_net$to))
+        )
+        deg_df <- data.frame(
+          cell_ID = names(deg_tbl),
+          degree  = as.integer(deg_tbl),
+          stringsAsFactors = FALSE
+        )
+        deg_df <- aggregate(degree ~ cell_ID, data = deg_df, FUN = sum)
+        deg_df <- merge(deg_df,
+                        meta_fov[, c("cell_ID", celltype_col)],
+                        by = "cell_ID")
+        names(deg_df)[3] <- "celltype"
+        deg_df$celltype <- factor(deg_df$celltype)
+        p_deg <- ggplot2::ggplot(deg_df,
+            ggplot2::aes(x = celltype, y = degree, fill = celltype)) +
+          ggplot2::geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4) +
+          ggplot2::labs(
+            title = sample_plot_title(sample_id,
+                      paste0("Node degree by cell type - ", primary_network)),
+            x = NULL, y = "Degree (edges per cell)"
+          ) +
+          presentation_theme(base_size = 11) +
+          ggplot2::theme(
+            axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+            legend.position = "none"
+          )
+        save_presentation_plot(
+          plot     = p_deg,
+          filename = file.path(net_folder,
+                               paste0(sample_id, "_degree_by_celltype.png")),
+          width    = max(10, 0.4 * length(levels(deg_df$celltype)) + 4),
+          height   = 7, dpi = 300
+        )
+        cat("  \u2713 Degree-by-celltype plot saved\n")
+      }
+      cat("\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 Network diagnostics failed:", conditionMessage(e), "\n\n")
+  })
+
+
+  # ============================================================================
+  # SECTION 2 — NEIGHBOURHOOD ENRICHMENT (cellProximityEnrichment)
+  # ============================================================================
   
   cat("================================================================================\n")
   cat("SECTION 2: Cell Type Neighbourhood Enrichment\n")

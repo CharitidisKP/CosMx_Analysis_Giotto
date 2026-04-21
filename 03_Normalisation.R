@@ -156,25 +156,35 @@ normalize_expression <- function(gobj,
   results_folder <- file.path(output_dir, "03_Normalization")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
 
-  # Dynamic scalefactor: if NULL / 0 / negative, use the per-sample median
-  # library size. Fixed 6000 does not fit mixed panel sizes (1K vs 6K).
+  # Always compute median library size so we can (a) use it as a dynamic
+  # default when no value is provided and (b) sanity-check any explicit
+  # value from config — a fixed 6000 does not fit mixed panel sizes
+  # (1K vs 6K) and silently mis-scales normalized expression.
+  raw_mat <- getExpression(gobj, values = "raw", output = "matrix")
+  lib_sizes <- Matrix::colSums(raw_mat)
+  median_lib <- as.numeric(stats::median(lib_sizes, na.rm = TRUE))
+  if (!is.finite(median_lib) || median_lib <= 0) median_lib <- 6000
+
   scalefactor_source <- "config"
   if (is.null(scalefactor) || !is.numeric(scalefactor) || scalefactor <= 0) {
-    raw_mat <- getExpression(gobj, values = "raw", output = "matrix")
-    lib_sizes <- Matrix::colSums(raw_mat)
-    dyn_sf <- as.numeric(stats::median(lib_sizes, na.rm = TRUE))
-    if (!is.finite(dyn_sf) || dyn_sf <= 0) dyn_sf <- 6000
-    scalefactor <- round(dyn_sf)
+    scalefactor <- round(median_lib)
     scalefactor_source <- "dynamic_median_lib_size"
     cat(sprintf(
       "Using dynamic scalefactor = %d (median library size across %d cells)\n",
       scalefactor, length(lib_sizes)
     ))
+  } else if (scalefactor > 3 * median_lib || scalefactor < median_lib / 3) {
+    cat(sprintf(
+      "\u26A0 Scalefactor warning: config value %d diverges > 3x from the sample's median library size (%d). Normalized expression will be mis-scaled for this panel size. Consider setting scalefactor: null in config to use the dynamic fallback.\n",
+      scalefactor, round(median_lib)
+    ))
+    scalefactor_source <- "config_mismatched_to_panel"
   }
 
   cat("Normalizing expression data...\n")
-  cat("  Scale factor:", scalefactor, " (", scalefactor_source, ")\n", sep = "")
-  cat("  Log transform:", log_transform, "\n\n")
+  cat("  Scale factor:     ", scalefactor, " (", scalefactor_source, ")\n", sep = "")
+  cat("  Median lib size:  ", round(median_lib), "\n", sep = "")
+  cat("  Log transform:    ", log_transform, "\n\n")
   
   # Normalize
   gobj <- .run_known_giotto_warning_safe(

@@ -636,7 +636,7 @@ guess_significance_column <- function(result_df) {
   if (is.null(result_df) || nrow(result_df) == 0) {
     return(NULL)
   }
-  
+
   candidates <- c(
     grep("^fdr$|adj.*p|padj|qval", names(result_df), value = TRUE, ignore.case = TRUE),
     grep("^p.value$|^p_val$|^pval$|p.value|p_val|pval", names(result_df), value = TRUE, ignore.case = TRUE)
@@ -646,6 +646,106 @@ guess_significance_column <- function(result_df) {
     return(NULL)
   }
   candidates[1]
+}
+
+# Guess the fold-change column. Returns NULL if none found.
+.guess_fc_column <- function(result_df) {
+  if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
+  candidates <- grep(
+    "^log2fc$|^logfc$|^log2foldchange$|foldchange|estimate|^beta$|logFC",
+    names(result_df), value = TRUE, ignore.case = TRUE
+  )
+  candidates <- unique(candidates[candidates %in% names(result_df)])
+  if (length(candidates) == 0) NULL else candidates[1]
+}
+
+# Guess the mean-expression column for MA plots.
+.guess_mean_column <- function(result_df) {
+  if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
+  candidates <- grep(
+    "basemean|avgexpr|aveexpr|mean_expr|expression_mean|^mean$|avg_log|avg_expression",
+    names(result_df), value = TRUE, ignore.case = TRUE
+  )
+  candidates <- unique(candidates[candidates %in% names(result_df)])
+  if (length(candidates) == 0) NULL else candidates[1]
+}
+
+# Emit MA plot + FDR histogram alongside a DE result table. Graceful
+# no-op if expected columns are missing. Multiple calls per run share
+# a `diagnostics/` subdirectory so per-contrast output is grouped.
+.save_de_diagnostic_plots <- function(result_df, output_dir, file_stub) {
+  tryCatch({
+    if (is.null(result_df) || nrow(result_df) == 0) return(invisible(NULL))
+    sig_col  <- guess_significance_column(result_df)
+    fc_col   <- .guess_fc_column(result_df)
+    mean_col <- .guess_mean_column(result_df)
+    if (is.null(sig_col)) return(invisible(NULL))
+
+    diag_dir <- file.path(output_dir, "diagnostics")
+    dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
+
+    # FDR / p-value histogram
+    sig_vals <- as.numeric(result_df[[sig_col]])
+    sig_df <- data.frame(value = sig_vals[!is.na(sig_vals)])
+    if (nrow(sig_df) > 0) {
+      p_fdr <- ggplot2::ggplot(sig_df, ggplot2::aes(x = value)) +
+        ggplot2::geom_histogram(bins = 40, fill = "#4C72B0",
+                                colour = "white", linewidth = 0.2) +
+        ggplot2::geom_vline(xintercept = 0.05, linetype = "dashed",
+                            colour = "#C44E52") +
+        ggplot2::labs(
+          title    = paste0(file_stub, " - ", sig_col, " distribution"),
+          subtitle = sprintf("n = %d genes; %d with %s < 0.05",
+                             nrow(sig_df),
+                             sum(sig_df$value < 0.05, na.rm = TRUE),
+                             sig_col),
+          x = sig_col, y = "Genes"
+        ) +
+        presentation_theme(base_size = 11)
+      save_presentation_plot(
+        plot     = p_fdr,
+        filename = file.path(diag_dir, paste0(file_stub, "_fdr_hist.png")),
+        width    = 8, height = 5, dpi = 300
+      )
+    }
+
+    # MA plot — requires both fold-change and mean-expression columns
+    if (!is.null(fc_col) && !is.null(mean_col)) {
+      ma_df <- data.frame(
+        mean = as.numeric(result_df[[mean_col]]),
+        fc   = as.numeric(result_df[[fc_col]]),
+        sig  = sig_vals < 0.05
+      )
+      ma_df <- ma_df[is.finite(ma_df$mean) & is.finite(ma_df$fc), , drop = FALSE]
+      if (nrow(ma_df) > 5) {
+        p_ma <- ggplot2::ggplot(ma_df,
+            ggplot2::aes(x = mean, y = fc,
+                         colour = sig)) +
+          ggplot2::geom_point(size = 0.8, alpha = 0.7) +
+          ggplot2::geom_hline(yintercept = 0, colour = "grey40",
+                              linetype = "dashed") +
+          ggplot2::scale_colour_manual(
+            values = c(`TRUE` = "#C44E52", `FALSE` = "grey70"),
+            name = paste0(sig_col, " < 0.05"),
+            na.value = "grey70"
+          ) +
+          ggplot2::labs(
+            title = paste0(file_stub, " - MA plot"),
+            x = paste0("Mean expression (", mean_col, ")"),
+            y = paste0("Fold change (", fc_col, ")")
+          ) +
+          presentation_theme(base_size = 11)
+        save_presentation_plot(
+          plot     = p_ma,
+          filename = file.path(diag_dir, paste0(file_stub, "_ma_plot.png")),
+          width    = 8, height = 6, dpi = 300
+        )
+      }
+    }
+  }, error = function(e) {
+    message("  DE diagnostic plots skipped: ", conditionMessage(e))
+  })
+  invisible(NULL)
 }
 
 # =============================================================================
@@ -1127,7 +1227,10 @@ run_smide_sample_backend <- function(expr_mat,
         file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
         row.names = FALSE
       )
-      
+      .save_de_diagnostic_plots(result_df,
+                                dirname(tables_dir),
+                                paste0(file_stub, "_spatial_de"))
+
       sig_col <- guess_significance_column(result_df)
       n_sig <- if (!is.null(sig_col)) sum(result_df[[sig_col]] < 0.05, na.rm = TRUE) else NA_integer_
       
@@ -1468,6 +1571,9 @@ run_smide_merged_backend <- function(expr_mat,
       utils::write.csv(result_df,
                        file.path(tables_dir, paste0(file_stub_base, "_results.csv")),
                        row.names = FALSE)
+      .save_de_diagnostic_plots(result_df,
+                                dirname(tables_dir),
+                                paste0(file_stub_base, "_results"))
       all_results[[idx]] <- result_df
     }
 

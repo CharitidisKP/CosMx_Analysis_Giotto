@@ -70,16 +70,25 @@ interaction:
   # Set annotation column explicitly instead of relying on fragile
   # auto-detection. Must match the column produced by step 07_Annotation.
   annotation_column: "celltype_HCA_Kidney_supervised"
-  # Generalised cell-type focus regex. Change this to target
-  # different populations for the focused analysis in step 11.
-  # Examples:
-  #   B cells:    '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
-  #   T cells:    '^(CD4\.T\.cell|CD8\.T\.cell|Treg|NK\.cell)$'
-  #   Myeloid:    '^(Macrophage|Monocyte|Dendritic\.cell|cDC|pDC)$'
+  # Generalised cell-type focus regex (legacy single-focus path — used
+  # only when focus_analyses below is empty / missing).
   focus_celltype_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
-  # Kept for backwards compatibility — if focus_celltype_regex is null,
-  # the pipeline falls back to bcell_regex.
+  # Narrower regex used by the B-cell subclustering block (step 11
+  # subcluster/). Always B-cell-only.
   bcell_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+  # Multi-focus mode: step 11 iterates over this list, writing each
+  # focus to its own results folder (11_{label}_Microenvironment/).
+  # Set run_subclustering: true only on the B-cell pass — that's the
+  # only pass that uses b_cells / b_cell_subtypes marker lists.
+  # Leave empty or remove the block to fall back to single-focus
+  # behaviour via focus_celltype_regex above.
+  focus_analyses:
+    - label: "BCell"
+      regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+      run_subclustering: true
+    - label: "TCell"
+      regex: '^(CD4\.T\.cell|CD8\.T\.cell|Treg|T\.cell)$'
+      run_subclustering: false
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
   # Cap on edges drawn in the focused cell-type proximity network (step 11).
@@ -207,6 +216,17 @@ parameters:
     resolution: 0.4          # vs 0.8 - target 3-6 subtypes
     resolution_sweep: [0.2, 0.4, 0.6, 0.8]
 
+  # -----------------------------------------------------------
+  # Spatial network construction (step 09)
+  # max_delaunay_distance caps Delaunay edge length in the same
+  # units as cell coordinates (um on CosMx). Prevents cross-tissue
+  # edges spanning sparse regions or FOV boundaries. 50 um is
+  # conservative (roughly 2-3 cell diameters); raise for sparser
+  # tissue, lower for denser.
+  # -----------------------------------------------------------
+  spatial_network:
+    max_delaunay_distance: 50
+
   markers:
     cluster_column: "leiden_clust"
     top_n: 25
@@ -263,5 +283,11 @@ parameters:
       tls_markers: ["CXCL13", "CCL19", "CCL21", "CR2", "FDCSP"]
       complement_fc: ["C1QA", "C1QB", "C3", "C4A", "FCGR1A", "FCGR2A", "FCGR3A"]
       lupus_relevant: ["BAFF", "TNFSF13", "TNFRSF13B", "TNFRSF13C", "ISG15", "IFI44", "MX1"]
+      # CART-panel additions — genes missing from the active panel are
+      # silently skipped by step 08's intersect(...) logic.
+      t_cell_activation: ["CD69", "CD25", "IFNG", "GZMB", "PRF1", "TNF"]
+      t_cell_exhaustion: ["PDCD1", "LAG3", "HAVCR2", "TIGIT", "TOX", "CTLA4"]
+      proliferation:     ["MKI67", "TOP2A"]
+      tumour_markers:    []   # populate after inspecting the CART panel gene list
     max_cells_preview: 50000
     preview_seed: 1

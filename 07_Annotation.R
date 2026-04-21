@@ -2658,6 +2658,124 @@ annotate_cells <- function(gobj,
     }
   }
 
+  # ── Diagnostics: cross-profile agreement + per-cluster purity ────────────
+  tryCatch({
+    diag_dir <- file.path(output_dir, "07_Annotation", "diagnostics")
+    dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
+    meta_diag <- as.data.frame(pDataDT(gobj))
+    ann_cols <- grep("^celltype_.*_supervised$", names(meta_diag), value = TRUE)
+
+    if (length(ann_cols) >= 2) {
+      for (i in seq_len(length(ann_cols) - 1)) {
+        for (j in seq((i + 1), length(ann_cols))) {
+          a <- ann_cols[i]; b <- ann_cols[j]
+          tab <- table(
+            as.character(meta_diag[[a]]),
+            as.character(meta_diag[[b]]),
+            useNA = "no"
+          )
+          if (nrow(tab) < 2 || ncol(tab) < 2) next
+          prop <- sweep(tab, 1, rowSums(tab), "/")
+          cm_df <- reshape2::melt(prop, varnames = c("rowlab", "collab"),
+                                  value.name = "frac")
+          cm_df$count <- as.vector(tab[cbind(
+            match(cm_df$rowlab, rownames(tab)),
+            match(cm_df$collab, colnames(tab))
+          )])
+          label_a <- sub("^celltype_", "", sub("_supervised$", "", a))
+          label_b <- sub("^celltype_", "", sub("_supervised$", "", b))
+          p_cm <- ggplot2::ggplot(cm_df,
+              ggplot2::aes(x = collab, y = rowlab, fill = frac)) +
+            ggplot2::geom_tile() +
+            ggplot2::geom_text(
+              ggplot2::aes(label = ifelse(count > 0, count, "")),
+              size = 2.5, colour = "black"
+            ) +
+            ggplot2::scale_fill_gradient(low = "white", high = "#4C72B0",
+                                         name = "Row %", limits = c(0, 1)) +
+            ggplot2::labs(
+              title = sample_plot_title(sample_id,
+                paste0("Profile agreement: ", label_a, " vs ", label_b)),
+              x = label_b, y = label_a
+            ) +
+            presentation_theme(base_size = 10) +
+            ggplot2::theme(
+              axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
+            )
+          save_presentation_plot(
+            plot     = p_cm,
+            filename = file.path(diag_dir,
+              paste0(sample_id, "_confusion_", label_a, "_vs_", label_b, ".png")),
+            width    = max(10, 0.35 * ncol(tab) + 3),
+            height   = max(8, 0.35 * nrow(tab) + 3),
+            dpi      = 300
+          )
+        }
+      }
+      cat("  \u2713 Cross-profile confusion matrices saved to diagnostics/\n")
+    } else if (length(ann_cols) == 1) {
+      cat("  note: only one annotation profile present; skipping cross-profile matrix\n")
+    }
+
+    # Per-cluster annotation purity (against the selected best annotation)
+    if (!is.null(annotation_selection) &&
+        annotation_selection$selected_col %in% names(meta_diag) &&
+        "leiden_clust" %in% names(meta_diag)) {
+      best <- annotation_selection$selected_col
+      purity_df <- as.data.frame(
+        table(
+          cluster  = as.character(meta_diag$leiden_clust),
+          celltype = as.character(meta_diag[[best]]),
+          useNA    = "no"
+        )
+      )
+      totals <- aggregate(Freq ~ cluster, data = purity_df, FUN = sum)
+      names(totals)[2] <- "total"
+      purity_df <- merge(purity_df, totals, by = "cluster")
+      purity_df$frac <- purity_df$Freq / purity_df$total
+      best_per_cluster <- do.call(rbind, lapply(
+        split(purity_df, purity_df$cluster),
+        function(d) d[which.max(d$frac), , drop = FALSE]
+      ))
+      best_per_cluster <- best_per_cluster[order(-best_per_cluster$frac), ]
+      best_per_cluster$cluster <- factor(best_per_cluster$cluster,
+                                          levels = best_per_cluster$cluster)
+      p_pur <- ggplot2::ggplot(
+          best_per_cluster,
+          ggplot2::aes(x = cluster, y = frac, fill = celltype)
+        ) +
+        ggplot2::geom_col() +
+        ggplot2::geom_text(
+          ggplot2::aes(label = sprintf("%.0f%%", 100 * frac)),
+          vjust = -0.3, size = 2.8
+        ) +
+        ggplot2::scale_y_continuous(limits = c(0, 1.05),
+                                    labels = scales::percent_format()) +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id, "Per-cluster annotation purity"),
+          subtitle = paste0("Dominant label fraction (", best, ")"),
+          x = "Leiden cluster", y = "Dominant-label fraction",
+          fill = "Dominant label"
+        ) +
+        presentation_theme(base_size = 11) +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+      save_presentation_plot(
+        plot     = p_pur,
+        filename = file.path(diag_dir,
+                             paste0(sample_id, "_cluster_purity.png")),
+        width    = max(10, 0.4 * nrow(best_per_cluster) + 4),
+        height   = 7, dpi = 300
+      )
+      readr::write_csv(
+        purity_df,
+        file.path(diag_dir, paste0(sample_id, "_cluster_purity_breakdown.csv"))
+      )
+      cat("  \u2713 Per-cluster purity plot + breakdown CSV saved\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 Annotation diagnostics failed:", conditionMessage(e), "\n")
+  })
+
   # Save annotated Giotto object ------------------------------------------
   if (save_object) {
     cat("Saving annotated Giotto object to:",

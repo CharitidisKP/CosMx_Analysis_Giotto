@@ -237,10 +237,56 @@ perform_clustering <- function(gobj,
       )
       cat("  ✓ Saved", sweep_name, "(", tail(sweep_summary, 1)[[1]]$n_clusters, "clusters)\n")
     }
+    sweep_df <- dplyr::bind_rows(sweep_summary)
+    # Include the primary run for visual context
+    sweep_df <- dplyr::bind_rows(
+      sweep_df,
+      data.frame(
+        cluster_column = "leiden_clust",
+        resolution     = resolution,
+        n_clusters     = n_clusters,
+        stringsAsFactors = FALSE
+      )
+    )
+    sweep_df <- sweep_df[order(sweep_df$resolution), ]
     readr::write_csv(
-      dplyr::bind_rows(sweep_summary),
+      sweep_df,
       file.path(results_folder, paste0(sample_id, "_resolution_sweep_summary.csv"))
     )
+    tryCatch({
+      sweep_df$is_primary <- sweep_df$resolution == resolution
+      p_sweep <- ggplot2::ggplot(
+          sweep_df,
+          ggplot2::aes(x = resolution, y = n_clusters)
+        ) +
+        ggplot2::geom_line(colour = "grey40", linewidth = 0.5) +
+        ggplot2::geom_point(
+          ggplot2::aes(colour = is_primary, size = is_primary)
+        ) +
+        ggplot2::scale_colour_manual(
+          values = c(`TRUE` = "#E41A1C", `FALSE` = "grey20"),
+          guide = "none"
+        ) +
+        ggplot2::scale_size_manual(
+          values = c(`TRUE` = 3.5, `FALSE` = 2.2),
+          guide = "none"
+        ) +
+        ggplot2::scale_x_continuous(breaks = sweep_df$resolution) +
+        ggplot2::labs(
+          title    = sample_plot_title(sample_id, "Leiden resolution sweep"),
+          subtitle = "Red point = primary resolution",
+          x = "Resolution", y = "Number of clusters"
+        ) +
+        presentation_theme(base_size = 12)
+      save_presentation_plot(
+        plot     = p_sweep,
+        filename = file.path(results_folder,
+                             paste0(sample_id, "_resolution_sweep.png")),
+        width    = 8, height = 6, dpi = 300
+      )
+    }, error = function(e) {
+      cat("\u26A0 Resolution-sweep plot failed:", conditionMessage(e), "\n")
+    })
     cat("\n")
   }
   
@@ -338,7 +384,106 @@ perform_clustering <- function(gobj,
     cluster_stats,
     file.path(results_folder, paste0(sample_id, "_cluster_stats.csv"))
   )
-  
+
+  # Cluster-size bar chart
+  tryCatch({
+    p_size <- ggplot2::ggplot(
+        cluster_stats,
+        ggplot2::aes(x = reorder(factor(leiden_clust), -n_cells), y = n_cells)
+      ) +
+      ggplot2::geom_col(fill = "#4C72B0") +
+      ggplot2::geom_text(
+        ggplot2::aes(label = n_cells),
+        vjust = -0.3, size = 3
+      ) +
+      ggplot2::labs(
+        title = sample_plot_title(sample_id, "Cells per Leiden cluster"),
+        x = "Cluster (ordered by size)", y = "Number of cells"
+      ) +
+      presentation_theme(base_size = 12)
+    save_presentation_plot(
+      plot     = p_size,
+      filename = file.path(results_folder,
+                           paste0(sample_id, "_cluster_sizes.png")),
+      width    = max(8, 0.5 * n_clusters + 4),
+      height   = 6, dpi = 300
+    )
+  }, error = function(e) {
+    cat("\u26A0 Cluster-size bar plot failed:", conditionMessage(e), "\n")
+  })
+
+  # Silhouette score per cluster (subsampled for tractability on >10k cells)
+  tryCatch({
+    if (requireNamespace("cluster", quietly = TRUE)) {
+      pca_mat <- tryCatch(
+        getDimReduction(
+          gobject = gobj, spat_unit = "cell", feat_type = "rna",
+          reduction = "cells", reduction_method = "pca",
+          name = "pca", output = "matrix"
+        ),
+        error = function(e) NULL
+      )
+      if (!is.null(pca_mat) && nrow(pca_mat) > 0) {
+        meta <- as.data.frame(pDataDT(gobj))
+        clust <- as.integer(as.factor(meta$leiden_clust))
+        names(clust) <- meta$cell_ID
+        rn <- rownames(pca_mat)
+        common <- intersect(rn, names(clust))
+        pca_mat <- pca_mat[common, seq_len(min(ncol(pca_mat), 20)), drop = FALSE]
+        clust <- clust[common]
+        # Subsample per cluster up to 400 cells (keeps dist matrix tractable)
+        set.seed(seed)
+        subs <- unlist(lapply(unique(clust), function(cl) {
+          ids <- which(clust == cl)
+          if (length(ids) <= 400) ids else sample(ids, 400)
+        }))
+        pca_sub <- pca_mat[subs, , drop = FALSE]
+        clust_sub <- clust[subs]
+        if (length(unique(clust_sub)) >= 2 && nrow(pca_sub) >= 50) {
+          sil <- cluster::silhouette(clust_sub, stats::dist(pca_sub))
+          sil_df <- data.frame(
+            cluster = factor(sil[, "cluster"]),
+            sil_width = sil[, "sil_width"]
+          )
+          sil_summary <- dplyr::summarise(
+            dplyr::group_by(sil_df, cluster),
+            mean_sil = mean(sil_width),
+            .groups = "drop"
+          )
+          p_sil <- ggplot2::ggplot(
+              sil_summary,
+              ggplot2::aes(x = reorder(cluster, -mean_sil), y = mean_sil,
+                           fill = mean_sil > 0)
+            ) +
+            ggplot2::geom_col() +
+            ggplot2::geom_hline(yintercept = 0, colour = "grey30") +
+            ggplot2::scale_fill_manual(
+              values = c(`TRUE` = "#4C72B0", `FALSE` = "#C44E52"),
+              guide = "none"
+            ) +
+            ggplot2::labs(
+              title    = sample_plot_title(sample_id, "Mean silhouette per cluster"),
+              subtitle = sprintf("PCA space (first %d PCs); subsampled to %d cells",
+                                 ncol(pca_sub), nrow(pca_sub)),
+              x = "Cluster", y = "Mean silhouette width"
+            ) +
+            presentation_theme(base_size = 12)
+          save_presentation_plot(
+            plot     = p_sil,
+            filename = file.path(results_folder,
+                                 paste0(sample_id, "_cluster_silhouette.png")),
+            width    = max(8, 0.5 * n_clusters + 4),
+            height   = 6, dpi = 300
+          )
+        }
+      }
+    } else {
+      cat("  note: 'cluster' package not available; skipping silhouette plot\n")
+    }
+  }, error = function(e) {
+    cat("\u26A0 Silhouette plot failed:", conditionMessage(e), "\n")
+  })
+
   cat("=== Clustering Summary ===\n")
   cat("Number of clusters:", n_clusters, "\n")
   cat("Cluster sizes:\n")
