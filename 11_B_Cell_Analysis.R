@@ -490,6 +490,15 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
   }
   if (is.null(fn)) return(NULL)
 
+  # Giotto's spatInSituPlotPoints() arg names drift between releases — probe
+  # the function's formals and only pass arguments it actually accepts.
+  accepted <- names(formals(fn))
+  pick <- function(val, candidates) {
+    hit <- intersect(candidates, accepted)
+    if (!length(hit)) return(NULL)
+    stats::setNames(list(val), hit[1])
+  }
+
   args <- list(
     gobject                = gobj,
     show_polygon           = TRUE,
@@ -497,17 +506,26 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
     polygon_fill           = fill_col,
     polygon_fill_as_factor = fill_as_factor,
     polygon_alpha          = 0.75,
-    polygon_line_color     = "grey20",
-    polygon_line_size      = 0.15,
     show_image             = FALSE,
     return_plot            = TRUE,
     save_plot              = FALSE
   )
+  args <- c(args, pick("grey20",
+    c("polygon_line_color", "polygon_color",
+      "polygon_stroke_color", "polygon_border_color")))
+  args <- c(args, pick(0.15,
+    c("polygon_line_size", "polygon_stroke_size",
+      "polygon_border_size", "polygon_size")))
   if (fill_as_factor && !is.null(colour_map)) {
-    args$polygon_fill_code <- colour_map
+    args <- c(args, pick(colour_map,
+      c("polygon_fill_code", "polygon_fill_colors",
+        "polygon_fill_values")))
   } else if (!fill_as_factor) {
-    args$polygon_fill_gradient <- gradient
+    args <- c(args, pick(gradient,
+      c("polygon_fill_gradient", "polygon_fill_gradient_colors",
+        "polygon_gradient")))
   }
+  args <- args[names(args) %in% accepted | names(args) == "gobject"]
 
   p <- tryCatch(do.call(fn, args), error = function(e) NULL)
   if (is.null(p)) return(NULL)

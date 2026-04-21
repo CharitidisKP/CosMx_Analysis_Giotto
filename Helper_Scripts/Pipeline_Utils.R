@@ -161,6 +161,31 @@ save_presentation_plot <- function(plot,
                                    height = 8,
                                    dpi = 300,
                                    bg = "white") {
+  ext <- tolower(tools::file_ext(filename))
+
+  # PNG output goes through base-R grDevices::png() first — avoids the
+  # xfun-version minefield that ggplot2::ggsave() can trip when certain
+  # rendering deps are upgraded mid-session. On failure we fall through
+  # to ggsave.
+  if (ext == "png") {
+    ok <- tryCatch({
+      grDevices::png(
+        filename = filename,
+        width = width, height = height, units = "in",
+        res = dpi, bg = bg, type = "cairo"
+      )
+      on.exit(grDevices::dev.off(), add = TRUE)
+      print(plot)
+      TRUE
+    }, error = function(e) {
+      try(grDevices::dev.off(), silent = TRUE)
+      message("  [save] grDevices::png() failed (", conditionMessage(e),
+              "), falling back to ggsave()")
+      FALSE
+    })
+    if (ok) return(invisible(filename))
+  }
+
   ggplot2::ggsave(
     filename = filename,
     plot = plot,
