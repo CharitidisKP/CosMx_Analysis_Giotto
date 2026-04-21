@@ -516,6 +516,27 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 }
 
 
+.giotto_get_spatial_locations <- function(gobj, output = "data.table") {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("getSpatialLocations", envir = asNamespace("Giotto"),
+             inherits = FALSE)) {
+    fn <- get("getSpatialLocations", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("getSpatialLocations", envir = asNamespace("GiottoClass"),
+                    inherits = FALSE)) {
+    fn <- get("getSpatialLocations", envir = asNamespace("GiottoClass"))
+  } else {
+    fn <- get("getSpatialLocations", mode = "function")
+  }
+  fn(gobject = gobj, output = output)
+}
+
+
+# Replace underscores with spaces for human-readable plot labels.
+.pretty <- function(x) gsub("_", " ", as.character(x), fixed = TRUE)
+
+
 # Per-gene spatial expression plots with the focus population (B cells by
 # default) outlined on top. Two outputs per surviving marker gene:
 #   * all-FOV image        -> results_dir/B_annotated_gene_expression/<sample>_<GENE>.png
@@ -587,8 +608,8 @@ plot_bcell_spatial_and_markers <- function(gobj,
     bcell_df <- df[df$.is_bcell, , drop = FALSE]
     title_txt <- paste0(sample_id, " - ", gene, " expression",
                         if (!is.null(fov_tag)) paste0(" (FOV ", fov_tag, ")") else "")
-    subtitle_txt <- paste0(highlight_label, " highlighted from ",
-                           annotation_column, " annotation")
+    subtitle_txt <- paste0(.pretty(highlight_label), " highlighted from ",
+                           .pretty(annotation_column), " annotation")
     ggplot2::ggplot() +
       ggplot2::geom_polygon(
         data = df,
@@ -600,7 +621,8 @@ plot_bcell_spatial_and_markers <- function(gobj,
         mapping = ggplot2::aes(x = x, y = y, group = poly_group),
         fill = NA, colour = highlight_colour, linewidth = 0.15
       ) +
-      ggplot2::scale_fill_gradient(low = "lightgrey", high = "red", name = gene) +
+      ggplot2::scale_fill_gradient(low = "lightgrey", high = "red",
+                                    name = .pretty(gene)) +
       ggplot2::coord_fixed() +
       ggplot2::labs(title = title_txt, subtitle = subtitle_txt,
                     x = NULL, y = NULL) +
@@ -636,6 +658,343 @@ plot_bcell_spatial_and_markers <- function(gobj,
   cat("  \u2713 B-cell gene overlay plots saved (", length(genes),
       " gene(s), ", length(fov_with_bcells), " B-cell FOV(s))\n", sep = "")
   invisible(genes)
+}
+
+
+# Per-B-cell-cluster neighbourhood polygon plots coloured by distance to
+# nearest B cell. B-cells are first grouped by single-linkage spatial
+# clustering (h = bcell_cluster_eps); k-NN context is then found around
+# each cluster's centroid with k scaled by cluster size so dense B-cell
+# patches get a proportionally larger window.
+# Output: <results_dir>/neighbours/cluster_<NNN>_<n>cells/knn_k<K>.png
+plot_bcell_neighbourhoods <- function(gobj,
+                                      sample_id,
+                                      results_dir,
+                                      annotation_column,
+                                      bcell_regex,
+                                      highlight_label    = "B cells",
+                                      highlight_colour   = "mediumblue",
+                                      bcell_cluster_eps  = 80,
+                                      k_base             = 20,
+                                      k_increment        = 10,
+                                      max_clusters_plot  = 40) {
+  if (!requireNamespace("FNN", quietly = TRUE)) {
+    message("  \u26A0 FNN not installed; B-cell neighbourhood plots skipped")
+    return(invisible(NULL))
+  }
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (!annotation_column %in% names(meta)) {
+    message("  \u26A0 annotation column '", annotation_column,
+            "' missing; neighbourhood plots skipped")
+    return(invisible(NULL))
+  }
+  is_bcell <- grepl(bcell_regex, as.character(meta[[annotation_column]]),
+                    ignore.case = TRUE)
+  if (!any(is_bcell)) return(invisible(NULL))
+
+  sl <- tryCatch(as.data.frame(.giotto_get_spatial_locations(gobj,
+                                                               output = "data.table")),
+                 error = function(e) NULL)
+  if (is.null(sl) || !all(c("sdimx", "sdimy", "cell_ID") %in% names(sl))) {
+    message("  \u26A0 spatial locations unavailable; neighbourhood plots skipped")
+    return(invisible(NULL))
+  }
+  cells <- merge(meta[, c("cell_ID", annotation_column), drop = FALSE],
+                 sl[, c("cell_ID", "sdimx", "sdimy")],
+                 by = "cell_ID", sort = FALSE)
+  cells$is_bcell <- grepl(bcell_regex, as.character(cells[[annotation_column]]),
+                          ignore.case = TRUE)
+  bcell_ids <- cells$cell_ID[cells$is_bcell]
+
+  poly_df <- .extract_polygon_df(gobj)
+  if (is.null(poly_df)) {
+    message("  \u26A0 No cell polygons; neighbourhood plots skipped")
+    return(invisible(NULL))
+  }
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom, poly_df$part,
+                              sep = "_")
+  poly_df$is_bcell <- poly_df$cell_ID %in% bcell_ids
+
+  bcells_df <- cells[cells$is_bcell, c("cell_ID", "sdimx", "sdimy"), drop = FALSE]
+  if (nrow(bcells_df) == 1) {
+    bcells_df$cluster_id <- 1L
+  } else {
+    d <- stats::dist(bcells_df[, c("sdimx", "sdimy")])
+    bcells_df$cluster_id <- stats::cutree(
+      stats::hclust(d, method = "single"), h = bcell_cluster_eps
+    )
+  }
+  clust_summary <- stats::aggregate(cbind(sdimx, sdimy) ~ cluster_id,
+                                     data = bcells_df, FUN = mean)
+  clust_summary$n_bcells <- as.integer(
+    table(bcells_df$cluster_id)[as.character(clust_summary$cluster_id)]
+  )
+  clust_summary <- clust_summary[order(-clust_summary$n_bcells), , drop = FALSE]
+  clust_summary <- head(clust_summary, max_clusters_plot)
+
+  xy_all <- as.matrix(cells[, c("sdimx", "sdimy")])
+  rownames(xy_all) <- cells$cell_ID
+
+  nbr_dir <- ensure_dir(file.path(results_dir, "neighbours"))
+  subtitle_common <- paste0(.pretty(highlight_label), " highlighted from ",
+                            .pretty(annotation_column), " annotation")
+
+  for (i in seq_len(nrow(clust_summary))) {
+    row <- clust_summary[i, , drop = FALSE]
+    member_ids <- bcells_df$cell_ID[bcells_df$cluster_id == row$cluster_id]
+    k <- k_base + k_increment * (row$n_bcells - 1) + row$n_bcells
+    centroid <- c(row$sdimx, row$sdimy)
+    nn <- FNN::get.knnx(data = xy_all, query = matrix(centroid, nrow = 1), k = k)
+    nbr_ids <- unique(c(member_ids, rownames(xy_all)[nn$nn.index[1, ]]))
+
+    xy_nbrs <- xy_all[nbr_ids, , drop = FALSE]
+    xy_members <- xy_all[member_ids, , drop = FALSE]
+    dist_nn <- FNN::get.knnx(data = xy_members, query = xy_nbrs, k = 1)
+    dist_map <- stats::setNames(dist_nn$nn.dist[, 1], nbr_ids)
+
+    df <- poly_df[poly_df$cell_ID %in% nbr_ids, , drop = FALSE]
+    df$distance <- unname(dist_map[df$cell_ID])
+
+    clust_dir <- ensure_dir(file.path(
+      nbr_dir, sprintf("cluster_%03d_%dcells", i, row$n_bcells)
+    ))
+    out_png <- file.path(clust_dir, paste0("knn_k", k, ".png"))
+
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_polygon(
+        data = df,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = distance),
+        colour = "grey30", linewidth = 0.08
+      ) +
+      ggplot2::geom_polygon(
+        data = df[df$is_bcell, , drop = FALSE],
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+        fill = NA, colour = highlight_colour, linewidth = 0.15
+      ) +
+      viridis::scale_fill_viridis(
+        option = "magma", direction = -1,
+        name = "Distance to\nnearest B cell"
+      ) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(
+        title = paste0(sample_id, " - B cell cluster ", i, " neighbourhood"),
+        subtitle = paste0(row$n_bcells, " B cell(s), k = ", k, " \u2014 ",
+                          subtitle_common),
+        x = NULL, y = NULL
+      ) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+    save_presentation_plot(p, filename = out_png,
+                           width = 10, height = 10, dpi = 600)
+  }
+  cat("  \u2713 B-cell neighbourhood plots saved (", nrow(clust_summary),
+      " cluster(s))\n", sep = "")
+  invisible(nrow(clust_summary))
+}
+
+
+# Spatial-niche + distance-to-B-cell plots. Niches are defined by k-NN
+# cell-type composition followed by k-means (same recipe as
+# 12_Spatial_Differential_Expression.R::assign_spatial_niches).
+# Output: <results_dir>/niches/<sample>_niches_annotated.png
+#         <results_dir>/niches/<sample>_distance_to_bcells.png
+#         <results_dir>/niches/per_fov/<sample>_..._FOV_<n>.png (FOVs with B cells)
+plot_bcell_niches <- function(gobj,
+                              sample_id,
+                              results_dir,
+                              annotation_column,
+                              bcell_regex,
+                              highlight_label  = "B cells",
+                              highlight_colour = "mediumblue",
+                              n_niches         = 6,
+                              niche_knn_k      = 30,
+                              um_per_px        = 0.12028) {
+  if (!requireNamespace("FNN", quietly = TRUE)) {
+    message("  \u26A0 FNN not installed; niche plots skipped")
+    return(invisible(NULL))
+  }
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (!annotation_column %in% names(meta)) {
+    message("  \u26A0 annotation column missing; niche plots skipped")
+    return(invisible(NULL))
+  }
+  is_bcell <- grepl(bcell_regex, as.character(meta[[annotation_column]]),
+                    ignore.case = TRUE)
+  if (!any(is_bcell)) return(invisible(NULL))
+
+  sl <- tryCatch(as.data.frame(.giotto_get_spatial_locations(gobj,
+                                                               output = "data.table")),
+                 error = function(e) NULL)
+  if (is.null(sl) || !all(c("sdimx", "sdimy", "cell_ID") %in% names(sl))) {
+    message("  \u26A0 spatial locations unavailable; niche plots skipped")
+    return(invisible(NULL))
+  }
+  meta_cols <- c("cell_ID", annotation_column,
+                 intersect("fov", names(meta)))
+  cells <- merge(meta[, meta_cols, drop = FALSE],
+                 sl[, c("cell_ID", "sdimx", "sdimy")],
+                 by = "cell_ID", sort = FALSE)
+  cells$cell_type <- as.character(cells[[annotation_column]])
+  cells$is_bcell <- grepl(bcell_regex, cells$cell_type, ignore.case = TRUE)
+  bcell_ids <- cells$cell_ID[cells$is_bcell]
+
+  poly_df <- .extract_polygon_df(gobj)
+  if (is.null(poly_df)) {
+    message("  \u26A0 No cell polygons; niche plots skipped")
+    return(invisible(NULL))
+  }
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom, poly_df$part,
+                              sep = "_")
+  poly_df$is_bcell <- poly_df$cell_ID %in% bcell_ids
+  if ("fov" %in% names(meta)) {
+    poly_df$fov <- unname(stats::setNames(meta$fov, meta$cell_ID)[poly_df$cell_ID])
+  } else {
+    poly_df$fov <- NA_integer_
+  }
+
+  xy_all <- as.matrix(cells[, c("sdimx", "sdimy")])
+  rownames(xy_all) <- cells$cell_ID
+  ct_levels <- sort(unique(cells$cell_type))
+  nn_all <- FNN::get.knn(xy_all, k = niche_knn_k)
+  ct_fac <- factor(cells$cell_type, levels = ct_levels)
+  nbr_ct <- matrix(as.integer(ct_fac)[nn_all$nn.index], ncol = niche_knn_k)
+  niche_counts <- matrix(
+    0L, nrow = nrow(cells), ncol = length(ct_levels),
+    dimnames = list(cells$cell_ID, ct_levels)
+  )
+  for (j in seq_len(niche_knn_k)) {
+    niche_counts[cbind(seq_len(nrow(cells)), nbr_ct[, j])] <-
+      niche_counts[cbind(seq_len(nrow(cells)), nbr_ct[, j])] + 1L
+  }
+  niche_props <- niche_counts / rowSums(niche_counts)
+
+  n_unique <- nrow(unique(niche_props))
+  set.seed(42)
+  km <- stats::kmeans(niche_props,
+                      centers = min(n_niches, n_unique),
+                      nstart = 25, iter.max = 50)
+  cells$niche <- paste0("niche_", km$cluster)
+  poly_df$niche <- cells$niche[match(poly_df$cell_ID, cells$cell_ID)]
+
+  niche_palette <- stats::setNames(
+    grDevices::hcl.colors(length(unique(cells$niche)), palette = "Set 2"),
+    sort(unique(cells$niche))
+  )
+
+  niche_dir <- ensure_dir(file.path(results_dir, "niches"))
+  subtitle_common <- paste0(.pretty(highlight_label), " highlighted from ",
+                            .pretty(annotation_column), " annotation")
+
+  make_niche_plot <- function(df_poly, title_suffix = "") {
+    ggplot2::ggplot() +
+      ggplot2::geom_polygon(
+        data = df_poly,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = niche),
+        colour = "grey30", linewidth = 0.08
+      ) +
+      ggplot2::geom_polygon(
+        data = df_poly[df_poly$is_bcell, , drop = FALSE],
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+        fill = NA, colour = highlight_colour, linewidth = 0.15
+      ) +
+      ggplot2::scale_fill_manual(values = niche_palette, name = "Niche",
+                                  labels = .pretty) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(
+        title = paste0(sample_id, " - spatial niches", title_suffix),
+        subtitle = subtitle_common,
+        x = NULL, y = NULL
+      ) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+  }
+
+  bcell_xy <- xy_all[bcell_ids, , drop = FALSE]
+  dist_nn  <- FNN::get.knnx(data = bcell_xy, query = xy_all, k = 1)
+  cells$distance_to_bcell_um <- dist_nn$nn.dist[, 1] * um_per_px
+  cap <- stats::quantile(cells$distance_to_bcell_um, 0.9, na.rm = TRUE)
+  cells$distance_capped <- pmin(cells$distance_to_bcell_um, cap)
+
+  make_distance_plot <- function(df_cells, title_suffix = "") {
+    ggplot2::ggplot(
+        df_cells,
+        ggplot2::aes(x = sdimx, y = sdimy, colour = distance_capped)) +
+      ggplot2::geom_point(size = 0.25, alpha = 0.7) +
+      viridis::scale_color_viridis(
+        name = paste0("Distance to\nnearest B cell\n(\u00b5m, capped at\n",
+                      round(cap), ")")
+      ) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(
+        title = paste0(sample_id, " - distance to nearest B cell",
+                       title_suffix),
+        subtitle = paste0(.pretty(highlight_label), " defined by ",
+                          .pretty(annotation_column),
+                          ", cap = 90th percentile"),
+        x = NULL, y = NULL
+      ) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title = ggplot2::element_blank(),
+        axis.text  = ggplot2::element_blank(),
+        axis.ticks = ggplot2::element_blank(),
+        panel.grid = ggplot2::element_blank()
+      )
+  }
+
+  save_presentation_plot(
+    make_niche_plot(poly_df),
+    filename = file.path(niche_dir,
+                          paste0(sample_id, "_niches_annotated.png")),
+    width = 14, height = 10, dpi = 600
+  )
+  save_presentation_plot(
+    make_distance_plot(cells),
+    filename = file.path(niche_dir,
+                          paste0(sample_id, "_distance_to_bcells.png")),
+    width = 14, height = 10, dpi = 600
+  )
+
+  # Per-FOV niche + distance plots (only FOVs that contain B cells)
+  n_fov_written <- 0L
+  if ("fov" %in% names(cells)) {
+    per_fov_dir <- ensure_dir(file.path(niche_dir, "per_fov"))
+    fov_with_bcells <- sort(unique(cells$fov[cells$is_bcell & !is.na(cells$fov)]))
+    for (fv in fov_with_bcells) {
+      df_fv_poly <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
+      df_fv_cells <- cells[!is.na(cells$fov) & cells$fov == fv, , drop = FALSE]
+      if (!nrow(df_fv_poly) || !nrow(df_fv_cells)) next
+
+      save_presentation_plot(
+        make_niche_plot(df_fv_poly, title_suffix = paste0(" (FOV ", fv, ")")),
+        filename = file.path(per_fov_dir,
+                              paste0(sample_id, "_niches_annotated_FOV_",
+                                      fv, ".png")),
+        width = 10, height = 10, dpi = 600
+      )
+      save_presentation_plot(
+        make_distance_plot(df_fv_cells, title_suffix = paste0(" (FOV ", fv, ")")),
+        filename = file.path(per_fov_dir,
+                              paste0(sample_id, "_distance_to_bcells_FOV_",
+                                      fv, ".png")),
+        width = 10, height = 10, dpi = 600
+      )
+      n_fov_written <- n_fov_written + 1L
+    }
+  }
+  cat("  \u2713 B-cell niche plots saved (", n_fov_written,
+      " per-FOV pairs)\n", sep = "")
+  invisible(cells$niche)
 }
 
 
@@ -816,6 +1175,30 @@ run_bcell_microenvironment_analysis <- function(gobj,
     )
   }, error = function(e) {
     message("B-cell spatial/marker plots skipped: ", conditionMessage(e))
+  })
+
+  tryCatch({
+    plot_bcell_neighbourhoods(
+      gobj              = gobj,
+      sample_id         = sample_id,
+      results_dir       = results_dir,
+      annotation_column = annotation_column,
+      bcell_regex       = bcell_regex
+    )
+  }, error = function(e) {
+    message("B-cell neighbourhood plots skipped: ", conditionMessage(e))
+  })
+
+  tryCatch({
+    plot_bcell_niches(
+      gobj              = gobj,
+      sample_id         = sample_id,
+      results_dir       = results_dir,
+      annotation_column = annotation_column,
+      bcell_regex       = bcell_regex
+    )
+  }, error = function(e) {
+    message("B-cell niche plots skipped: ", conditionMessage(e))
   })
 
   if (save_object) {
