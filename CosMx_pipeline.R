@@ -882,6 +882,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         cfg$interaction$bcell_regex %||%
         "^B\\.cell$"
       marker_genes_cfg <- cfg$parameters$visualization$marker_genes %||% list()
+      bcsub <- cfg$parameters$bcell_subclustering %||% list()
       runtime_env$run_bcell_microenvironment_analysis(
         gobj = gobj,
         sample_id = sample_id,
@@ -893,6 +894,19 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         max_network_edges = cfg$interaction$max_network_edges %||% 70,
         bcell_markers = as.character(marker_genes_cfg$b_cells %||% character()),
         subtype_markers = as.character(marker_genes_cfg$b_cell_subtypes %||% character()),
+        bcell_subcluster_enabled            = isTRUE(bcsub$enabled %||% TRUE),
+        bcell_subcluster_min_cells          = as.integer(bcsub$min_cells          %||% 50L),
+        bcell_subcluster_fallback_min_cells = as.integer(bcsub$fallback_min_cells %||% 20L),
+        bcell_subcluster_n_hvgs             = as.integer(bcsub$n_hvgs             %||% 250L),
+        bcell_subcluster_n_pcs              = as.integer(bcsub$n_pcs              %||% 20L),
+        bcell_subcluster_umap_n_neighbors   = as.integer(bcsub$umap_n_neighbors   %||% 15L),
+        bcell_subcluster_umap_min_dist      = as.numeric(bcsub$umap_min_dist      %||% 0.3),
+        bcell_subcluster_k_nn               = as.integer(bcsub$k_nn               %||% 10L),
+        bcell_subcluster_resolution         = as.numeric(bcsub$resolution         %||% 0.4),
+        bcell_subcluster_resolution_sweep   = bcsub$resolution_sweep,
+        scripts_dir = cfg$paths$scripts_dir,
+        python_path = cfg$paths$python_path,
+        seed = cfg$reproducibility$seed %||% 42,
         save_object = TRUE
       )
     },

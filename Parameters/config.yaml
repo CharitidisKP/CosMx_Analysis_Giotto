@@ -189,6 +189,24 @@ parameters:
     resolution_sweep: [0.3, 0.5, 0.8, 1.0, 1.5]
     dimensions_to_use: "1:30"
 
+  # -----------------------------------------------------------
+  # B-cell subclustering (step 11)
+  # Smaller-population defaults tuned for 100-1000 B cells.
+  # min_cells: below this, a warning is issued but subclustering still runs.
+  # fallback_min_cells: hard floor; below this the stage is skipped.
+  # -----------------------------------------------------------
+  bcell_subclustering:
+    enabled: true
+    min_cells: 50
+    fallback_min_cells: 20
+    n_hvgs: 250              # vs 500 for full-sample step 04
+    n_pcs: 20                # vs 30 for full-sample
+    umap_n_neighbors: 15     # vs 30
+    umap_min_dist: 0.3
+    k_nn: 10                 # vs 15
+    resolution: 0.4          # vs 0.8 - target 3-6 subtypes
+    resolution_sweep: [0.2, 0.4, 0.6, 0.8]
+
   markers:
     cluster_column: "leiden_clust"
     top_n: 25

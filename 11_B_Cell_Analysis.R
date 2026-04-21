@@ -998,6 +998,224 @@ plot_bcell_niches <- function(gobj,
 }
 
 
+# -----------------------------------------------------------------------------
+# B-cell subclustering (reuses scripts 04 + 05)
+# -----------------------------------------------------------------------------
+
+plot_bcell_subtype_umap <- function(gobj_bcell,
+                                    sample_id,
+                                    subtype_markers,
+                                    out_dir,
+                                    cluster_column = "leiden_bcell_subcluster") {
+  umap_df <- .prepare_dim_plot_data(gobj_bcell, "umap", cluster_column)
+  umap_df[[cluster_column]] <- factor(umap_df[[cluster_column]])
+
+  leiden_plot <- ggplot2::ggplot(
+      umap_df,
+      ggplot2::aes(x = dim1, y = dim2, colour = .data[[cluster_column]])
+    ) +
+    ggplot2::geom_point(size = 0.6, alpha = 0.8) +
+    ggplot2::labs(
+      title  = sample_plot_title(sample_id, "B-cell subclusters"),
+      x      = "UMAP 1",
+      y      = "UMAP 2",
+      colour = "Subcluster"
+    ) +
+    presentation_theme(base_size = 12)
+
+  save_presentation_plot(
+    plot     = leiden_plot,
+    filename = file.path(out_dir, paste0(sample_id, "_bcell_umap_leiden.png")),
+    width    = 12,
+    height   = 10,
+    dpi      = 300
+  )
+
+  expr <- tryCatch(
+    .giotto_get_expression(gobj_bcell, values = "normalized", output = "matrix"),
+    error = function(e) NULL
+  )
+  if (is.null(expr) || !length(subtype_markers)) {
+    return(invisible(NULL))
+  }
+  genes <- intersect(subtype_markers, rownames(expr))
+  missing <- setdiff(subtype_markers, rownames(expr))
+  if (length(missing)) {
+    message("  \u2139 Subtype markers not on panel: ",
+            paste(missing, collapse = ", "))
+  }
+  if (!length(genes)) return(invisible(NULL))
+
+  dim_base <- umap_df[, c("cell_ID", "dim1", "dim2")]
+  gene_plots <- lapply(genes, function(g) {
+    df <- dim_base
+    df$expr <- unname(expr[g, df$cell_ID])
+    p <- ggplot2::ggplot(df, ggplot2::aes(x = dim1, y = dim2, colour = expr)) +
+      ggplot2::geom_point(size = 0.6, alpha = 0.85) +
+      ggplot2::scale_colour_gradient(
+        low = "lightgrey", high = "red", name = .pretty(g)
+      ) +
+      ggplot2::labs(
+        title = sample_plot_title(
+          sample_id, paste0(g, " (B-cell subclusters)")
+        ),
+        x = "UMAP 1", y = "UMAP 2"
+      ) +
+      presentation_theme(base_size = 11)
+    save_presentation_plot(
+      plot     = p,
+      filename = file.path(out_dir,
+                           paste0(sample_id, "_bcell_umap_", g, ".png")),
+      width    = 10,
+      height   = 8,
+      dpi      = 300
+    )
+    p
+  })
+
+  if (requireNamespace("patchwork", quietly = TRUE) && length(gene_plots) > 1) {
+    grid  <- optimal_grid_dims(length(gene_plots))
+    panel <- patchwork::wrap_plots(gene_plots,
+                                   ncol = grid$ncol, nrow = grid$nrow)
+    save_presentation_plot(
+      plot     = panel,
+      filename = file.path(
+        out_dir,
+        paste0(sample_id, "_bcell_umap_subtype_markers_panel.png")
+      ),
+      width    = grid$ncol * 5,
+      height   = grid$nrow * 4,
+      dpi      = 300
+    )
+  }
+  invisible(genes)
+}
+
+
+run_bcell_subclustering <- function(gobj,
+                                    sample_id,
+                                    results_dir,
+                                    annotation_column,
+                                    bcell_regex,
+                                    subtype_markers     = character(),
+                                    min_cells           = 50,
+                                    fallback_min_cells  = 20,
+                                    n_hvgs              = 250,
+                                    n_pcs               = 20,
+                                    umap_n_neighbors    = 15,
+                                    umap_min_dist       = 0.3,
+                                    k_nn                = 10,
+                                    leiden_resolution   = 0.4,
+                                    leiden_n_iterations = 200,
+                                    resolution_sweep    = NULL,
+                                    scripts_dir         = NULL,
+                                    python_path         = NULL,
+                                    save_object         = TRUE,
+                                    seed                = 42) {
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (!annotation_column %in% names(meta)) {
+    message("B-cell subclustering skipped: annotation column '",
+            annotation_column, "' not present.")
+    return(invisible(NULL))
+  }
+  is_bcell <- grepl(bcell_regex, as.character(meta[[annotation_column]]),
+                    ignore.case = TRUE)
+  bcell_ids <- meta$cell_ID[is_bcell]
+  n_bcells <- length(bcell_ids)
+  if (n_bcells < fallback_min_cells) {
+    message("B-cell subclustering skipped: only ",
+            n_bcells, " B-annotated cells (< fallback_min_cells = ",
+            fallback_min_cells, ").")
+    return(invisible(NULL))
+  }
+  if (n_bcells < min_cells) {
+    warning("B-cell subclustering proceeding with only ", n_bcells,
+            " B-annotated cells (< min_cells = ", min_cells,
+            "). Subclustering quality may be unreliable; consider raising ",
+            "fallback_min_cells or inspecting the results carefully.",
+            call. = FALSE)
+  }
+
+  subset_fn <- tryCatch(
+    get("subsetGiotto", envir = asNamespace("Giotto")),
+    error = function(e) get("subsetGiotto", envir = asNamespace("GiottoClass"))
+  )
+  gobj_bcell <- subset_fn(gobject = gobj, cell_ids = bcell_ids)
+
+  subcluster_dir <- ensure_dir(file.path(results_dir, "subcluster"))
+  sid <- paste0(sample_id, "_bcell")
+
+  gobj_bcell <- dimensionality_reduction(
+    gobj             = gobj_bcell,
+    sample_id        = sid,
+    output_dir       = subcluster_dir,
+    n_hvgs           = n_hvgs,
+    n_pcs            = n_pcs,
+    umap_n_neighbors = umap_n_neighbors,
+    umap_min_dist    = umap_min_dist,
+    spatial_hvg      = FALSE,
+    seed             = seed
+  )
+
+  gobj_bcell <- perform_clustering(
+    gobj                = gobj_bcell,
+    sample_id           = sid,
+    output_dir          = subcluster_dir,
+    k_nn                = k_nn,
+    resolution          = leiden_resolution,
+    dimensions_to_use   = seq_len(n_pcs),
+    scripts_dir         = scripts_dir,
+    python_path         = python_path,
+    inspect_snn         = FALSE,
+    leiden_n_iterations = leiden_n_iterations,
+    resolution_sweep    = resolution_sweep,
+    seed                = seed
+  )
+
+  meta_bcell <- as.data.frame(.giotto_pdata_dt(gobj_bcell))
+  if ("leiden_clust" %in% names(meta_bcell)) {
+    gobj_bcell <- addCellMetadata(
+      gobject        = gobj_bcell,
+      new_metadata   = data.frame(
+        cell_ID                 = meta_bcell$cell_ID,
+        leiden_bcell_subcluster = meta_bcell$leiden_clust,
+        stringsAsFactors        = FALSE
+      ),
+      by_column      = TRUE,
+      column_cell_ID = "cell_ID"
+    )
+  }
+
+  tryCatch({
+    plot_bcell_subtype_umap(
+      gobj_bcell      = gobj_bcell,
+      sample_id       = sample_id,
+      subtype_markers = subtype_markers,
+      out_dir         = subcluster_dir,
+      cluster_column  = "leiden_bcell_subcluster"
+    )
+  }, error = function(e) {
+    message("B-cell subtype UMAP plots skipped: ", conditionMessage(e))
+  })
+
+  if (save_object) {
+    save_giotto_checkpoint(
+      gobj           = gobj_bcell,
+      checkpoint_dir = file.path(dirname(results_dir),
+                                 "Giotto_Object_BCell_Subcluster"),
+      metadata       = list(
+        stage             = "bcell_subcluster",
+        annotation_column = annotation_column,
+        bcell_regex       = bcell_regex,
+        n_bcells          = length(bcell_ids)
+      )
+    )
+  }
+
+  invisible(gobj_bcell)
+}
+
+
 run_bcell_microenvironment_analysis <- function(gobj,
                                                 sample_id,
                                                 output_dir,
@@ -1008,6 +1226,19 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 max_network_edges = 70,
                                                 bcell_markers = character(),
                                                 subtype_markers = character(),
+                                                bcell_subcluster_enabled            = TRUE,
+                                                bcell_subcluster_min_cells          = 50,
+                                                bcell_subcluster_fallback_min_cells = 20,
+                                                bcell_subcluster_n_hvgs             = 250,
+                                                bcell_subcluster_n_pcs              = 20,
+                                                bcell_subcluster_umap_n_neighbors   = 15,
+                                                bcell_subcluster_umap_min_dist      = 0.3,
+                                                bcell_subcluster_k_nn               = 10,
+                                                bcell_subcluster_resolution         = 0.4,
+                                                bcell_subcluster_resolution_sweep   = NULL,
+                                                scripts_dir = NULL,
+                                                python_path = NULL,
+                                                seed = 42,
                                                 save_object = FALSE) {
   cat("\n========================================\n")
   cat("STEP 11: Focused Cell-Type Microenvironment\n")
@@ -1200,6 +1431,34 @@ run_bcell_microenvironment_analysis <- function(gobj,
   }, error = function(e) {
     message("B-cell niche plots skipped: ", conditionMessage(e))
   })
+
+  if (isTRUE(bcell_subcluster_enabled)) {
+    tryCatch({
+      run_bcell_subclustering(
+        gobj                = gobj,
+        sample_id           = sample_id,
+        results_dir         = results_dir,
+        annotation_column   = annotation_column,
+        bcell_regex         = bcell_regex,
+        subtype_markers     = subtype_markers,
+        min_cells           = bcell_subcluster_min_cells,
+        fallback_min_cells  = bcell_subcluster_fallback_min_cells,
+        n_hvgs              = bcell_subcluster_n_hvgs,
+        n_pcs               = bcell_subcluster_n_pcs,
+        umap_n_neighbors    = bcell_subcluster_umap_n_neighbors,
+        umap_min_dist       = bcell_subcluster_umap_min_dist,
+        k_nn                = bcell_subcluster_k_nn,
+        leiden_resolution   = bcell_subcluster_resolution,
+        resolution_sweep    = bcell_subcluster_resolution_sweep,
+        scripts_dir         = scripts_dir,
+        python_path         = python_path,
+        save_object         = save_object,
+        seed                = seed
+      )
+    }, error = function(e) {
+      message("B-cell subclustering skipped: ", conditionMessage(e))
+    })
+  }
 
   if (save_object) {
     save_giotto_checkpoint(
