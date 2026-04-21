@@ -171,8 +171,13 @@ main <- function() {
   poly_cell_c   <- pick_colname(poly,    c("cellID", "cell_ID"),   "polygons cellID")
   fov_pos_fov_c <- pick_colname(fov_pos, c("fov", "FOV"),          "fov_positions fov")
 
+  # CosMx exports sometimes store cell_ID as integer in one file and character
+  # in another. Coerce both sides of every comparison with as.character() so
+  # %chin% never hits a type mismatch. Values written to disk are unchanged
+  # because we only coerce inside the comparison — original columns are intact.
+
   # Cross-file sanity: every cell in the expression matrix should exist in metadata.
-  if (!all(expr[[expr_cell_c]] %chin% meta[[meta_cell_c]])) {
+  if (!all(as.character(expr[[expr_cell_c]]) %chin% as.character(meta[[meta_cell_c]]))) {
     warning("Some cells in the expression matrix have no metadata row. ",
             "They will be dropped from every split.")
   }
@@ -189,13 +194,13 @@ main <- function() {
     cat(sprintf("\n--- %s (FOV %d-%d) ---\n", tgt, fmin, fmax))
 
     meta_keep    <- meta[meta[[meta_fov_c]] >= fmin & meta[[meta_fov_c]] <= fmax]
-    keep_cells   <- meta_keep[[meta_cell_c]]
+    keep_cells   <- as.character(meta_keep[[meta_cell_c]])
     if (length(keep_cells) == 0L) {
       stop("No cells match FOV range ", fmin, "-", fmax, " for target '", tgt,
            "'. Check --splits spec.")
     }
-    expr_keep    <- expr[expr[[expr_cell_c]] %chin% keep_cells]
-    poly_keep    <- poly[poly[[poly_cell_c]] %chin% keep_cells]
+    expr_keep    <- expr[as.character(expr[[expr_cell_c]]) %chin% keep_cells]
+    poly_keep    <- poly[as.character(poly[[poly_cell_c]]) %chin% keep_cells]
     fov_pos_keep <- fov_pos[fov_pos[[fov_pos_fov_c]] >= fmin &
                             fov_pos[[fov_pos_fov_c]] <= fmax]
 
