@@ -322,6 +322,14 @@ normalize_sample_table <- function(sample_df, cfg) {
   if (!"include" %in% names(sample_df)) {
     sample_df$include <- TRUE
   }
+  # split_role: "composite" | "split" | "" (always-on).
+  # Used by run_pipeline() together with --split to pick which view of a
+  # composite slide is active. See the sample-sheet comments for the CART rows.
+  if (!"split_role" %in% names(sample_df)) {
+    sample_df$split_role <- ""
+  } else {
+    sample_df$split_role[is.na(sample_df$split_role)] <- ""
+  }
   if (!"pair_id" %in% names(sample_df)) {
     sample_df$pair_id <- NA_character_
   }
@@ -356,9 +364,10 @@ normalize_sample_table <- function(sample_df, cfg) {
   sample_df$data_dir <- vapply(sample_df$data_dir, resolve_path, character(1), base_dir = cfg$paths$raw_data_dir, mustWork = FALSE)
   sample_df$output_dir <- vapply(sample_df$output_dir, resolve_path, character(1), base_dir = cfg$paths$output_dir, mustWork = FALSE)
   sample_df$include <- vapply(sample_df$include, coerce_bool, logical(1), default = TRUE)
-  
-  sample_df <- sample_df[sample_df$include, , drop = FALSE]
-  
+  # NOTE: the include=TRUE drop used to live here; it was moved into
+  # run_pipeline() so that --samples can resurrect rows that are include=FALSE
+  # by default (e.g. the CART_T*_S* split rows).
+
   # Deduplicate composite-slide rows: when multiple rows share the same sample_id
   # (e.g. four CART biopsies on one slide each having a distinct subsample_id),
   # keep only the FIRST row per sample_id and clear fov_min/fov_max so the
@@ -367,6 +376,14 @@ normalize_sample_table <- function(sample_df, cfg) {
   # run_pipeline() can restore them when --split is requested.
   dup_ids <- unique(sample_df$sample_id[duplicated(sample_df$sample_id)])
   if (length(dup_ids) > 0) {
+    message(
+      "\u26A0  Composite-slide sheet detected: duplicate sample_id(s) = ",
+      paste(dup_ids, collapse = ", "),
+      ". Without --split, only the FIRST row per sample_id is kept and its ",
+      "patient_id / timepoint / pair_id metadata is applied to ALL cells on ",
+      "the slide. Pass --split to process each biopsy separately, or pre-",
+      "split the raw data (see Helper_Scripts/Split_Raw_CosMx_Slide.R)."
+    )
     attr(sample_df, "split_rows") <- sample_df[sample_df$sample_id %in% dup_ids, , drop = FALSE]
     sample_df <- sample_df[!duplicated(sample_df$sample_id), , drop = FALSE]
     is_dup <- sample_df$sample_id %in% dup_ids
@@ -424,6 +441,26 @@ select_samples <- function(samples,
   
   rownames(selected) <- NULL
   selected
+}
+
+apply_include_and_role_filter <- function(sample_table, split_mode) {
+  # Default sample-table filter applied when the user has NOT explicitly named
+  # rows via --samples. Two controls:
+  #   include (bool): per-row on/off switch.
+  #   split_role:
+  #     "composite" - use when --split is OFF
+  #     "split"     - use when --split is ON  (even if include=FALSE)
+  #     ""          - always use (standard single-sample rows)
+  role <- sample_table$split_role %||% rep("", nrow(sample_table))
+  role[is.na(role)] <- ""
+  if (isTRUE(split_mode)) {
+    role_ok    <- role != "composite"
+    include_ok <- sample_table$include | role == "split"
+  } else {
+    role_ok    <- role != "split"
+    include_ok <- sample_table$include
+  }
+  sample_table[role_ok & include_ok, , drop = FALSE]
 }
 
 expand_split_samples <- function(samples, cfg) {
@@ -1256,13 +1293,26 @@ run_pipeline <- function(cli_opts) {
   }
   
   sample_table <- load_sample_table(cfg, sample_sheet_override = cli_opts$sample_sheet)
+
+  # --samples explicitly names rows; when used, it bypasses both `include` and
+  # `split_role` (user typed the sample_id, so they want it regardless of the
+  # sheet defaults). --pairs and --groups layer on top as extra constraints but
+  # do NOT resurrect include=FALSE rows, to avoid `--groups CART` silently
+  # scooping up both the composite and the split views.
+  explicit_samples <- !is.null(cli_opts$samples) && length(cli_opts$samples) > 0
+  if (!explicit_samples) {
+    sample_table <- apply_include_and_role_filter(
+      sample_table,
+      split_mode = isTRUE(cli_opts$split)
+    )
+  }
   selected_samples <- select_samples(
     sample_table,
     sample_ids = cli_opts$samples,
     pair_ids = cli_opts$pairs,
     group_ids = cli_opts$groups
   )
-  
+
   if (nrow(selected_samples) == 0) {
     stop("No samples matched the selected filters.")
   }

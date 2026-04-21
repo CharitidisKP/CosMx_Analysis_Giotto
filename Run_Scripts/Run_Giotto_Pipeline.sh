@@ -2,10 +2,23 @@
 # ==============================================================================
 # CosMx Pipeline Launcher
 # Usage:
-#   ./run_pipeline.sh                          # all samples, all steps
-#   ./run_pipeline.sh --samples 1281           # one sample
-#   ./run_pipeline.sh --samples 1281 --sample-steps 01_load,02_qc
-#   ./run_pipeline.sh --dry-run                # preview without running
+#   ./Run_Giotto_Pipeline.sh                   # composite view: CART_composite + Control + 4 Conv (6 samples)
+#   ./Run_Giotto_Pipeline.sh --split           # split view: 4 CART biopsies + Control + 4 Conv (9 samples)
+#   ./Run_Giotto_Pipeline.sh --samples 1281    # one sample (bypasses include=FALSE if set)
+#   ./Run_Giotto_Pipeline.sh --samples CART_T0_S1
+#                                              # runs a single CART split even without --split
+#   ./Run_Giotto_Pipeline.sh --samples 1281 --sample-steps 01_load,02_qc
+#   ./Run_Giotto_Pipeline.sh --pairs pair_CART_S1 --split
+#                                              # T0 + T12 for patient 1 (paired design)
+#   ./Run_Giotto_Pipeline.sh --dry-run         # preview without running
+#
+# Sample selection rules:
+#   - `include` column in sample_sheet.csv is the default on/off switch.
+#   - `split_role` column ("composite"/"split"/"") controls which view is
+#     active: --split OFF keeps "composite" and "" (default); --split ON keeps
+#     "split" and "".
+#   - --samples X always runs X, bypassing include and split_role.
+#   - --pairs / --groups layer on top but do NOT resurrect include=FALSE rows.
 #
 # All arguments are passed directly to CosMx_pipeline.R.
 # Output is logged to Output/pipeline_log_<timestamp>.log.
