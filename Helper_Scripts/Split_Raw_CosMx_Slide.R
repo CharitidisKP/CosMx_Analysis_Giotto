@@ -193,14 +193,16 @@ main <- function() {
 
     cat(sprintf("\n--- %s (FOV %d-%d) ---\n", tgt, fmin, fmax))
 
+    # In CosMx, cell_ID is PER-FOV (not globally unique) - "cell 1" exists
+    # in every FOV. Filter expression and polygons by FOV range directly,
+    # the same way metadata is filtered. Both files carry an `fov` column.
     meta_keep    <- meta[meta[[meta_fov_c]] >= fmin & meta[[meta_fov_c]] <= fmax]
-    keep_cells   <- as.character(meta_keep[[meta_cell_c]])
-    if (length(keep_cells) == 0L) {
+    if (nrow(meta_keep) == 0L) {
       stop("No cells match FOV range ", fmin, "-", fmax, " for target '", tgt,
            "'. Check --splits spec.")
     }
-    expr_keep    <- expr[as.character(expr[[expr_cell_c]]) %chin% keep_cells]
-    poly_keep    <- poly[as.character(poly[[poly_cell_c]]) %chin% keep_cells]
+    expr_keep    <- expr[expr[["fov"]] >= fmin & expr[["fov"]] <= fmax]
+    poly_keep    <- poly[poly[["fov"]] >= fmin & poly[["fov"]] <= fmax]
     fov_pos_keep <- fov_pos[fov_pos[[fov_pos_fov_c]] >= fmin &
                             fov_pos[[fov_pos_fov_c]] <= fmax]
 
