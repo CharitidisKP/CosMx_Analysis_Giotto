@@ -61,6 +61,65 @@ sample_plot_title <- function(sample_id, title) {
   paste(sample_id, title, sep = " - ")
 }
 
+# Build a human-friendly plot title from a sample_sheet row. Examples:
+#   CART_pt1   T0      -> "CART S1 - Before treatment - <subtitle>"
+#   CART_pt2   T12     -> "CART S2 - After treatment - <subtitle>"
+#   Conv_pt1   T0      -> "Conventional S1 - Before treatment - <subtitle>"
+#   Control_pt1 (any)  -> "Healthy Control - <subtitle>"
+#
+# sample_row is a one-row data.frame / named list from sample_sheet.csv with
+# columns group_id, patient_id, timepoint. Unrecognised groups fall back to
+# sample_plot_title().
+plot_title_for_sample <- function(sample_row, subtitle,
+                                   sample_id_fallback = NULL) {
+  pick <- function(field) {
+    if (is.null(sample_row)) return(NA_character_)
+    val <- tryCatch(as.character(sample_row[[field]])[1],
+                    error = function(e) NA_character_)
+    if (length(val) == 0 || is.na(val) || !nzchar(val)) NA_character_ else val
+  }
+
+  grp <- pick("group_id")
+  tp  <- pick("timepoint")
+  pid <- pick("patient_id")
+
+  if (is.na(grp)) {
+    # No sample-sheet context: fall back to "sample_id - subtitle"
+    return(sample_plot_title(sample_id_fallback, subtitle))
+  }
+
+  tp_label <- switch(as.character(tp),
+                     "T0"  = "Before treatment",
+                     "T12" = "After treatment",
+                     "")
+
+  grp_label <- switch(as.character(grp),
+                      "CART"         = "CART",
+                      "Conventional" = "Conventional",
+                      "Conv"         = "Conventional",
+                      "Control"      = "Healthy Control",
+                      as.character(grp))
+
+  # S-tag: CART_pt1 -> S1 ; Conv_pt2 -> S2 ; else blank.
+  s_tag <- NA_character_
+  if (!is.na(pid)) {
+    m <- regmatches(pid, regexec("_pt(\\d+)$", pid))[[1]]
+    if (length(m) == 2L) s_tag <- paste0("S", m[2])
+  }
+
+  prefix <- if (grp_label == "Healthy Control") {
+    "Healthy Control"
+  } else if (!is.na(s_tag) && nzchar(tp_label)) {
+    paste(grp_label, s_tag, "-", tp_label)
+  } else if (!is.na(s_tag)) {
+    paste(grp_label, s_tag)
+  } else {
+    grp_label
+  }
+
+  paste(prefix, subtitle, sep = " - ")
+}
+
 has_ggtext <- function() {
   requireNamespace("ggtext", quietly = TRUE)
 }

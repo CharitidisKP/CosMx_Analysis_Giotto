@@ -43,6 +43,84 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
   source(pipeline_utils)
 }
 
+# Gene-expression polygon renderer for Section 3 feature plots.
+# spatInSituPlotPoints() does not reliably accept a gene name as polygon_fill
+# across Giotto versions, so we draw directly with ggplot2 using the
+# polygon table from .extract_polygon_df() (defined in 07_Annotation.R).
+# Returns a ggplot or NULL if polygon data / expression can't be assembled.
+.plot_gene_polygons <- function(gobj, gene, title_txt, norm_mat = NULL) {
+  if (is.null(norm_mat)) {
+    norm_mat <- tryCatch(
+      getExpression(gobj, values = "normalized", output = "matrix"),
+      error = function(e) NULL
+    )
+  }
+  if (is.null(norm_mat) || !(gene %in% rownames(norm_mat))) return(NULL)
+
+  poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+  if (is.null(poly_df) || nrow(poly_df) == 0) return(NULL)
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
+                               poly_df$part, sep = "_")
+
+  # Map expression values onto the polygon table by cell_ID.
+  expr_vec <- norm_mat[gene, , drop = TRUE]
+  poly_df$expr <- unname(expr_vec[poly_df$cell_ID])
+
+  ggplot2::ggplot(poly_df,
+                  ggplot2::aes(x = x, y = y,
+                               group = poly_group, fill = expr)) +
+    ggplot2::geom_polygon(colour = "grey30", linewidth = 0.08) +
+    ggplot2::scale_fill_gradient(low = "lightgrey", high = "red",
+                                 name = gene, na.value = "grey85") +
+    ggplot2::coord_fixed() +
+    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+    presentation_theme(base_size = 11, legend_position = "right") +
+    ggplot2::theme(
+      axis.title = ggplot2::element_blank(),
+      axis.text  = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      panel.grid = ggplot2::element_blank()
+    )
+}
+
+# Find the sub-biopsy split rows belonging to a composite sample.
+# Returns a data.frame (rows with sample_id, fov_min, fov_max, group_id,
+# patient_id, timepoint) or NULL if the current sample is not a composite
+# or the sheet is unavailable.
+.discover_composite_subsamples <- function(sample_row, sample_sheet_path) {
+  if (is.null(sample_row) || is.null(sample_sheet_path)) return(NULL)
+  if (!file.exists(sample_sheet_path)) return(NULL)
+
+  role <- tryCatch(as.character(sample_row$split_role)[1],
+                   error = function(e) NA_character_)
+  if (is.null(role) || is.na(role) || !nzchar(role) || role != "composite") {
+    return(NULL)
+  }
+
+  slide_num <- tryCatch(as.character(sample_row$slide_num)[1],
+                        error = function(e) NA_character_)
+
+  sheet <- tryCatch(safe_read_sheet(sample_sheet_path),
+                    error = function(e) NULL)
+  if (is.null(sheet)) return(NULL)
+  sheet <- as.data.frame(sheet, stringsAsFactors = FALSE)
+
+  matches_slide <- if (!is.na(slide_num) && "slide_num" %in% names(sheet)) {
+    as.character(sheet$slide_num) == slide_num
+  } else rep(TRUE, nrow(sheet))
+
+  keep <- matches_slide &
+    !is.na(sheet$split_role) &
+    as.character(sheet$split_role) == "split"
+
+  subs <- sheet[keep, , drop = FALSE]
+  if (nrow(subs) == 0) return(NULL)
+  # Require fov_min / fov_max to be set so we can actually subset.
+  subs <- subs[!is.na(subs$fov_min) & !is.na(subs$fov_max), , drop = FALSE]
+  if (nrow(subs) == 0) return(NULL)
+  subs
+}
+
 .muffle_known_giotto_plot_warnings <- function(expr) {
   withCallingHandlers(
     expr,
@@ -133,7 +211,9 @@ create_visualizations <- function(gobj,
                                   cluster_column = "leiden_clust",
                                   marker_genes = NULL,
                                   max_cells_preview = NULL,
-                                  preview_seed = 1) {
+                                  preview_seed = 1,
+                                  sample_row = NULL,
+                                  sample_sheet_path = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 08: Comprehensive visualization\n")
@@ -274,129 +354,216 @@ create_visualizations <- function(gobj,
   cat("✓ Dimensionality reduction plots complete\n\n")
   
   # ============================================================================
-  # Section 2: Spatial Plots
+  # Section 2+3: Polygon-based Spatial & Feature Plots
   # ============================================================================
-  
-  cat("Creating spatial plots...\n")
-  spatial_folder <- file.path(results_folder, "02_Spatial")
-  dir.create(spatial_folder, recursive = TRUE, showWarnings = FALSE)
-  
-  # Spatial - Clusters
-  tryCatch({
-    .muffle_known_giotto_plot_warnings(
-      spatPlot2D(
-        gobject = plot_gobj,
-        cell_color = cluster_column,
-        point_size = 0.5,
-        show_image = FALSE,
-        point_alpha = 0.8,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_spatial_clusters"),
-          save_dir = spatial_folder,
-          base_width = 14,
-          base_height = 10
-        )
-      )
-    )
-    cat("  ✓ Spatial clusters\n")
-  }, error = function(e) {
-    cat("  ⚠ Spatial clusters failed:", conditionMessage(e), "\n") 
-    }
+  # Both spatial (celltype / cluster) and feature (gene-expression) plots use
+  # the shared polygon renderer .spat_in_situ_outlined() defined in
+  # 07_Annotation.R. Falls back to the previous spatPlot2D / spatFeatPlot2D
+  # path only if the polygon helper returns NULL (e.g. no polygon data).
+
+  # Genes on the panel but absent from the expression matrix (dropped by QC
+  # or never loaded) cause Giotto's internal subscript to fail opaquely. Filter
+  # the list up front so the loop reports a clean "skipped" line instead.
+  norm_mat <- tryCatch(
+    getExpression(plot_gobj, values = "normalized", output = "matrix"),
+    error = function(e) NULL
   )
-  
-  # Spatial - Cell types
-  for (ct_col in celltype_columns) {
-    tryCatch({
-      .muffle_known_giotto_plot_warnings(
-        spatPlot2D(
-          gobject = plot_gobj,
-          cell_color = ct_col,
-          point_size = 0.5,
-          show_image = FALSE,
-          point_alpha = 0.8,
-          save_plot = TRUE,
-          save_param = list(
-            save_name = paste0(sample_id, "_spatial_", ct_col),
-            save_dir = spatial_folder,
-            base_width = 14,
-            base_height = 10
-          )
+  available_genes <- if (!is.null(norm_mat)) rownames(norm_mat) else character(0)
+
+  .render_spatial_and_features <- function(gobj_local,
+                                            spatial_dir,
+                                            feature_dir,
+                                            title_row,
+                                            sample_label) {
+    dir.create(spatial_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(feature_dir, recursive = TRUE, showWarnings = FALSE)
+
+    meta_local <- as.data.frame(pDataDT(gobj_local))
+
+    # --- Spatial: clusters --------------------------------------------------
+    if (cluster_column %in% names(meta_local)) {
+      tryCatch({
+        clust_vals <- as.character(meta_local[[cluster_column]])
+        cmap_clust <- .build_colour_map_safe(clust_vals)
+        p <- .spat_in_situ_outlined(
+          gobj           = gobj_local,
+          fill_col       = cluster_column,
+          fill_as_factor = TRUE,
+          colour_map     = cmap_clust,
+          legend_title   = "Cluster",
+          title_txt      = plot_title_for_sample(title_row, "Clusters",
+                                                 sample_id_fallback = sample_label)
         )
+        if (!is.null(p)) {
+          save_presentation_plot(
+            plot     = p,
+            filename = file.path(spatial_dir,
+                                 paste0(sample_label, "_spatial_clusters.png")),
+            width = 14, height = 10, dpi = 300
+          )
+          cat("  ✓ Spatial clusters (polygon)\n")
+        } else {
+          cat("  ⚠ Spatial clusters: polygon renderer unavailable\n")
+        }
+      }, error = function(e) {
+        cat("  ⚠ Spatial clusters failed:", conditionMessage(e), "\n")
+      })
+    }
+
+    # --- Spatial: cell-type columns ----------------------------------------
+    for (ct_col in celltype_columns) {
+      if (!ct_col %in% names(meta_local)) next
+      tryCatch({
+        ct_vals <- as.character(meta_local[[ct_col]])
+        cmap_ct <- .build_colour_map_safe(ct_vals)
+        title_subtitle <- paste(pretty_plot_label(ct_col))
+        p <- .spat_in_situ_outlined(
+          gobj           = gobj_local,
+          fill_col       = ct_col,
+          fill_as_factor = TRUE,
+          colour_map     = cmap_ct,
+          legend_title   = "Cell Type",
+          title_txt      = plot_title_for_sample(title_row, title_subtitle,
+                                                 sample_id_fallback = sample_label)
+        )
+        if (!is.null(p)) {
+          save_presentation_plot(
+            plot     = p,
+            filename = file.path(spatial_dir,
+                                 paste0(sample_label, "_spatial_", ct_col, ".png")),
+            width = 14, height = 10, dpi = 300
+          )
+          cat("  ✓ Spatial", ct_col, "(polygon)\n")
+        } else {
+          cat("  ⚠ Spatial", ct_col, ": polygon renderer unavailable\n")
+        }
+      }, error = function(e) {
+        cat("  ⚠", ct_col, "failed:", conditionMessage(e), "\n")
+      })
+    }
+
+    # --- Feature plots ------------------------------------------------------
+    if (!is.null(marker_genes) && length(marker_genes) > 0) {
+      norm_local <- tryCatch(
+        getExpression(gobj_local, values = "normalized", output = "matrix"),
+        error = function(e) NULL
       )
-      cat("  ✓ Spatial", ct_col, "\n")
-    }, error = function(e) {
-      cat("  ⚠", ct_col, " failed:", conditionMessage(e), "\n")
+      local_genes   <- if (!is.null(norm_local)) rownames(norm_local) else available_genes
+      genes_kept    <- intersect(marker_genes, local_genes)
+      genes_skipped <- setdiff(marker_genes, local_genes)
+      if (length(genes_skipped) > 0) {
+        cat("  ℹ Skipping", length(genes_skipped),
+            "gene(s) absent from expression matrix:",
+            paste(genes_skipped, collapse = ", "), "\n")
       }
-    )
+      if (length(genes_kept) > 0) {
+        cat("Creating feature plots for", length(genes_kept), "genes...\n")
+        for (gene in genes_kept) {
+          tryCatch({
+            p <- .plot_gene_polygons(
+              gobj      = gobj_local,
+              gene      = gene,
+              norm_mat  = norm_local,
+              title_txt = plot_title_for_sample(
+                title_row, paste(gene, "Expression"),
+                sample_id_fallback = sample_label
+              )
+            )
+            if (!is.null(p)) {
+              save_presentation_plot(
+                plot     = p,
+                filename = file.path(feature_dir,
+                                     paste0(sample_label, "_spatial_", gene, ".png")),
+                width = 12, height = 10, dpi = 300
+              )
+              cat("  ✓", gene, "\n")
+            } else {
+              cat("  ⚠", gene, ": polygon data / expression unavailable\n")
+            }
+          }, error = function(e) {
+            cat("  ⚠", gene, "failed:", conditionMessage(e), "\n")
+          })
+        }
+      }
+    }
+    invisible(NULL)
   }
 
+  # Defensive colour-map builder: prefer 07's .build_colour_map if present in
+  # the sourced env, else synthesise something usable locally.
+  if (!exists(".build_colour_map_safe", inherits = FALSE)) {
+    .build_colour_map_safe <- function(vals) {
+      if (exists(".build_colour_map", mode = "function", inherits = TRUE)) {
+        return(.build_colour_map(vals))
+      }
+      lev <- sort(unique(stats::na.omit(as.character(vals))))
+      stats::setNames(
+        grDevices::hcl.colors(max(length(lev), 1), palette = "Set3"),
+        lev
+      )
+    }
+  }
 
-  # Spatial - QC metrics
-  tryCatch({
-    .muffle_known_giotto_plot_warnings(
-      spatPlot2D(
-        gobject = plot_gobj,
-        cell_color = "nr_feats",
-        color_as_factor = FALSE,
-        ## Check if this is a thing in one of the packages ##
-        # gradient_style = "sequential",
-        point_size = 0.5,
-        show_image = FALSE,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_spatial_genes_per_cell"),
-          save_dir = spatial_folder,
-          base_width = 14,
-          base_height = 10
-        )
-      )
-    )
-    cat("  ✓ Spatial genes per cell\n")
-  }, error = function(e) {
-    cat("  ⚠ Spatial QC failed:", conditionMessage(e), "\n") 
-    }
+  # --- Main call: full object -------------------------------------------------
+  cat("Creating spatial + feature plots (main)...\n")
+  .render_spatial_and_features(
+    gobj_local   = plot_gobj,
+    spatial_dir  = file.path(results_folder, "02_Spatial"),
+    feature_dir  = file.path(results_folder, "03_Features"),
+    title_row    = sample_row,
+    sample_label = sample_id
   )
-  
-  cat("✓ Spatial plots complete\n\n")
-  
-  # ============================================================================
-  # Section 3: Feature Plots
-  # ============================================================================
-  
-  if (!is.null(marker_genes) && length(marker_genes) > 0) {
-    
-    cat("Creating feature plots for", length(marker_genes), "genes...\n")
-    feature_folder <- file.path(results_folder, "03_Features")
-    dir.create(feature_folder, recursive = TRUE, showWarnings = FALSE)
-    
-    # Spatial feature plots
-    for (gene in marker_genes) {
-      tryCatch({
-        .muffle_known_giotto_plot_warnings(
-          spatFeatPlot2D(
-            gobject = plot_gobj,
-            expression_values = "normalized",
-            feats = gene,
-            point_size = 0.5,
-            show_image = FALSE,
-            save_plot = TRUE,
-            save_param = list(
-              save_name = paste0(sample_id, "_spatial_", gene),
-              save_dir = feature_folder,
-              base_width = 12,
-              base_height = 10
-            )
-          )
-        )
-        cat("  ✓", gene, "\n")
-      }, error = function(e) {
-        cat("  ⚠", gene, " failed:", conditionMessage(e), "\n") 
+  cat("✓ Main spatial + feature plots complete\n\n")
+
+  # --- Per-sub-biopsy plots (CART composite) ---------------------------------
+  # If this sample is a composite with sub-biopsy split rows in the sample
+  # sheet, emit the same plots filtered by FOV range into per-biopsy subfolders.
+  sub_rows <- .discover_composite_subsamples(sample_row, sample_sheet_path)
+  if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
+    cat("Composite sample detected — rendering", nrow(sub_rows),
+        "per-sub-biopsy subfolder(s)...\n")
+    meta_all <- as.data.frame(pDataDT(plot_gobj))
+    if (!"fov" %in% names(meta_all)) {
+      cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+    } else {
+      for (k in seq_len(nrow(sub_rows))) {
+        sub_r  <- sub_rows[k, , drop = FALSE]
+        sub_id <- as.character(sub_r$sample_id)
+        fmin   <- as.integer(sub_r$fov_min)
+        fmax   <- as.integer(sub_r$fov_max)
+        if (anyNA(c(fmin, fmax))) {
+          cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+          next
         }
-      )
+        cell_ids <- meta_all$cell_ID[
+          !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
+        ]
+        if (length(cell_ids) == 0) {
+          cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
+              ", skipped\n", sep = "")
+          next
+        }
+        sub_gobj <- tryCatch(
+          subsetGiotto(plot_gobj, cell_ids = cell_ids),
+          error = function(e) {
+            cat("  ⚠ ", sub_id, ": subsetGiotto failed: ",
+                conditionMessage(e), "\n", sep = "")
+            NULL
+          }
+        )
+        if (is.null(sub_gobj)) next
+        cat("  → ", sub_id, " (FOV ", fmin, "-", fmax,
+            ", ", length(cell_ids), " cells)\n", sep = "")
+        .render_spatial_and_features(
+          gobj_local   = sub_gobj,
+          spatial_dir  = file.path(results_folder, "02_Spatial", sub_id),
+          feature_dir  = file.path(results_folder, "03_Features", sub_id),
+          title_row    = sub_r,
+          sample_label = sub_id
+        )
+      }
+      cat("✓ Sub-biopsy spatial + feature plots complete\n\n")
     }
-    
-    cat("✓ Feature plots complete\n\n")
   }
   
   # ============================================================================

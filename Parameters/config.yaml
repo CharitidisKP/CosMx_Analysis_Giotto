@@ -255,6 +255,13 @@ parameters:
     min_gene_overlap: 100
     create_plots: true
     conf_threshold: 0.8
+    # Which annotation profiles to run and whether to score/select the best:
+    #   "default"     -> only default_profile (HCA_Kidney), supervised + refinement.
+    #                    Both columns kept in pDataDT; no scoring.
+    #   "all"         -> every profile listed above, supervised + refinement each.
+    #                    All columns kept; no scoring.
+    #   "best_select" -> every profile + score them + pick best (legacy behavior).
+    profile_strategy: "default"
     # Composite score weights for auto-selecting the best annotation column.
     # Must sum to ~1.0. confidence = mean per-cell posterior; high_conf_fraction
     # = fraction with posterior >= conf_threshold; composition = how well the

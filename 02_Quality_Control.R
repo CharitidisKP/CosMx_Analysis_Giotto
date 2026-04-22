@@ -71,12 +71,28 @@ quality_control <- function(gobj,
     gobj <- loadGiotto(gobj)
     cat("✓ Loaded\n\n")
   }
-  
+
   # Create output directory
   results_folder <- file.path(output_dir, "02_QC")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
-  
-  # Get initial stats
+
+  # Drop SystemControl probes before any stats or filtering. These are QC
+  # probes, not real genes — keeping them pollutes downstream InSituType gene
+  # lists, dim reduction, and feature plots. Negative/FalseCode probes are
+  # retained: InSituType uses them for per-cell background estimation.
+  all_feat_ids_pre_ctrl <- fDataDT(gobj)$feat_ID
+  ctrl_mask <- grepl("^SystemControl", all_feat_ids_pre_ctrl, ignore.case = TRUE)
+  n_controls_removed <- sum(ctrl_mask)
+  if (n_controls_removed > 0) {
+    cat("Removing", n_controls_removed, "SystemControl probes (Negative/FalseCode retained for InSituType background)...\n")
+    gobj <- subsetGiotto(
+      gobject  = gobj,
+      feat_ids = all_feat_ids_pre_ctrl[!ctrl_mask]
+    )
+    cat("✓ SystemControl probes removed\n\n")
+  }
+
+  # Get initial stats (post-SystemControl removal)
   n_cells_initial <- length(gobj@cell_ID$cell)
   n_genes_initial <- length(gobj@feat_ID$rna)
   
@@ -437,6 +453,7 @@ quality_control <- function(gobj,
     parameter = c("gene_min_cells", "cell_min_genes", "cell_max_genes",
                   "min_count", "max_mito_pct",
                   "n_mt_genes_detected",
+                  "n_control_probes_removed",
                   "n_cells_initial", "n_cells_final",
                   "n_genes_initial", "n_genes_final",
                   "timestamp"),
@@ -446,6 +463,7 @@ quality_control <- function(gobj,
               as.character(min_count),
               ifelse(is.null(max_mito_pct), "NULL", as.character(max_mito_pct)),
               as.character(length(mt_genes)),
+              as.character(n_controls_removed),
               as.character(n_cells_initial),
               as.character(n_cells_after),
               as.character(n_genes_initial),

@@ -812,6 +812,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       create_plots = cfg$parameters$annotation$create_plots %||% TRUE,
       conf_threshold = cfg$parameters$annotation$conf_threshold %||% NULL,
       score_weights = cfg$parameters$annotation$score_weights %||% NULL,
+      profile_strategy = cfg$parameters$annotation$profile_strategy %||% "default",
       save_object = TRUE,
       seed = cfg$reproducibility$seed %||% 42
     ),
@@ -823,7 +824,9 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       cluster_column = cfg$parameters$visualization$cluster_column %||% "leiden_clust",
       marker_genes = flatten_marker_genes(cfg$parameters$visualization$marker_genes),
       max_cells_preview = cfg$parameters$visualization$max_cells_preview %||% NULL,
-      preview_seed = cfg$parameters$visualization$preview_seed %||% 1
+      preview_seed = cfg$parameters$visualization$preview_seed %||% 1,
+      sample_row = sample_row,
+      sample_sheet_path = cfg$paths$sample_sheet
     ),
     "09_spatial" = runtime_env$build_spatial_network(
       gobj = gobj,
@@ -990,22 +993,37 @@ run_sample_pipeline <- function(runtime_env,
     sample_name <- sample_row$sample_id[[1]]
     sample_output_dir <- ensure_dir(sample_row$output_dir[[1]])
     sample_row$output_dir <- sample_output_dir
-    
+
+    # Per-sample log: writes to <sample_output_dir>/Pipeline_log_<id>_<date>.log
+    # split = TRUE keeps output flowing to stdout so the shell-level tee in
+    # Run_Giotto_Pipeline.sh still captures a combined global log.
+    log_file <- file.path(
+      sample_output_dir,
+      sprintf("Pipeline_log_%s_%s.log",
+              sample_name, format(Sys.time(), "%Y-%m-%d_%H%M%S"))
+    )
+    log_con <- tryCatch(file(log_file, open = "wt"), error = function(e) NULL)
+    if (!is.null(log_con)) {
+      sink(log_con, split = TRUE, type = "output")
+      sink(log_con, split = TRUE, type = "message")
+    }
+
     message("\n=== Sample: ", sample_name, " ===")
     message("Steps: ", paste(vapply(steps_to_run, step_label, character(1)), collapse = " -> "))
-    
+    if (!is.null(log_con)) message("Per-sample log: ", log_file)
+
     start_time <- Sys.time()
     status <- "SUCCESS"
     last_step <- NA_character_
     error_message <- NA_character_
-    
+
     tryCatch({
       current_gobj <- NULL
       if (steps_to_run[1] != SAMPLE_STEP_ORDER[1]) {
         previous_step <- SAMPLE_STEP_ORDER[match(steps_to_run[1], SAMPLE_STEP_ORDER) - 1]
         current_gobj <- load_sample_checkpoint(sample_row, previous_step)
       }
-      
+
       for (step_id in steps_to_run) {
         message("Running ", step_label(step_id), " for ", sample_name)
         current_gobj <- invoke_sample_step(runtime_env, step_id, current_gobj, sample_row, cfg)
@@ -1058,8 +1076,16 @@ run_sample_pipeline <- function(runtime_env,
       if (!isTRUE(cfg$pipeline$skip_on_error)) {
         stop(e)
       }
+    }, finally = {
+      # Always tear down per-sample sinks and close the log connection, even
+      # on mid-step error, so the next sample starts with a clean sink stack.
+      if (!is.null(log_con)) {
+        try(sink(type = "message"), silent = TRUE)
+        try(sink(type = "output"),  silent = TRUE)
+        try(close(log_con),         silent = TRUE)
+      }
     })
-    
+
     elapsed <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
     results[[idx]] <- data.frame(
       sample_id = sample_name,

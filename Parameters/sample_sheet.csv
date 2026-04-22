@@ -1,9 +1,9 @@
 sample_id,subsample_id,directory_name,slide_num,slide_id,patient_id,pair_id,group_id,treatment,timepoint,include,split_role,fov_min,fov_max,notes
 CART_composite,,MCFASCIST1250Slide11979876960634322,1,batch_CART,CART_composite,,CART,CART,,TRUE,composite,,,Whole-slide CART composite (all 4 biopsies pooled). Active by default; excluded when --split is passed.
-CART_T0_S1,,MCFASCIST1250Slide11979,1,batch_CART,CART_pt1,pair_CART_S1,CART,CART,T0,FALSE,split,,,CART biopsy T0 patient 1 (pre-split FOV 55-71 of MCFASCIST1250Slide11979876960634322). Active only with --split (or when named via --samples).
-CART_T12_S1,,MCFASCIST1250Slide18769,1,batch_CART,CART_pt1,pair_CART_S1,CART,CART,T12,FALSE,split,,,CART biopsy T12 patient 1 (pre-split FOV 42-54). Active only with --split.
-CART_T0_S2,,MCFASCIST1250Slide16063,1,batch_CART,CART_pt2,pair_CART_S2,CART,CART,T0,FALSE,split,,,CART biopsy T0 patient 2 (pre-split FOV 29-41). Active only with --split.
-CART_T12_S2,,MCFASCIST1250Slide14320,1,batch_CART,CART_pt2,pair_CART_S2,CART,CART,T12,FALSE,split,,,CART biopsy T12 patient 2 (pre-split FOV 1-28). Active only with --split.
+CART_T0_S1,,MCFASCIST1250Slide11979,1,batch_CART,CART_pt1,pair_CART_S1,CART,CART,T0,FALSE,split,55,71,CART biopsy T0 patient 1 (pre-split FOV 55-71 of MCFASCIST1250Slide11979876960634322). Active only with --split (or when named via --samples).
+CART_T12_S1,,MCFASCIST1250Slide18769,1,batch_CART,CART_pt1,pair_CART_S1,CART,CART,T12,FALSE,split,42,54,CART biopsy T12 patient 1 (pre-split FOV 42-54). Active only with --split.
+CART_T0_S2,,MCFASCIST1250Slide16063,1,batch_CART,CART_pt2,pair_CART_S2,CART,CART,T0,FALSE,split,29,41,CART biopsy T0 patient 2 (pre-split FOV 29-41). Active only with --split.
+CART_T12_S2,,MCFASCIST1250Slide14320,1,batch_CART,CART_pt2,pair_CART_S2,CART,CART,T12,FALSE,split,1,28,CART biopsy T12 patient 2 (pre-split FOV 1-28). Active only with --split.
 1281,,MCFASCIST1250Slide21281,2,batch_Control,Control_pt1,,Control,Control,T0,TRUE,,,,Single raw sample directory
 19H28111,,MCFASCLST1196Slide3119H28111,31,batch_Conv_2,Conv_pt1,pair_Conv_31_32,Conventional,Conventional,T0,TRUE,,,,
 17H13349,,MCFASCLST1196_Slide317H13349,3,batch_Conv_1,Conv_pt2,pair_Conv_3_4,Conventional,Conventional,T0,TRUE,,,,

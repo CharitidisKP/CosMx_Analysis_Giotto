@@ -1617,12 +1617,12 @@ refine_annotation <- function(gobj,
   cat("  Running InSituType::refineClusters()...\n")
 
   insitu_refined <- tryCatch({
-    InSituType::refineClusters(
+    suppressMessages(InSituType::refineClusters(
       logliks   = insitu_result$logliks,
       to_delete = to_delete,
       counts    = counts_mat,
       neg       = bg_per_cell
-    )
+    ))
   }, error = function(e) {
     cat("  \u26A0 refineClusters() failed:", conditionMessage(e), "\n")
     NULL
@@ -1924,13 +1924,43 @@ annotate_cells <- function(gobj,
                            create_plots     = TRUE,
                            conf_threshold   = NULL,
                            score_weights    = NULL,
+                           profile_strategy = "default",
                            save_object      = TRUE,
                            seed             = 42) {
-  
+
   cat("\n========================================\n")
   cat("STEP 07: Cell Type Annotation\n")
   cat("Sample:", sample_id, "\n")
   cat("========================================\n\n")
+
+  # Normalise profile_strategy and filter the profile list accordingly.
+  profile_strategy <- tolower(trimws(as.character(profile_strategy %||% "default")))
+  if (!profile_strategy %in% c("default", "all", "best_select")) {
+    warning("Unknown profile_strategy '", profile_strategy,
+            "' — falling back to 'default'.", call. = FALSE)
+    profile_strategy <- "default"
+  }
+  cat("Profile strategy:", profile_strategy, "\n")
+
+  if (profile_strategy == "default") {
+    # Run only the default profile (HCA_Kidney by default).
+    if (!is.null(default_profile)) {
+      keep_idx <- which(vapply(profiles,
+                               function(p) identical(p$name, default_profile),
+                               logical(1)))
+      if (length(keep_idx) == 0) {
+        cat("⚠ default_profile '", default_profile,
+            "' not found in profile list; keeping first profile only.\n", sep = "")
+        keep_idx <- 1
+      }
+    } else {
+      keep_idx <- 1
+    }
+    profiles <- profiles[keep_idx]
+    cat("  (Running", length(profiles), "profile:", profiles[[1]]$name, ")\n\n")
+  } else {
+    cat("  (Running", length(profiles), "profile(s))\n\n")
+  }
   
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
@@ -2085,19 +2115,25 @@ annotate_cells <- function(gobj,
         next
       }
       cat("  Sufficient overlap - proceeding\n\n")
-      
+
+      # Pre-align the count matrix to the reference-profile gene set so
+      # InSituType has no "genes missing from fixed_profiles" message to
+      # print. Aligned matrix is used only for this profile's InSituType
+      # calls; the full counts_mat is kept for downstream plotting.
+      counts_mat_aligned <- counts_mat[, common_genes, drop = FALSE]
+
       # BLOCK A: SUPERVISED ------------------------------------------------
       cat("--- SUPERVISED ---\n")
       cat("Running InSituType (supervised)...\n")
       cat("  Seed:", seed, "\n")
 
       set.seed(seed)
-      insitu_supervised <- InSituType::insitutypeML(
-        x                  = counts_mat,
+      insitu_supervised <- suppressMessages(InSituType::insitutypeML(
+        x                  = counts_mat_aligned,
         neg                = bg_per_cell,
         reference_profiles = ref_profiles,
         align_genes        = align_genes
-      )
+      ))
       
       cat("\u2713 Supervised complete\n")
       cat("  Cell types found:", length(unique(insitu_supervised$clust)), "\n\n")
@@ -2188,15 +2224,15 @@ annotate_cells <- function(gobj,
         
         insitu_semi <- tryCatch({
           set.seed(seed)
-          InSituType::insitutype(
-            x                  = counts_mat,
+          suppressMessages(InSituType::insitutype(
+            x                  = counts_mat_aligned,
             neg                = bg_per_cell,
             reference_profiles = ref_profiles,
             n_clusts           = n_clusts_semi,
             cohort             = cohort_vec,
             align_genes        = align_genes,
             n_starts           = n_starts
-          )
+          ))
         }, error = function(e) {
           err_msg <- conditionMessage(e)
           n_cells <- nrow(counts_mat)
@@ -2231,8 +2267,8 @@ annotate_cells <- function(gobj,
 
           fallback_result <- tryCatch({
             set.seed(seed)
-            InSituType::insitutype(
-              x                  = counts_mat,
+            suppressMessages(InSituType::insitutype(
+              x                  = counts_mat_aligned,
               neg                = bg_per_cell,
               reference_profiles = ref_profiles,
               n_clusts           = n_clusts_semi,
@@ -2240,7 +2276,7 @@ annotate_cells <- function(gobj,
               align_genes        = align_genes,
               n_starts           = n_starts,
               refinement         = FALSE
-            )
+            ))
           }, error = function(e2) {
             message("  \u21B3 Retry also failed: ", conditionMessage(e2))
             message("  \u21B3 Using supervised-only annotations.")
@@ -2528,7 +2564,7 @@ annotate_cells <- function(gobj,
         gobj <- refine_annotation(
           gobj           = gobj,
           insitu_result  = insitu_supervised,
-          counts_mat     = counts_mat,
+          counts_mat     = counts_mat_aligned,
           bg_per_cell    = bg_per_cell,
           cell_order     = cell_order,
           colour_map     = colour_map_sup,
@@ -2606,43 +2642,111 @@ annotate_cells <- function(gobj,
   }
 
   # ── Auto-select best annotation ──────────────────────────────────────────
-  cat("Selecting best annotation based on confidence and LN composition...\n")
-  annotation_selection <- tryCatch(
-    select_best_annotation(
-      gobj           = gobj,
-      annotation_dir = file.path(output_dir, "07_Annotation"),
-      sample_id      = sample_id,
-      conf_threshold = if (!is.null(conf_threshold) && conf_threshold > 0)
-                         conf_threshold else 0.8,
-      score_weights  = score_weights
-    ),
-    error = function(e) {
-      cat("  \u26A0 Annotation selection failed:", conditionMessage(e), "\n")
-      NULL
+  # profile_strategy governs whether we score profiles and pick one:
+  #   * "best_select" -> legacy behavior: score all profiles, pick best
+  #   * "default" / "all" -> skip scoring, keep all produced columns
+  meta_post <- as.data.frame(pDataDT(gobj))
+  produced_sup <- grep("^celltype_.*_supervised$",
+                       names(meta_post), value = TRUE)
+  produced_ref <- grep("^celltype_.*_supervised_refined$",
+                       names(meta_post), value = TRUE)
+  produced_cols <- unique(c(produced_sup, produced_ref))
+
+  annotation_selection <- NULL
+  if (profile_strategy == "best_select") {
+    cat("Selecting best annotation based on confidence and LN composition...\n")
+    annotation_selection <- tryCatch(
+      select_best_annotation(
+        gobj           = gobj,
+        annotation_dir = file.path(output_dir, "07_Annotation"),
+        sample_id      = sample_id,
+        conf_threshold = if (!is.null(conf_threshold) && conf_threshold > 0)
+                           conf_threshold else 0.8,
+        score_weights  = score_weights
+      ),
+      error = function(e) {
+        cat("  \u26A0 Annotation selection failed:", conditionMessage(e), "\n")
+        NULL
+      }
+    )
+
+    if (!is.null(annotation_selection)) {
+      best_col   <- annotation_selection$selected_col
+      best_score <- sub("^celltype_", "score_", best_col)
+      meta_now   <- as.data.frame(pDataDT(gobj))
+
+      if (best_col %in% names(meta_now) && best_score %in% names(meta_now)) {
+        update_df <- data.frame(
+          cell_ID        = meta_now$cell_ID,
+          celltype       = as.character(meta_now[[best_col]]),
+          celltype_score = as.numeric(meta_now[[best_score]]),
+          stringsAsFactors = FALSE
+        )
+        gobj <- addCellMetadata(
+          gobject        = gobj,
+          new_metadata   = update_df,
+          by_column      = TRUE,
+          column_cell_ID = "cell_ID"
+        )
+        cat("  \u2713 Generic 'celltype' column updated to selected annotation\n\n")
+      }
     }
-  )
+  } else {
+    # profile_strategy in {"default","all"}: skip scoring, keep all produced
+    # columns and let downstream steps decide which one(s) to consume.
+    default_name <- if (length(profiles) >= 1) profiles[[1]]$name else NULL
+    primary_col  <- if (!is.null(default_name))
+                      paste0("celltype_", default_name, "_supervised") else
+                      if (length(produced_sup)) produced_sup[1] else NULL
+    if (!is.null(primary_col) && primary_col %in% names(meta_post)) {
+      primary_score <- sub("^celltype_", "score_", primary_col)
+      if (primary_score %in% names(meta_post)) {
+        update_df <- data.frame(
+          cell_ID        = meta_post$cell_ID,
+          celltype       = as.character(meta_post[[primary_col]]),
+          celltype_score = as.numeric(meta_post[[primary_score]]),
+          stringsAsFactors = FALSE
+        )
+        gobj <- addCellMetadata(
+          gobject        = gobj,
+          new_metadata   = update_df,
+          by_column      = TRUE,
+          column_cell_ID = "cell_ID"
+        )
+      }
+      annotation_selection <- list(selected_col = primary_col,
+                                   scores_df    = NULL)
+    }
 
+    selection_json <- list(
+      mode                        = profile_strategy,
+      default_profile             = default_name,
+      selected_annotation_column  = primary_col,
+      selected_annotation_columns = produced_cols,
+      selection_timestamp         = format(Sys.time(), "%Y-%m-%d %H:%M:%S")
+    )
+    tryCatch({
+      jsonlite::write_json(
+        selection_json,
+        path       = file.path(output_dir, "07_Annotation",
+                               "annotation_selection.json"),
+        pretty     = TRUE,
+        auto_unbox = TRUE
+      )
+      cat("  \u2713 Annotation selection JSON written (mode: ",
+          profile_strategy, ", columns: ", length(produced_cols), ")\n",
+          sep = "")
+    }, error = function(e) {
+      cat("  \u26A0 Could not write annotation_selection.json: ",
+          conditionMessage(e), "\n", sep = "")
+    })
+  }
+
+  # B cell highlight plots (runs in every profile_strategy) --------------
   if (!is.null(annotation_selection)) {
-    best_col   <- annotation_selection$selected_col
-    best_score <- sub("^celltype_", "score_", best_col)
-    meta_now   <- as.data.frame(pDataDT(gobj))
-
-    if (best_col %in% names(meta_now) && best_score %in% names(meta_now)) {
-      update_df <- data.frame(
-        cell_ID        = meta_now$cell_ID,
-        celltype       = as.character(meta_now[[best_col]]),
-        celltype_score = as.numeric(meta_now[[best_score]]),
-        stringsAsFactors = FALSE
-      )
-      gobj <- addCellMetadata(
-        gobject        = gobj,
-        new_metadata   = update_df,
-        by_column      = TRUE,
-        column_cell_ID = "cell_ID"
-      )
-      cat("  \u2713 Generic 'celltype' column updated to selected annotation\n\n")
-
-      # ── B cell highlight plots (UMAP + spatial polygons) ───────────────
+    best_col <- annotation_selection$selected_col
+    meta_now <- as.data.frame(pDataDT(gobj))
+    if (!is.null(best_col) && best_col %in% names(meta_now)) {
       tryCatch({
         plot_bcell_highlights(
           gobj         = gobj,
@@ -2829,6 +2933,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       cohort_column    <- config$parameters$annotation$cohort_column
       min_gene_overlap <- config$parameters$annotation$min_gene_overlap %||% 100
       conf_threshold   <- config$parameters$annotation$conf_threshold  %||% NULL
+      profile_strategy <- config$parameters$annotation$profile_strategy %||% "default"
     } else {
       stop("Config required")
     }
@@ -2845,6 +2950,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       cohort_column    = cohort_column,
       min_gene_overlap = min_gene_overlap,
       conf_threshold   = conf_threshold,
+      profile_strategy = profile_strategy,
       save_object      = TRUE
     )
   } else {
