@@ -101,12 +101,12 @@ cci:
   run_sections:
     insitucor: true
     liana: true
-    nichenet: false
+    nichenet: true
     misty: true
-    nnsvg: false
+    nnsvg: true
   nichenet_mode: "single"
   sender_celltypes: null
-  receiver_celltype: null
+  receiver_celltype: "B cell"
   target_genes: null
   target_genes_by_receiver: null
   nichenet_network_dir: null

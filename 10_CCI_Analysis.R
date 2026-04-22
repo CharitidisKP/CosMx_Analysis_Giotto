@@ -1128,6 +1128,109 @@ plot_insitucor_results <- function(cor_results,
   poly_coords
 }
 
+# ==============================================================================
+# Shared B-cell polygon-overlay helpers used by run_nichenet / run_misty /
+# run_nnsvg. Reuse .cci_extract_polygon_df() above. Each plot outlines B cells
+# (thick blue border) on top of a base polygon map coloured by `value`.
+# ==============================================================================
+
+.resolve_bcell_ids <- function(gobj, celltype_col, focus_celltype = "^B cell$") {
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  if (is.null(celltype_col) || !celltype_col %in% names(meta)) return(character(0))
+  hit <- grepl(focus_celltype, as.character(meta[[celltype_col]]),
+               ignore.case = TRUE)
+  unique(as.character(meta$cell_ID[hit]))
+}
+
+.bcell_polygon_base <- function(poly_df, bcell_ids) {
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom, poly_df$part,
+                              sep = "_")
+  poly_df$.is_bcell  <- poly_df$cell_ID %in% bcell_ids
+  poly_df
+}
+
+#' Single-panel B-cell polygon overlay.
+#' @param values named numeric vector keyed by cell_ID (or gene-expression row).
+.plot_bcell_polygon_panel <- function(poly_df, values, title = "", subtitle = "",
+                                      fill_label = "value",
+                                      highlight_colour = "mediumblue") {
+  poly_df$.val <- unname(values[poly_df$cell_ID])
+  bcell_df <- poly_df[poly_df$.is_bcell, , drop = FALSE]
+  ggplot2::ggplot() +
+    ggplot2::geom_polygon(
+      data = poly_df,
+      mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = .val),
+      colour = "grey40", linewidth = 0.05
+    ) +
+    ggplot2::geom_polygon(
+      data = bcell_df,
+      mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+      fill = NA, colour = highlight_colour, linewidth = 0.35
+    ) +
+    ggplot2::scale_fill_viridis_c(option = "C", na.value = "grey90",
+                                  name = fill_label) +
+    ggplot2::coord_equal() +
+    ggplot2::labs(title = title, subtitle = subtitle, x = NULL, y = NULL) +
+    ggplot2::theme_void(base_size = 10) +
+    ggplot2::theme(
+      plot.title    = ggplot2::element_text(size = 11, face = "bold"),
+      plot.subtitle = ggplot2::element_text(size = 9,  colour = "grey30"),
+      legend.key.height = grid::unit(10, "pt")
+    )
+}
+
+#' Multi-panel grid: one panel per gene, B cells outlined everywhere.
+#' `genes` is a character vector of gene names present in `expr_mat` rows.
+.plot_bcell_polygon_grid <- function(poly_df, expr_mat, genes, bcell_ids,
+                                     outfile, ncol_grid = 3, width = 12,
+                                     height = 10, title = NULL,
+                                     highlight_colour = "mediumblue") {
+  genes <- intersect(genes, rownames(expr_mat))
+  if (length(genes) == 0) return(FALSE)
+  panels <- lapply(genes, function(g) {
+    vals <- expr_mat[g, ]
+    .plot_bcell_polygon_panel(
+      poly_df = poly_df, values = vals,
+      title = g, fill_label = "expr",
+      highlight_colour = highlight_colour
+    )
+  })
+  if (!requireNamespace("patchwork", quietly = TRUE)) return(FALSE)
+  combined <- patchwork::wrap_plots(panels, ncol = ncol_grid)
+  if (!is.null(title)) {
+    combined <- combined + patchwork::plot_annotation(title = title)
+  }
+  ggplot2::ggsave(outfile, combined, width = width, height = height, dpi = 150)
+  TRUE
+}
+
+#' Colour each cell polygon by a categorical celltype; outline B cells.
+.plot_bcell_polygon_category <- function(poly_df, ct_vec, focus_labels,
+                                         title, outfile, width = 9, height = 8,
+                                         highlight_colour = "mediumblue") {
+  poly_df$.ct <- unname(ct_vec[poly_df$cell_ID])
+  poly_df$.ct <- ifelse(poly_df$.ct %in% focus_labels, poly_df$.ct, "Other")
+  bcell_df <- poly_df[poly_df$.is_bcell, , drop = FALSE]
+  p <- ggplot2::ggplot() +
+    ggplot2::geom_polygon(
+      data = poly_df,
+      mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = .ct),
+      colour = "grey40", linewidth = 0.05
+    ) +
+    ggplot2::geom_polygon(
+      data = bcell_df,
+      mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+      fill = NA, colour = highlight_colour, linewidth = 0.35
+    ) +
+    ggplot2::scale_fill_brewer(palette = "Set1", na.value = "grey90",
+                               name = "sender") +
+    ggplot2::coord_equal() +
+    ggplot2::labs(title = title, x = NULL, y = NULL) +
+    ggplot2::theme_void(base_size = 10)
+  ggplot2::ggsave(outfile, p, width = width, height = height, dpi = 150)
+  TRUE
+}
+
 plot_liana_extended <- function(liana_agg,
                                 meta,
                                 gobj,
@@ -2744,6 +2847,135 @@ run_nichenet <- function(gobj,
             file.path(out_dir, paste0(sample_id, "_ligand_activities.csv")),
             row.names = FALSE)
   
+  # --- P1: top-20 ligand activity bar plot ---
+  tryCatch({
+    la_sorted <- ligand_activities[order(-ligand_activities$pearson), , drop = FALSE]
+    la_top    <- head(la_sorted, 20)
+    p_la <- ggplot2::ggplot(
+      la_top,
+      ggplot2::aes(x = stats::reorder(test_ligand, pearson), y = pearson)
+    ) +
+      ggplot2::geom_col(fill = "steelblue") +
+      ggplot2::coord_flip() +
+      ggplot2::labs(
+        x = NULL, y = "Pearson score",
+        title = sprintf("%s \u2014 NicheNet top-20 ligands \u2192 %s",
+                        sample_id, receiver_celltype)
+      ) +
+      ggplot2::theme_minimal(base_size = 11)
+    ggplot2::ggsave(
+      file.path(out_dir, paste0(sample_id, "_nichenet_top_ligand_activity.png")),
+      p_la, width = 6, height = 7, dpi = 150
+    )
+  }, error = function(e) {
+    cat("\u26A0 NicheNet ligand activity plot failed:", conditionMessage(e), "\n")
+  })
+  
+  # --- P2: ligand -> target heatmap (top 20 ligands x top 30 targets) ---
+  tryCatch({
+    top_ligs_p2 <- head(ligand_activities[order(-ligand_activities$pearson),
+                                          "test_ligand"], 20)
+    top_ligs_p2 <- intersect(top_ligs_p2, rownames(ligand_target_matrix))
+    if (length(top_ligs_p2) > 0) {
+      lt_sub <- as.matrix(ligand_target_matrix[top_ligs_p2, , drop = FALSE])
+      col_sums <- colSums(lt_sub, na.rm = TRUE)
+      top_targs_p2 <- names(sort(col_sums, decreasing = TRUE))[
+        seq_len(min(30L, length(col_sums)))
+      ]
+      lt_sub <- lt_sub[, top_targs_p2, drop = FALSE]
+      heat_df <- as.data.frame(as.table(lt_sub), stringsAsFactors = FALSE)
+      names(heat_df) <- c("ligand", "target", "weight")
+      heat_df$ligand <- factor(heat_df$ligand, levels = rev(top_ligs_p2))
+      heat_df$target <- factor(heat_df$target, levels = top_targs_p2)
+      p_lt <- ggplot2::ggplot(heat_df,
+                              ggplot2::aes(target, ligand, fill = weight)) +
+        ggplot2::geom_tile() +
+        ggplot2::scale_fill_gradient(low = "white", high = "#440154",
+                                     name = "regulatory\npotential") +
+        ggplot2::labs(
+          x = "Target gene", y = "Ligand",
+          title = sprintf("%s \u2014 NicheNet ligand-target potential",
+                          sample_id)
+        ) +
+        ggplot2::theme_minimal(base_size = 9) +
+        ggplot2::theme(axis.text.x = ggplot2::element_text(
+          angle = 90, hjust = 1, vjust = 0.5))
+      ggplot2::ggsave(
+        file.path(out_dir,
+                  paste0(sample_id, "_nichenet_ligand_target_heatmap.png")),
+        p_lt, width = 10, height = 7, dpi = 150
+      )
+    }
+  }, error = function(e) {
+    cat("\u26A0 NicheNet ligand-target heatmap failed:", conditionMessage(e), "\n")
+  })
+  
+  # --- P3, P4, P5: B-cell polygon overlays ---
+  tryCatch({
+    bcell_ids <- meta$cell_ID[meta[[celltype_col]] == receiver_celltype]
+    poly_df   <- .cci_extract_polygon_df(gobj)
+    if (!is.null(poly_df) && length(bcell_ids) > 0) {
+      poly_df <- .bcell_polygon_base(poly_df, bcell_ids)
+      
+      # P3: sender map (top-5 senders coloured, B cells outlined)
+      ct_vec <- stats::setNames(as.character(meta[[celltype_col]]), meta$cell_ID)
+      senders_p3 <- utils::head(sender_celltypes, 5)
+      .plot_bcell_polygon_category(
+        poly_df = poly_df,
+        ct_vec  = ct_vec,
+        focus_labels = senders_p3,
+        title   = sprintf("%s \u2014 NicheNet senders around %s",
+                          sample_id, receiver_celltype),
+        outfile = file.path(out_dir,
+                            paste0(sample_id, "_nichenet_bcell_sender_spatial.png"))
+      )
+      
+      # P4: top-6 ligand expression on polygons (senders show, receivers outlined)
+      top_ligs_spatial <- utils::head(
+        ligand_activities[order(-ligand_activities$pearson), "test_ligand"], 6
+      )
+      .plot_bcell_polygon_grid(
+        poly_df  = poly_df,
+        expr_mat = expr_mat,
+        genes    = as.character(top_ligs_spatial),
+        bcell_ids = bcell_ids,
+        outfile  = file.path(out_dir,
+                             paste0(sample_id, "_nichenet_bcell_top_ligand_expr.png")),
+        ncol_grid = 3, width = 12, height = 8,
+        title = sprintf("%s \u2014 top-6 NicheNet ligands", sample_id)
+      )
+      
+      # P5: top-6 target gene expression on polygons
+      top_targs_spatial <- {
+        top_ligs_for_targets <- utils::head(
+          ligand_activities[order(-ligand_activities$pearson), "test_ligand"], 20
+        )
+        top_ligs_for_targets <- intersect(as.character(top_ligs_for_targets),
+                                          rownames(ligand_target_matrix))
+        if (length(top_ligs_for_targets) > 0) {
+          lt_sub   <- as.matrix(ligand_target_matrix[top_ligs_for_targets, , drop = FALSE])
+          col_sums <- colSums(lt_sub, na.rm = TRUE)
+          utils::head(names(sort(col_sums, decreasing = TRUE)), 6)
+        } else character(0)
+      }
+      if (length(top_targs_spatial) > 0) {
+        .plot_bcell_polygon_grid(
+          poly_df   = poly_df,
+          expr_mat  = expr_mat,
+          genes     = as.character(top_targs_spatial),
+          bcell_ids = bcell_ids,
+          outfile   = file.path(out_dir,
+                                paste0(sample_id, "_nichenet_bcell_top_target_expr.png")),
+          ncol_grid = 3, width = 12, height = 8,
+          title = sprintf("%s \u2014 top-6 NicheNet targets in %s",
+                          sample_id, receiver_celltype)
+        )
+      }
+    }
+  }, error = function(e) {
+    cat("\u26A0 NicheNet B-cell polygon overlays failed:", conditionMessage(e), "\n")
+  })
+  
   cat("\u2713 NicheNet complete. Top ligands:\n")
   print(top_ligands)
   cat("  Results saved to:", out_dir, "\n\n")
@@ -2955,7 +3187,9 @@ run_misty <- function(gobj,
                       juxta_radius  = 50,
                       para_radius   = 200,
                       n_cores       = 4,
-                      expr_cache    = NULL) {
+                      expr_cache    = NULL,
+                      celltype_col   = NULL,
+                      focus_celltype = "^B cell$") {
   
   if (!requireNamespace("mistyR", quietly = TRUE))
     stop("mistyR not installed.\n",
@@ -3077,6 +3311,140 @@ run_misty <- function(gobj,
                 row.names = FALSE)
     }
     
+    # --- P6, P7, P8: mistyR native plots ---
+    tryCatch({
+      grDevices::png(
+        file.path(out_dir, paste0(sample_id, "_misty_improvement_stats.png")),
+        width = 900, height = 600, res = 150
+      )
+      print(mistyR::plot_improvement_stats(misty_results, "gain.R2"))
+      grDevices::dev.off()
+    }, error = function(e) {
+      try(grDevices::dev.off(), silent = TRUE)
+      cat("\u26A0 MISTy improvement_stats plot failed:",
+          conditionMessage(e), "\n")
+    })
+    tryCatch({
+      grDevices::png(
+        file.path(out_dir, paste0(sample_id, "_misty_view_contributions.png")),
+        width = 900, height = 600, res = 150
+      )
+      print(mistyR::plot_view_contributions(misty_results))
+      grDevices::dev.off()
+    }, error = function(e) {
+      try(grDevices::dev.off(), silent = TRUE)
+      cat("\u26A0 MISTy view_contributions plot failed:",
+          conditionMessage(e), "\n")
+    })
+    for (misty_view in c("juxtaview_50", "paraview_200")) {
+      tryCatch({
+        grDevices::png(
+          file.path(out_dir, sprintf("%s_misty_interaction_heatmap_%s.png",
+                                     sample_id, misty_view)),
+          width = 900, height = 900, res = 150
+        )
+        print(mistyR::plot_interaction_heatmap(misty_results, misty_view))
+        grDevices::dev.off()
+      }, error = function(e) {
+        try(grDevices::dev.off(), silent = TRUE)
+        cat("\u26A0 MISTy interaction_heatmap (", misty_view,
+            ") failed: ", conditionMessage(e), "\n", sep = "")
+      })
+    }
+    
+    # --- P9, P10: B-cell polygon overlays ---
+    tryCatch({
+      celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+      bcell_ids <- .resolve_bcell_ids(gobj, celltype_col_local, focus_celltype)
+      poly_df   <- .cci_extract_polygon_df(gobj)
+      if (!is.null(poly_df) && length(bcell_ids) > 0 &&
+          !is.null(misty_results$improvements)) {
+        poly_df <- .bcell_polygon_base(poly_df, bcell_ids)
+        imp_df  <- as.data.frame(misty_results$improvements)
+        
+        # P9: top-9 paraview-boosted targets, polygon grid with expression
+        gain_col <- intersect(c("gain.R2", "gain"), names(imp_df))[1]
+        tgt_col  <- intersect(c("target", "Target"), names(imp_df))[1]
+        if (!is.na(gain_col) && !is.na(tgt_col)) {
+          imp_ord <- imp_df[order(-imp_df[[gain_col]]), , drop = FALSE]
+          top_tgts_safe <- utils::head(unique(as.character(imp_ord[[tgt_col]])), 9L)
+          # Map safe names back to original panel names
+          name_map_path <- file.path(out_dir,
+                                     paste0(sample_id, "_misty_feature_name_map.csv"))
+          top_tgts <- top_tgts_safe
+          if (file.exists(name_map_path)) {
+            nm <- tryCatch(read.csv(name_map_path, stringsAsFactors = FALSE),
+                           error = function(e) NULL)
+            if (!is.null(nm) && all(c("original", "safe") %in% names(nm))) {
+              idx <- match(top_tgts_safe, nm$safe)
+              top_tgts <- ifelse(is.na(idx), top_tgts_safe, nm$original[idx])
+            }
+          }
+          # Original expression matrix (before the make.names rename).
+          expr_mat_orig <- if (!is.null(expr_cache) &&
+                               !is.null(expr_cache$normalized)) {
+            expr_cache$normalized
+          } else {
+            .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+          }
+          .plot_bcell_polygon_grid(
+            poly_df   = poly_df,
+            expr_mat  = expr_mat_orig,
+            genes     = as.character(top_tgts),
+            bcell_ids = bcell_ids,
+            outfile   = file.path(
+              out_dir, paste0(sample_id, "_misty_bcell_top_targets_spatial.png")
+            ),
+            ncol_grid = 3, width = 12, height = 12,
+            title = sprintf("%s \u2014 MISTy top-9 paraview-boosted targets",
+                            sample_id)
+          )
+        }
+        
+        # P10: per-cell paraview importance score
+        imp_detail <- if (!is.null(misty_results$importances))
+          as.data.frame(misty_results$importances) else NULL
+        if (!is.null(imp_detail)) {
+          view_col <- intersect(c("view", "View"), names(imp_detail))[1]
+          tgt2     <- intersect(c("Target", "target"), names(imp_detail))[1]
+          pred_col <- intersect(c("Predictor", "predictor"), names(imp_detail))[1]
+          imp_col  <- intersect(c("Importance", "importance"), names(imp_detail))[1]
+          para_view_name <- grep("^para", unique(imp_detail[[view_col]]),
+                                 value = TRUE, ignore.case = TRUE)[1]
+          if (!is.na(para_view_name) && !is.na(tgt2) && !is.na(imp_col)) {
+            imp_para <- imp_detail[imp_detail[[view_col]] == para_view_name, ,
+                                    drop = FALSE]
+            per_target_mean <- tapply(abs(imp_para[[imp_col]]),
+                                      imp_para[[tgt2]], mean, na.rm = TRUE)
+            genes_in_mat <- intersect(names(per_target_mean),
+                                      rownames(expr_mat_orig))
+            if (length(genes_in_mat) > 0) {
+              expr_sub <- expr_mat_orig[genes_in_mat, , drop = FALSE]
+              weights  <- per_target_mean[genes_in_mat]
+              per_cell_score <- as.numeric(weights %*% as.matrix(expr_sub))
+              names(per_cell_score) <- colnames(expr_sub)
+              bcell_mean <- mean(per_cell_score[intersect(names(per_cell_score),
+                                                          bcell_ids)],
+                                 na.rm = TRUE)
+              p_score <- .plot_bcell_polygon_panel(
+                poly_df = poly_df, values = per_cell_score,
+                title = sprintf("%s \u2014 MISTy paraview score", sample_id),
+                subtitle = sprintf("Mean B-cell score: %.3f", bcell_mean),
+                fill_label = "score"
+              )
+              ggplot2::ggsave(
+                file.path(out_dir,
+                          paste0(sample_id, "_misty_bcell_neighbourhood_score.png")),
+                p_score, width = 9, height = 8, dpi = 150
+              )
+            }
+          }
+        }
+      }
+    }, error = function(e) {
+      cat("\u26A0 MISTy B-cell polygon overlays failed:", conditionMessage(e), "\n")
+    })
+    
     cat("\u2713 MISTy complete. Results saved to:", out_dir, "\n\n")
     invisible(misty_results)
   } else {
@@ -3104,13 +3472,16 @@ run_nnsvg <- function(gobj,
                       output_dir,
                       n_top_svgs = 100,
                       n_cores    = 4,
-                      expr_cache = NULL) {
+                      expr_cache = NULL,
+                      celltype_col   = NULL,
+                      focus_celltype = "^B cell$") {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
     stop("nnSVG not installed.\n",
          'Install: BiocManager::install("nnSVG")')
   
   cat("\n--- nnSVG: Spatially variable gene detection ---\n")
+  cat("  \u26A0 nnSVG is computationally heavy (~30-120 min per sample at 50k cells).\n")
   
   out_dir <- file.path(output_dir, "10_CCI_Analysis", "svg")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -3227,6 +3598,103 @@ run_nnsvg <- function(gobj,
               file.path(out_dir,
                         paste0(sample_id, "_nnSVG_results.csv")))
     
+    # --- P11: rank plot (LR statistic vs rank, label top-20) ---
+    tryCatch({
+      lr_col <- intersect(c("LR_stat", "stat"), names(result_df))[1]
+      rank_df <- result_df
+      rank_df$.gene <- rownames(rank_df)
+      if (!is.na(lr_col)) {
+        p_rank <- ggplot2::ggplot(
+          rank_df, ggplot2::aes(x = rank, y = .data[[lr_col]])
+        ) +
+          ggplot2::geom_point(size = 0.6, alpha = 0.5, colour = "grey40") +
+          ggplot2::geom_point(
+            data = utils::head(rank_df, 20L),
+            colour = "firebrick", size = 1.2
+          ) +
+          ggplot2::labs(
+            x = "nnSVG rank", y = lr_col,
+            title = sprintf("%s \u2014 top-20 spatially variable genes", sample_id)
+          ) +
+          ggplot2::theme_minimal(base_size = 11)
+        if (requireNamespace("ggrepel", quietly = TRUE)) {
+          p_rank <- p_rank + ggrepel::geom_text_repel(
+            data = utils::head(rank_df, 20L),
+            ggplot2::aes(label = .gene), size = 3, max.overlaps = 30L
+          )
+        }
+        ggplot2::ggsave(
+          file.path(out_dir, paste0(sample_id, "_nnSVG_rank_plot.png")),
+          p_rank, width = 8, height = 6, dpi = 150
+        )
+      }
+    }, error = function(e) {
+      cat("\u26A0 nnSVG rank plot failed:", conditionMessage(e), "\n")
+    })
+    
+    # --- P12, P13: B-cell polygon overlays ---
+    tryCatch({
+      celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+      bcell_ids <- .resolve_bcell_ids(gobj, celltype_col_local, focus_celltype)
+      poly_df   <- .cci_extract_polygon_df(gobj)
+      top20 <- utils::head(rownames(result_df), 20L)
+      expr_mat_nnsvg <- if (!is.null(expr_cache) &&
+                            !is.null(expr_cache$normalized)) {
+        expr_cache$normalized
+      } else {
+        .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+      }
+      
+      # P12: 4x5 grid of top-20 SVGs on polygons, B cells outlined
+      if (!is.null(poly_df) && length(top20) > 0) {
+        poly_df <- .bcell_polygon_base(poly_df, bcell_ids)
+        .plot_bcell_polygon_grid(
+          poly_df   = poly_df,
+          expr_mat  = expr_mat_nnsvg,
+          genes     = as.character(top20),
+          bcell_ids = bcell_ids,
+          outfile   = file.path(out_dir,
+                                paste0(sample_id, "_nnSVG_top20_spatial_grid.png")),
+          ncol_grid = 5, width = 18, height = 14,
+          title = sprintf("%s \u2014 nnSVG top-20 SVGs", sample_id)
+        )
+      }
+      
+      # P13: per-SVG B-cell enrichment (mean in B cells / mean overall)
+      if (length(bcell_ids) > 5 && length(top20) > 0) {
+        genes_present <- intersect(top20, rownames(expr_mat_nnsvg))
+        if (length(genes_present) > 0) {
+          expr_sub  <- expr_mat_nnsvg[genes_present, , drop = FALSE]
+          mean_all  <- Matrix::rowMeans(expr_sub)
+          bcell_in  <- intersect(bcell_ids, colnames(expr_sub))
+          mean_b    <- Matrix::rowMeans(expr_sub[, bcell_in, drop = FALSE])
+          enr       <- mean_b / pmax(1e-6, mean_all)
+          enr_df    <- data.frame(gene = names(enr), fold = as.numeric(enr))
+          enr_df    <- enr_df[order(-enr_df$fold), ]
+          enr_df$gene <- factor(enr_df$gene, levels = rev(enr_df$gene))
+          p_enr <- ggplot2::ggplot(enr_df,
+                                    ggplot2::aes(x = gene, y = fold)) +
+            ggplot2::geom_col(fill = "mediumblue") +
+            ggplot2::geom_hline(yintercept = 1, linetype = "dashed",
+                                colour = "grey40") +
+            ggplot2::coord_flip() +
+            ggplot2::labs(
+              x = NULL, y = "B-cell / overall expression",
+              title = sprintf("%s \u2014 top-20 SVGs: B-cell enrichment",
+                              sample_id)
+            ) +
+            ggplot2::theme_minimal(base_size = 11)
+          ggplot2::ggsave(
+            file.path(out_dir,
+                      paste0(sample_id, "_nnSVG_bcell_enrichment_bar.png")),
+            p_enr, width = 7, height = 7, dpi = 150
+          )
+        }
+      }
+    }, error = function(e) {
+      cat("\u26A0 nnSVG B-cell polygon overlays failed:", conditionMessage(e), "\n")
+    })
+    
     top_svgs <- head(rownames(result_df), n_top_svgs)
     cat("\u2713 nnSVG complete.\n")
     cat("  Top 10 SVGs:", paste(head(top_svgs, 10), collapse = ", "), "\n")
@@ -3303,6 +3771,118 @@ run_nnsvg <- function(gobj,
   normalized
 }
 
+.resolve_celltype_column_auto <- function(gobj, celltype_col = NULL) {
+  if (!is.null(celltype_col) && nzchar(celltype_col)) return(celltype_col)
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  sup_cols <- grep("celltype_.*_supervised$", names(meta), value = TRUE)
+  if (length(sup_cols) > 0) return(sup_cols[1])
+  if ("leiden_clust" %in% names(meta)) return("leiden_clust")
+  NA_character_
+}
+
+.resolve_nichenet_senders_auto <- function(gobj,
+                                           output_dir,
+                                           sample_id,
+                                           celltype_col,
+                                           receiver_celltype,
+                                           min_cells = 5L,
+                                           top_n     = 5L) {
+  # Step-09 proximity enrichment, if available.
+  prox_csv <- file.path(output_dir, "09_Spatial_Network", "proximity",
+                        paste0(sample_id, "_proximity_enrichment.csv"))
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  celltype_col <- .resolve_celltype_column_auto(gobj, celltype_col)
+  if (is.na(celltype_col) || !celltype_col %in% names(meta)) return(NULL)
+  ct_counts <- table(meta[[celltype_col]])
+  eligible  <- setdiff(names(ct_counts)[ct_counts >= min_cells], receiver_celltype)
+
+  if (file.exists(prox_csv)) {
+    prox <- tryCatch(read.csv(prox_csv, stringsAsFactors = FALSE),
+                     error = function(e) NULL)
+    if (!is.null(prox) && all(c("unified_int", "enrichm") %in% names(prox))) {
+      # Rows involving the receiver; pick significant enrichm > 0.
+      pair_re <- paste0("(^|--)", gsub("([.+*?^$()\\[\\]])", "\\\\\\1", receiver_celltype), "(--|$)")
+      rows <- prox[grepl(pair_re, prox$unified_int), , drop = FALSE]
+      padj <- if ("p.adj_higher" %in% names(rows)) rows$p.adj_higher else rep(NA_real_, nrow(rows))
+      ok   <- !is.na(rows$enrichm) & rows$enrichm > 0 &
+              (is.na(padj) | padj < 0.05)
+      rows <- rows[ok, , drop = FALSE]
+      rows <- rows[order(-rows$enrichm), , drop = FALSE]
+      partners <- vapply(strsplit(as.character(rows$unified_int), "--", fixed = TRUE),
+                         function(x) setdiff(x, receiver_celltype)[1],
+                         character(1))
+      partners <- partners[!is.na(partners) & partners %in% eligible]
+      partners <- unique(partners)
+      if (length(partners) > 0) return(head(partners, top_n))
+    }
+  }
+  # Fallback: use the top_n most abundant non-receiver cell types.
+  abundant <- names(sort(ct_counts[eligible], decreasing = TRUE))
+  if (length(abundant) > 0) return(head(abundant, top_n))
+  NULL
+}
+
+.resolve_nichenet_targets_auto <- function(gobj,
+                                           output_dir,
+                                           sample_id,
+                                           celltype_col,
+                                           receiver_celltype,
+                                           top_n = 50L) {
+  meta <- as.data.frame(.giotto_pdata_dt(gobj))
+  celltype_col <- .resolve_celltype_column_auto(gobj, celltype_col)
+
+  # First try: step 12 per-sample DE if it has run for this receiver.
+  de_glob <- list.files(file.path(output_dir, "12_Spatial_DE"),
+                        pattern = paste0("^", sample_id, "_.*sample_de\\.csv$"),
+                        full.names = TRUE)
+  rec_token <- gsub("[^A-Za-z0-9]+", ".", receiver_celltype)
+  de_glob   <- de_glob[grepl(rec_token, basename(de_glob), ignore.case = TRUE)]
+  if (length(de_glob) > 0) {
+    de <- tryCatch(read.csv(de_glob[1], stringsAsFactors = FALSE),
+                   error = function(e) NULL)
+    if (!is.null(de) && "gene" %in% names(de)) {
+      lfc_col <- intersect(c("logFC", "log2FC", "estimate"), names(de))[1]
+      if (!is.na(lfc_col)) {
+        de <- de[order(-abs(de[[lfc_col]])), , drop = FALSE]
+        out <- head(unique(de$gene), top_n)
+        if (length(out) > 0) return(out)
+      }
+    }
+  }
+
+  # Second try: step 06 cluster markers, filtered to the cluster that is
+  # dominated by the receiver cell type.
+  mk_csv <- file.path(output_dir, "06_Markers",
+                      paste0(sample_id, "_all_markers.csv"))
+  if (file.exists(mk_csv) && !is.na(celltype_col) && celltype_col %in% names(meta) &&
+      "leiden_clust" %in% names(meta)) {
+    tab <- table(meta[[celltype_col]], meta$leiden_clust)
+    rec_row <- tab[rownames(tab) == receiver_celltype, , drop = FALSE]
+    if (nrow(rec_row) > 0 && sum(rec_row) > 0) {
+      # Clusters where receiver is the plurality celltype.
+      cluster_frac <- rec_row[1, , drop = TRUE] / pmax(1, colSums(tab))
+      receiver_clusters <- names(cluster_frac)[cluster_frac >= 0.5]
+      if (length(receiver_clusters) > 0) {
+        mk <- tryCatch(read.csv(mk_csv, stringsAsFactors = FALSE),
+                       error = function(e) NULL)
+        if (!is.null(mk)) {
+          gene_col <- intersect(c("feats", "feature", "gene"), names(mk))[1]
+          clust_col <- intersect(c("cluster", "cluster.1"), names(mk))[1]
+          lfc_col   <- intersect(c("summary.logFC", "logFC", "avg_log2FC"), names(mk))[1]
+          if (!is.na(gene_col) && !is.na(clust_col) && !is.na(lfc_col)) {
+            mk <- mk[as.character(mk[[clust_col]]) %in% receiver_clusters, , drop = FALSE]
+            mk <- mk[order(-abs(mk[[lfc_col]])), , drop = FALSE]
+            out <- head(unique(mk[[gene_col]]), top_n)
+            if (length(out) > 0) return(out)
+          }
+        }
+      }
+    }
+  }
+
+  character(0)
+}
+
 .nichenet_section_ready <- function(mode, sender_celltypes = NULL, receiver_celltype = NULL) {
   mode <- match.arg(mode, c("single", "all_senders_to_receiver", "all_pairs"))
   
@@ -3335,54 +3915,19 @@ run_nnsvg <- function(gobj,
   ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
 
   if (!isTRUE(ridge_ok)) {
-    # ── Auto-detection: try to locate libgsl on common cluster / conda paths ──
-    # The pipeline runs inside an Apptainer image so system paths inside the
-    # container are checked first, then the conda env that supplies Python.
-    conda_prefix <- Sys.getenv("CONDA_PREFIX", unset = "")
-    conda_python  <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")   # set by Run_Giotto_Pipeline.sh
-    # Derive conda env lib dir from COSMX_PYTHON_PATH if CONDA_PREFIX is unset
-    conda_lib_from_python <- if (nzchar(conda_python)) {
-      file.path(dirname(dirname(conda_python)), "lib")
-    } else ""
-
-    gsl_candidates <- unique(c(
-      "/usr/lib", "/usr/lib/x86_64-linux-gnu", "/usr/local/lib",
-      conda_lib_from_python,
-      if (nzchar(conda_prefix)) conda_prefix else "",
-      if (nzchar(conda_prefix)) file.path(conda_prefix, "lib") else ""
-    ))
-    gsl_found <- Filter(function(p) {
-      nzchar(p) && file.exists(p) &&
-        any(grepl("libgsl\\.so", list.files(p, full.names = FALSE)))
-    }, gsl_candidates)
-
-    if (length(gsl_found) > 0) {
-      existing_ldpath <- Sys.getenv("LD_LIBRARY_PATH", unset = "")
-      Sys.setenv(LD_LIBRARY_PATH = paste(
-        c(gsl_found, existing_ldpath)[nzchar(c(gsl_found, existing_ldpath))],
-        collapse = ":"
-      ))
-      message("  \u2139 Found libgsl in: ", paste(gsl_found, collapse = ", "),
-              " \u2014 updated LD_LIBRARY_PATH, retrying ridge load...")
-      ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
-    }
-  }
-
-  if (!isTRUE(ridge_ok)) {
+    # `ridge` needs libgsl.so.27 resolved at process start; LD_LIBRARY_PATH
+    # set from inside R is too late for dlopen(). Run_Giotto_Pipeline.sh
+    # forwards LD_LIBRARY_PATH to Apptainer (see GSL_LIB_DIR block) so the
+    # conda env lib dir is on the search path from R startup.
     skip_msg <- paste0(
-      "MISTy skipped: the 'ridge' package requires libgsl.so.27 (GNU Scientific Library).\n",
-      "  To fix (no sudo required):\n",
-      "    Option 1 \u2014 conda env used by this pipeline:\n",
-      "        conda activate giotto_Py_3_11\n",
-      "        conda install -c conda-forge gsl\n",
-      "      then add to Run_Giotto_Pipeline.sh:\n",
-      "        --env LD_LIBRARY_PATH=\"$CONDA_PREFIX/lib\"\n",
-      "    Option 2 \u2014 bind host GSL libs into Apptainer:\n",
-      "        --bind /path/to/gsl/lib:/usr/local/lib:ro\n",
-      "      (add to the 'apptainer exec' call in Run_Giotto_Pipeline.sh)\n",
-      "    Option 3 \u2014 rebuild the .sif image with GSL included\n",
-      "    Option 4 \u2014 ask sysadmin to install libgsl27 / libgsl-dev on the host\n",
-      "  MISTy outputs will be absent from this run."
+      "MISTy skipped: the 'ridge' package could not load (needs libgsl.so.27).\n",
+      "  One-time fix (no sudo required):\n",
+      "    conda activate giotto_Py_3_11\n",
+      "    conda install -c conda-forge gsl\n",
+      "  Re-run the pipeline \u2014 Run_Giotto_Pipeline.sh already forwards\n",
+      "  LD_LIBRARY_PATH to the Apptainer container, so MISTy will find\n",
+      "  libgsl automatically. For a non-default env, set\n",
+      "  LD_LIBRARY_PATH_OVERRIDE before launching the pipeline."
     )
     return(list(ok = FALSE, reason = skip_msg))
   }
@@ -3499,6 +4044,36 @@ run_cci_analysis <- function(gobj,
   }
   
   if (isTRUE(run_sections["nichenet"])) {
+    # Auto-wire senders / targets from step 09 proximity and step 06/12 DE
+    # when the user leaves the config keys null.
+    resolved_celltype_col <- .resolve_celltype_column_auto(gobj, celltype_col)
+    if (is.null(sender_celltypes) || length(sender_celltypes) == 0) {
+      auto_senders <- .resolve_nichenet_senders_auto(
+        gobj, output_dir, sample_id,
+        celltype_col      = resolved_celltype_col,
+        receiver_celltype = receiver_celltype,
+        min_cells         = nichenet_min_cells_per_celltype
+      )
+      if (!is.null(auto_senders) && length(auto_senders) > 0) {
+        sender_celltypes <- auto_senders
+        cat("  \u2139 NicheNet senders (auto): ",
+            paste(sender_celltypes, collapse = ", "), "\n", sep = "")
+      }
+    }
+    if ((is.null(target_genes) || length(target_genes) == 0) &&
+        !is.null(receiver_celltype) && nzchar(receiver_celltype)) {
+      auto_targets <- .resolve_nichenet_targets_auto(
+        gobj, output_dir, sample_id,
+        celltype_col      = resolved_celltype_col,
+        receiver_celltype = receiver_celltype
+      )
+      if (length(auto_targets) > 0) {
+        target_genes <- auto_targets
+        cat("  \u2139 NicheNet targets (auto): ", length(target_genes),
+            " genes derived from step 06/12 for receiver '",
+            receiver_celltype, "'\n", sep = "")
+      }
+    }
     nichenet_ready <- .nichenet_section_ready(nichenet_mode, sender_celltypes, receiver_celltype)
     if (!isTRUE(nichenet_ready$ok)) {
       cat("\u26A0 Skipping NicheNet:", nichenet_ready$reason, "\n")
@@ -3617,7 +4192,9 @@ run_cci_analysis <- function(gobj,
       section_out <- .run_cci_section(
         "MISTy",
         function() run_misty(gobj, sample_id, output_dir,
-                             expr_cache = .cci_expr_cache)
+                             expr_cache     = .cci_expr_cache,
+                             celltype_col   = celltype_col,
+                             focus_celltype = focus_celltype)
       )
       results$misty <- section_out$result
       section_status["misty"] <- section_out$status
@@ -3630,7 +4207,9 @@ run_cci_analysis <- function(gobj,
     section_out <- .run_cci_section(
       "nnSVG",
       function() run_nnsvg(gobj, sample_id, output_dir,
-                           expr_cache = .cci_expr_cache)
+                           expr_cache     = .cci_expr_cache,
+                           celltype_col   = celltype_col,
+                           focus_celltype = focus_celltype)
     )
     results$nnsvg <- section_out$result
     section_status["nnsvg"] <- section_out$status
