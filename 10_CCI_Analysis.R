@@ -2171,13 +2171,11 @@ plot_liana_extended <- function(liana_agg,
     # participates in any B-cell L-R pair; others dimmed. Goes to
     # B_cell_specific/.
     if (!is.null(focus_celltype) && length(focus_celltype) > 0) {
-      bcell_lr <- head(
-        agg[(agg$source %in% focus_celltype | agg$target %in% focus_celltype), ][
-          order(agg[(agg$source %in% focus_celltype |
-                       agg$target %in% focus_celltype),
-                    "aggregate_rank"], na.last = TRUE), ],
-        top_n_lr
-      )
+      bcell_agg <- agg[agg$source %in% focus_celltype |
+                         agg$target %in% focus_celltype, , drop = FALSE]
+      bcell_agg <- bcell_agg[order(bcell_agg$aggregate_rank,
+                                   na.last = TRUE), , drop = FALSE]
+      bcell_lr  <- head(bcell_agg, top_n_lr)
       lr_score_b <- stats::setNames(rep(0, length(cell_ids_all)), cell_ids_all)
       for (i in seq_len(nrow(bcell_lr))) {
         pair          <- bcell_lr[i, ]
@@ -2432,7 +2430,7 @@ run_liana <- function(gobj,
                       celltype_col   = NULL,
                       methods        = NULL,
                       expr_cache     = NULL,
-                      focus_celltype = "B.cell") {
+                      focus_celltype = "B cell") {
   
   if (!requireNamespace("liana", quietly = TRUE))
     stop("liana not installed.\n  Install: remotes::install_github('saezlab/liana')")

@@ -349,16 +349,28 @@ prepare_smide_targets <- function(cell_counts,
   
   keep <- rep(TRUE, nrow(cell_counts))
   names(keep) <- gene_names
-  
+
   if (!is.null(targets)) {
     keep <- keep & gene_names %in% unique(targets)
   }
-  
+
   if (!is.null(min_detection_fraction)) {
     min_detection_fraction <- as.numeric(min_detection_fraction)[1]
     min_detection_fraction <- min(max(min_detection_fraction, 0), 1)
     keep <- keep & (rowSums(cell_counts > 0, na.rm = TRUE) / ncol(cell_counts)) >= min_detection_fraction
   }
+
+  # Defensive: drop any SystemControl probes that survived upstream QC.
+  # 02_Quality_Control.R strips them but legacy checkpoints may retain them.
+  sc_mask <- grepl("^SystemControl", gene_names, ignore.case = TRUE)
+  if (any(sc_mask & keep)) {
+    n_sc <- sum(sc_mask & keep)
+    message(sprintf(
+      "  ⚠ smiDE: dropping %d SystemControl probe(s) that survived QC",
+      n_sc
+    ))
+  }
+  keep <- keep & !sc_mask
   
   kept_genes <- gene_names[keep]
   if (length(kept_genes) == 0) {
@@ -382,6 +394,47 @@ prepare_smide_targets <- function(cell_counts,
 
 sanitize_smide_name <- function(x) {
   gsub("[^A-Za-z0-9]+", "_", as.character(x))
+}
+
+# Diff input targets vs fitted output → print one summary line and persist
+# the failed-gene vector next to the fit log. smiDE::smi_de() prints a
+# "Fitting model to target X." line per gene (captured to disk); the only
+# surfaced signal here is a single success/warning line.
+.report_smide_failed_genes <- function(submitted,
+                                       results_df,
+                                       fit_log,
+                                       context = "") {
+  submitted <- unique(as.character(submitted))
+  if (length(submitted) == 0) {
+    return(invisible(NULL))
+  }
+
+  fitted <- character(0)
+  if (!is.null(results_df) && is.data.frame(results_df)) {
+    target_col <- intersect(c("target", "gene"), colnames(results_df))
+    if (length(target_col) > 0) {
+      fitted <- unique(as.character(results_df[[target_col[1]]]))
+    }
+  }
+
+  failed <- setdiff(submitted, fitted)
+  ctx <- if (nzchar(context)) paste0(" [", context, "]") else ""
+
+  if (length(failed) == 0) {
+    message(sprintf("  ✓ smiDE: all %d gene(s) fitted%s", length(submitted), ctx))
+  } else {
+    preview <- paste(utils::head(failed, 20), collapse = ", ")
+    tail_suffix <- if (length(failed) > 20) ", …" else ""
+    message(sprintf(
+      "  ⚠ smiDE: %d/%d gene(s) failed to fit%s: %s%s",
+      length(failed), length(submitted), ctx, preview, tail_suffix
+    ))
+    if (nzchar(fit_log)) {
+      failed_path <- sub("\\.log$", "_failed_genes.txt", fit_log)
+      try(writeLines(failed, failed_path), silent = TRUE)
+    }
+  }
+  invisible(list(submitted = submitted, fitted = fitted, failed = failed))
 }
 
 parse_smide_unified_interactions <- function(unified_int) {
@@ -896,7 +949,7 @@ run_smide_sample_backend <- function(expr_mat,
       length(candidate_cell_types), " cell types. ",
       "For large datasets (>100k cells), this may take hours to days. ",
       "Consider restricting to your cell types of interest, e.g.: ",
-      "smide_annotation_subset: [\"B.cell\"] in config.yaml.",
+      "smide_annotation_subset: [\"B cell\"] in config.yaml.",
       immediate. = TRUE
     )
   } else {
@@ -1146,20 +1199,33 @@ run_smide_sample_backend <- function(expr_mat,
       
       cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label, "\n")
       cat("smiDE workload for", cell_type, "/", predictor_label, ":", nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes\n")
-      
+
+      file_stub <- paste(file_stub_base, sanitize_smide_name(predictor_label), sep = "_")
+      fit_log <- file.path(tables_dir, paste0(file_stub, "_smide_fit.log"))
+
+      smide_targets_submitted <- model_inputs$targets
       fit <- tryCatch(
-        smiDE::smi_de(
-          assay_matrix = predictor_counts,
-          metadata = predictor_meta,
-          formula = stats::as.formula(paste("~", predictor_var)),
-          pre_de_obj = pre_obj,
-          groupVar = predictor_var,
-          groupVar_levels = predictor_levels,
-          nCores = smide_ncores,
-          family = smide_family,
-          targets = model_inputs$targets,
-          neighbor_expr_cell_type_metadata_colname = annotation_column,
-          cellid_colname = "cell_ID"
+        withCallingHandlers(
+          {
+            capture.output(
+              res <- smiDE::smi_de(
+                assay_matrix = predictor_counts,
+                metadata = predictor_meta,
+                formula = stats::as.formula(paste("~", predictor_var)),
+                pre_de_obj = pre_obj,
+                groupVar = predictor_var,
+                groupVar_levels = predictor_levels,
+                nCores = smide_ncores,
+                family = smide_family,
+                targets = smide_targets_submitted,
+                neighbor_expr_cell_type_metadata_colname = annotation_column,
+                cellid_colname = "cell_ID"
+              ),
+              file = fit_log, append = FALSE, type = "output"
+            )
+            res
+          },
+          message = function(m) invokeRestart("muffleMessage")
         ),
         error = function(e) {
           message("Skipping smiDE model for ", run_label, " / ", cell_type, " / ", predictor_label, ": ", conditionMessage(e))
@@ -1169,8 +1235,7 @@ run_smide_sample_backend <- function(expr_mat,
       if (is.null(fit)) {
         next
       }
-      
-      file_stub <- paste(file_stub_base, sanitize_smide_name(predictor_label), sep = "_")
+
       if (isTRUE(smide_save_raw)) {
         saveRDS(fit, file.path(tables_dir, paste0(file_stub, "_smide_fit.rds")))
       }
@@ -1193,6 +1258,15 @@ run_smide_sample_backend <- function(expr_mat,
       }
       
       result_df <- coerce_smide_results_table(res_obj)
+
+      # Summarise any genes that failed to fit (input vs output diff).
+      .report_smide_failed_genes(
+        submitted = smide_targets_submitted,
+        results_df = result_df,
+        fit_log = fit_log,
+        context = paste(run_label, cell_type, predictor_label, sep = " / ")
+      )
+
       if (is.null(result_df) || nrow(result_df) == 0) {
         summary_rows[[idx]] <- data.frame(
           analysis_scope = "sample",
@@ -1212,7 +1286,7 @@ run_smide_sample_backend <- function(expr_mat,
         idx <- idx + 1L
         next
       }
-      
+
       result_df$analysis_scope <- "sample"
       result_df$backend <- "smiDE"
       result_df$run_label <- run_label
@@ -1523,19 +1597,31 @@ run_smide_merged_backend <- function(expr_mat,
     cat("  Formula:", formula_str, "\n")
     cat("  smiDE workload:", nrow(cell_meta_valid), "cells x", model_inputs$n_genes, "genes\n")
 
+    fit_log <- file.path(tables_dir, paste0(file_stub_base, "_smide_fit.log"))
+    smide_targets_submitted <- model_inputs$targets
+
     fit <- tryCatch(
-      smiDE::smi_de(
-        assay_matrix = predictor_counts,
-        metadata = cell_meta_valid,
-        formula = stats::as.formula(formula_str),
-        pre_de_obj = pre_obj,
-        groupVar = "smide_niche_treatment",
-        groupVar_levels = valid_groups,
-        nCores = smide_ncores,
-        family = smide_family,
-        targets = model_inputs$targets,
-        neighbor_expr_cell_type_metadata_colname = annotation_column,
-        cellid_colname = "cell_ID"
+      withCallingHandlers(
+        {
+          capture.output(
+            res <- smiDE::smi_de(
+              assay_matrix = predictor_counts,
+              metadata = cell_meta_valid,
+              formula = stats::as.formula(formula_str),
+              pre_de_obj = pre_obj,
+              groupVar = "smide_niche_treatment",
+              groupVar_levels = valid_groups,
+              nCores = smide_ncores,
+              family = smide_family,
+              targets = smide_targets_submitted,
+              neighbor_expr_cell_type_metadata_colname = annotation_column,
+              cellid_colname = "cell_ID"
+            ),
+            file = fit_log, append = FALSE, type = "output"
+          )
+          res
+        },
+        message = function(m) invokeRestart("muffleMessage")
       ),
       error = function(e) {
         message("smiDE::smi_de failed for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
@@ -1565,6 +1651,14 @@ run_smide_merged_backend <- function(expr_mat,
     }
 
     result_df <- coerce_smide_results_table(res_obj)
+
+    .report_smide_failed_genes(
+      submitted = smide_targets_submitted,
+      results_df = result_df,
+      fit_log = fit_log,
+      context = paste(run_label, cell_type, sep = " / ")
+    )
+
     if (!is.null(result_df) && nrow(result_df) > 0) {
       result_df$backend        <- "smiDE"
       result_df$analysis_scope <- "merged"
@@ -2651,6 +2745,22 @@ run_spatial_differential_expression <- function(gobj,
     .validate_de_column(treatment_column, "treatment_column")
     .validate_de_column(patient_column,   "patient_column", require_multi_level = FALSE)
   }
+
+  # Safety net: legacy checkpoints annotated before the 07 normalization may
+  # contain dot/underscore-separated labels (e.g. "B.cell" instead of
+  # "B cell"). smiDE matches labels by exact string, so normalize in-memory
+  # before validating. 07_Annotation.R now normalizes at source.
+  ann_col_vec <- metadata[[annotation_column]]
+  if (!is.null(ann_col_vec) &&
+      any(grepl("[._]", as.character(ann_col_vec)), na.rm = TRUE)) {
+    message("  ℹ Normalizing legacy dot/underscore labels in '",
+            annotation_column, "' for smiDE compatibility")
+    norm_vec <- gsub("\\s+", " ",
+                     gsub("[._]+", " ", as.character(ann_col_vec)))
+    norm_vec <- trimws(norm_vec)
+    metadata[[annotation_column]] <- norm_vec
+  }
+
   if (!is.null(smide_annotation_subset) && length(smide_annotation_subset) > 0) {
     ann_values <- unique(stats::na.omit(metadata[[annotation_column]]))
     missing_labels <- setdiff(smide_annotation_subset, ann_values)

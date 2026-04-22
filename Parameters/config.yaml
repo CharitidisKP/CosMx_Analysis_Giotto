@@ -72,10 +72,12 @@ interaction:
   annotation_column: "celltype_HCA_Kidney_supervised"
   # Generalised cell-type focus regex (legacy single-focus path — used
   # only when focus_analyses below is empty / missing).
-  focus_celltype_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+  # Labels follow smiDE-native NanoString convention: space-separated
+  # sentence case (normalization applied at source in 07_Annotation.R).
+  focus_celltype_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
   # Narrower regex used by the B-cell subclustering block (step 11
   # subcluster/). Always B-cell-only.
-  bcell_regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+  bcell_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
   # Multi-focus mode: step 11 iterates over this list, writing each
   # focus to its own results folder (11_{label}_Microenvironment/).
   # Set run_subclustering: true only on the B-cell pass — that's the
@@ -84,10 +86,10 @@ interaction:
   # behaviour via focus_celltype_regex above.
   focus_analyses:
     - label: "BCell"
-      regex: '^(B\.cell|Naive\.B\.cell|Memory\.B\.cell|Plasma\.cell|Plasmablast)$'
+      regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
       run_subclustering: true
     - label: "TCell"
-      regex: '^(CD4\.T\.cell|CD8\.T\.cell|Treg|T\.cell)$'
+      regex: '^(CD4 T cell|CD8 T cell|Treg|T cell)$'
       run_subclustering: false
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
@@ -148,8 +150,11 @@ spatial_de:
   # Restrict smiDE to B-cell types only.
   # With null, smiDE iterates over ALL ~20 cell types × 200k cells which
   # takes hours to days. Restricting to B cells reduces runtime to ~10-30 min.
-  # Add more types as needed: ["B.cell", "Plasma.cell", "CD4.T.cell"]
-  smide_annotation_subset: ["B.cell"]
+  # Labels follow smiDE-native NanoString scheme (space-separated, sentence
+  # case). Normalization is applied at source in 07_Annotation.R so this
+  # value works across every reference profile (HCA Kidney, CosMx 6K RCC, …).
+  # Add more types as needed: ["B cell", "Plasma cell", "CD4 T cell"]
+  smide_annotation_subset: ["B cell"]
   # Reduced the lower minimum detection threshold since B cells are rare 
   smide_min_detection_fraction: 0.01
   smide_custom_predictor: null

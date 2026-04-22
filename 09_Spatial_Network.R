@@ -192,15 +192,21 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   breaks <- seq(-max_abs, max_abs, length.out = 101)
   colors <- colorRampPalette(c("#2166AC", "#F7F7F7", "#B2182B"))(100)
   
-  # Row/col annotation: immune vs structural compartment
-  immune_types <- c("B.cell", "CD4.T.cell", "CD8.T.cell", "NK.cell",
-                    "NKT.cell",
-                    "MNP.macrophage", "MNP.monocyte",
-                    "MNP.a.classical.monocyte.derived",
-                    "MNP.b.non.classical.monocyte.derived",
-                    "MNP.c.dendritic.cell", "MNP.d.Tissue.macrophage",
-                    "Plasmacytoid.DC", "Plasmacytoid.dendritic.cell",
-                    "Mast.cell", "Neutrophil")
+  # Row/col annotation: immune vs structural compartment.
+  # Labels match the smiDE-native scheme produced by 07_Annotation.R's
+  # .normalize_label() (dots/underscores → spaces).
+  immune_types_raw <- c("B.cell", "CD4.T.cell", "CD8.T.cell", "NK.cell",
+                        "NKT.cell",
+                        "MNP.macrophage", "MNP.monocyte",
+                        "MNP.a.classical.monocyte.derived",
+                        "MNP.b.non.classical.monocyte.derived",
+                        "MNP.c.dendritic.cell", "MNP.d.Tissue.macrophage",
+                        "Plasmacytoid.DC", "Plasmacytoid.dendritic.cell",
+                        "Mast.cell", "Neutrophil")
+  immune_types <- trimws(gsub("\\s+", " ",
+                              gsub("[._]+", " ", immune_types_raw)))
+  # Accept both schemes for legacy checkpoints that predate normalization.
+  immune_types <- unique(c(immune_types, immune_types_raw))
   
   anno_df <- data.frame(
     Compartment = ifelse(all_types %in% immune_types, "Immune", "Structural"),

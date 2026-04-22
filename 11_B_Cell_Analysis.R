@@ -537,6 +537,37 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 .pretty <- function(x) gsub("_", " ", as.character(x), fixed = TRUE)
 
 
+# Resolve a focus label (e.g. "BCell", "TCell", "Plasma") into variants
+# used across this script's console messages and output filenames. Returns:
+#   $snake   — lowercase, filename-safe token ("bcell", "tcell", "plasma")
+#   $display — human-facing tag with a dash at CamelCase boundaries
+#              ("BCell" -> "B-cell", "PlasmaCell" -> "Plasma-cell",
+#               "Plasma" -> "Plasma"). Falls back to the input unchanged
+#               when no CamelCase split exists.
+.focus_tag <- function(focus_label) {
+  raw <- as.character(focus_label)
+  if (length(raw) == 0 || !nzchar(raw)) raw <- "BCell"
+
+  snake <- tolower(gsub("[^A-Za-z0-9]+", "", raw))
+  if (!nzchar(snake)) snake <- "focus"
+
+  # Insert a dash between lower→upper case transitions (BCell → B-Cell).
+  display <- gsub("([a-z])([A-Z])", "\\1-\\2", raw)
+  parts <- strsplit(display, "-", fixed = TRUE)[[1]]
+  parts <- parts[nzchar(parts)]
+  if (length(parts) > 1) {
+    # First token keeps its case; subsequent tokens lowercase
+    # ("BCell" -> "B-cell", "PlasmaCell" -> "Plasma-cell").
+    parts <- c(parts[1], tolower(parts[-1]))
+    display <- paste(parts, collapse = "-")
+  } else {
+    display <- raw
+  }
+
+  list(snake = snake, display = display, raw = raw)
+}
+
+
 # Per-gene spatial expression plots with the focus population (B cells by
 # default) outlined on top. Two outputs per surviving marker gene:
 #   * all-FOV image        -> results_dir/B_annotated_gene_expression/<sample>_<GENE>.png
@@ -551,8 +582,13 @@ plot_bcell_spatial_and_markers <- function(gobj,
                                            bcell_regex,
                                            bcell_markers     = character(),
                                            subtype_markers   = character(),
-                                           highlight_label   = "B cells",
+                                           focus_label       = "BCell",
+                                           highlight_label   = NULL,
                                            highlight_colour  = "mediumblue") {
+  tag <- .focus_tag(focus_label)
+  if (is.null(highlight_label)) {
+    highlight_label <- paste0(tag$display, "s")
+  }
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!annotation_column %in% names(meta)) {
     message("  \u26A0 annotation column '", annotation_column,
@@ -562,7 +598,7 @@ plot_bcell_spatial_and_markers <- function(gobj,
   is_bcell <- grepl(bcell_regex, as.character(meta[[annotation_column]]),
                     ignore.case = TRUE)
   if (!any(is_bcell)) {
-    message("  \u26A0 No cells match bcell_regex; skipping B-cell spatial plots")
+    message("  \u26A0 No cells match bcell_regex; skipping ", tag$display, " spatial plots")
     return(invisible(NULL))
   }
 
@@ -601,7 +637,7 @@ plot_bcell_spatial_and_markers <- function(gobj,
   }
   fov_with_bcells <- sort(unique(meta$fov[is_bcell & !is.na(meta$fov)]))
 
-  viz_root <- ensure_dir(file.path(results_dir, "B_annotated_gene_expression"))
+  viz_root <- ensure_dir(file.path(results_dir, paste0(tools::toTitleCase(tag$snake), "_annotated_gene_expression")))
 
   make_plot <- function(gene, df, fov_tag = NULL) {
     df$expr <- unname(expr[gene, ][df$cell_ID])
@@ -655,8 +691,8 @@ plot_bcell_spatial_and_markers <- function(gobj,
       }
     }
   }
-  cat("  \u2713 B-cell gene overlay plots saved (", length(genes),
-      " gene(s), ", length(fov_with_bcells), " B-cell FOV(s))\n", sep = "")
+  cat("  \u2713 ", tag$display, " gene overlay plots saved (", length(genes),
+      " gene(s), ", length(fov_with_bcells), " ", tag$display, " FOV(s))\n", sep = "")
   invisible(genes)
 }
 
@@ -672,14 +708,17 @@ plot_bcell_neighbourhoods <- function(gobj,
                                       results_dir,
                                       annotation_column,
                                       bcell_regex,
-                                      highlight_label    = "B cells",
+                                      focus_label        = "BCell",
+                                      highlight_label    = NULL,
                                       highlight_colour   = "mediumblue",
                                       bcell_cluster_eps  = 80,
                                       k_base             = 20,
                                       k_increment        = 10,
                                       max_clusters_plot  = 40) {
+  tag <- .focus_tag(focus_label)
+  if (is.null(highlight_label)) highlight_label <- paste0(tag$display, "s")
   if (!requireNamespace("FNN", quietly = TRUE)) {
-    message("  \u26A0 FNN not installed; B-cell neighbourhood plots skipped")
+    message("  \u26A0 FNN not installed; ", tag$display, " neighbourhood plots skipped")
     return(invisible(NULL))
   }
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
@@ -839,15 +878,14 @@ plot_bcell_neighbourhoods <- function(gobj,
       save_presentation_plot(
         plot     = p_comp,
         filename = file.path(results_dir,
-                             paste0(sample_id,
-                                    "_bcell_neighbourhood_composition.png")),
+                             paste0(sample_id, "_", tag$snake, "_neighbourhood_composition.png")),
         width    = max(10, 0.45 * length(cluster_order) + 4),
         height   = 7, dpi = 300
       )
       readr::write_csv(
         comp_df,
         file.path(results_dir,
-                  paste0(sample_id, "_bcell_neighbourhood_composition.csv"))
+                  paste0(sample_id, "_", tag$snake, "_neighbourhood_composition.csv"))
       )
       cat("  \u2713 Neighbourhood composition plot + CSV saved\n")
     }, error = function(e) {
@@ -855,7 +893,7 @@ plot_bcell_neighbourhoods <- function(gobj,
     })
   }
 
-  cat("  \u2713 B-cell neighbourhood plots saved (", nrow(clust_summary),
+  cat("  \u2713 ", tag$display, " neighbourhood plots saved (", nrow(clust_summary),
       " cluster(s))\n", sep = "")
   invisible(nrow(clust_summary))
 }
@@ -872,13 +910,16 @@ plot_bcell_niches <- function(gobj,
                               results_dir,
                               annotation_column,
                               bcell_regex,
-                              highlight_label  = "B cells",
+                              focus_label      = "BCell",
+                              highlight_label  = NULL,
                               highlight_colour = "mediumblue",
                               n_niches         = 6,
                               niche_knn_k      = 30,
                               um_per_px        = 0.12028) {
+  tag <- .focus_tag(focus_label)
+  if (is.null(highlight_label)) highlight_label <- paste0(tag$display, "s")
   if (!requireNamespace("FNN", quietly = TRUE)) {
-    message("  \u26A0 FNN not installed; niche plots skipped")
+    message("  \u26A0 FNN not installed; ", tag$display, " niche plots skipped")
     return(invisible(NULL))
   }
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
@@ -1024,7 +1065,7 @@ plot_bcell_niches <- function(gobj,
   save_presentation_plot(
     make_distance_plot(cells),
     filename = file.path(niche_dir,
-                          paste0(sample_id, "_distance_to_bcells.png")),
+                          paste0(sample_id, "_distance_to_", tag$snake, "s.png")),
     width = 14, height = 10, dpi = 600
   )
 
@@ -1048,14 +1089,14 @@ plot_bcell_niches <- function(gobj,
       save_presentation_plot(
         make_distance_plot(df_fv_cells, title_suffix = paste0(" (FOV ", fv, ")")),
         filename = file.path(per_fov_dir,
-                              paste0(sample_id, "_distance_to_bcells_FOV_",
+                              paste0(sample_id, "_distance_to_", tag$snake, "s_FOV_",
                                       fv, ".png")),
         width = 10, height = 10, dpi = 600
       )
       n_fov_written <- n_fov_written + 1L
     }
   }
-  cat("  \u2713 B-cell niche plots saved (", n_fov_written,
+  cat("  \u2713 ", tag$display, " niche plots saved (", n_fov_written,
       " per-FOV pairs)\n", sep = "")
   invisible(cells$niche)
 }
@@ -1160,6 +1201,7 @@ run_bcell_subclustering <- function(gobj,
                                     results_dir,
                                     annotation_column,
                                     bcell_regex,
+                                    focus_label         = "BCell",
                                     subtype_markers     = character(),
                                     min_cells           = 50,
                                     fallback_min_cells  = 20,
@@ -1177,7 +1219,7 @@ run_bcell_subclustering <- function(gobj,
                                     seed                = 42) {
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!annotation_column %in% names(meta)) {
-    message("B-cell subclustering skipped: annotation column '",
+    message(tag$display, " subclustering skipped: annotation column '",
             annotation_column, "' not present.")
     return(invisible(NULL))
   }
@@ -1186,27 +1228,34 @@ run_bcell_subclustering <- function(gobj,
   bcell_ids <- meta$cell_ID[is_bcell]
   n_bcells <- length(bcell_ids)
   if (n_bcells < fallback_min_cells) {
-    message("B-cell subclustering skipped: only ",
-            n_bcells, " B-annotated cells (< fallback_min_cells = ",
+    message(tag$display, " subclustering skipped: only ",
+            n_bcells, " ", tag$display, "-annotated cells (< fallback_min_cells = ",
             fallback_min_cells, ").")
     return(invisible(NULL))
   }
   if (n_bcells < min_cells) {
-    warning("B-cell subclustering proceeding with only ", n_bcells,
-            " B-annotated cells (< min_cells = ", min_cells,
+    warning(tag$display, " subclustering proceeding with only ", n_bcells,
+            " ", tag$display, "-annotated cells (< min_cells = ", min_cells,
             "). Subclustering quality may be unreliable; consider raising ",
             "fallback_min_cells or inspecting the results carefully.",
             call. = FALSE)
   }
 
-  subset_fn <- tryCatch(
-    get("subsetGiotto", envir = asNamespace("Giotto")),
-    error = function(e) get("subsetGiotto", envir = asNamespace("GiottoClass"))
-  )
-  gobj_bcell <- subset_fn(gobject = gobj, cell_ids = bcell_ids)
+  tag <- .focus_tag(focus_label)
+
+  # Call subsetGiotto directly. Giotto uses match.call()[[1]] to
+  # dispatch helpers in the caller frame, so calling via a variable
+  # fails with: object 'subset_fn' of mode 'function' was not found.
+  gobj_bcell <- if (requireNamespace("GiottoClass", quietly = TRUE) &&
+                    exists("subsetGiotto", envir = asNamespace("GiottoClass"),
+                           inherits = FALSE)) {
+    GiottoClass::subsetGiotto(gobject = gobj, cell_ids = bcell_ids)
+  } else {
+    Giotto::subsetGiotto(gobject = gobj, cell_ids = bcell_ids)
+  }
 
   subcluster_dir <- ensure_dir(file.path(results_dir, "subcluster"))
-  sid <- paste0(sample_id, "_bcell")
+  sid <- paste0(sample_id, "_", tag$snake)
 
   gobj_bcell <- dimensionality_reduction(
     gobj             = gobj_bcell,
@@ -1258,7 +1307,7 @@ run_bcell_subclustering <- function(gobj,
       cluster_column  = "leiden_bcell_subcluster"
     )
   }, error = function(e) {
-    message("B-cell subtype UMAP plots skipped: ", conditionMessage(e))
+    message(tag$display, " subtype UMAP plots skipped: ", conditionMessage(e))
   })
 
   # Subcluster x spatial-proximity crosstab: which cell types surround
@@ -1342,7 +1391,7 @@ run_bcell_subclustering <- function(gobj,
           file.path(subcluster_dir,
               paste0(sample_id, "_bcell_subcluster_proximity_crosstab.csv"))
         )
-        cat("  B-cell subcluster proximity crosstab saved\n")
+        cat("  ", tag$display, " subcluster proximity crosstab saved\n", sep = "")
       }
     }
   }, error = function(e) {
@@ -1354,7 +1403,7 @@ run_bcell_subclustering <- function(gobj,
     save_giotto_checkpoint(
       gobj           = gobj_bcell,
       checkpoint_dir = file.path(dirname(results_dir),
-                                 "Giotto_Object_BCell_Subcluster"),
+                                 paste0("Giotto_Object_", focus_label, "_Subcluster")),
       metadata       = list(
         stage             = "bcell_subcluster",
         annotation_column = annotation_column,
@@ -1372,7 +1421,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
                                                 sample_id,
                                                 output_dir,
                                                 annotation_column = NULL,
-                                                bcell_regex = "^B\\.cell$",
+                                                bcell_regex = "^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$",
                                                 focus_label = "BCell",
                                                 spatial_network_name = "Delaunay_network",
                                                 number_of_simulations = 250,
@@ -1558,10 +1607,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
       annotation_column = annotation_column,
       bcell_regex       = bcell_regex,
       bcell_markers     = bcell_markers,
-      subtype_markers   = subtype_markers
+      subtype_markers   = subtype_markers,
+      focus_label       = focus_label
     )
   }, error = function(e) {
-    message("B-cell spatial/marker plots skipped: ", conditionMessage(e))
+    message(tag$display, " spatial/marker plots skipped: ", conditionMessage(e))
   })
 
   tryCatch({
@@ -1570,10 +1620,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
       sample_id         = sample_id,
       results_dir       = results_dir,
       annotation_column = annotation_column,
-      bcell_regex       = bcell_regex
+      bcell_regex       = bcell_regex,
+      focus_label       = focus_label
     )
   }, error = function(e) {
-    message("B-cell neighbourhood plots skipped: ", conditionMessage(e))
+    message(tag$display, " neighbourhood plots skipped: ", conditionMessage(e))
   })
 
   tryCatch({
@@ -1582,10 +1633,11 @@ run_bcell_microenvironment_analysis <- function(gobj,
       sample_id         = sample_id,
       results_dir       = results_dir,
       annotation_column = annotation_column,
-      bcell_regex       = bcell_regex
+      bcell_regex       = bcell_regex,
+      focus_label       = focus_label
     )
   }, error = function(e) {
-    message("B-cell niche plots skipped: ", conditionMessage(e))
+    message(tag$display, " niche plots skipped: ", conditionMessage(e))
   })
 
   if (isTRUE(bcell_subcluster_enabled)) {
@@ -1596,6 +1648,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         results_dir         = results_dir,
         annotation_column   = annotation_column,
         bcell_regex         = bcell_regex,
+        focus_label         = focus_label,
         subtype_markers     = subtype_markers,
         min_cells           = bcell_subcluster_min_cells,
         fallback_min_cells  = bcell_subcluster_fallback_min_cells,
@@ -1612,7 +1665,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         seed                = seed
       )
     }, error = function(e) {
-      message("B-cell subclustering skipped: ", conditionMessage(e))
+      message(tag$display, " subclustering skipped: ", conditionMessage(e))
     })
   }
 

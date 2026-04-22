@@ -41,6 +41,20 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
   grDevices::colorRampPalette(base_cols)(n)
 }
 
+
+# Normalize cell-type labels to smiDE-native (NanoString) convention:
+# space-separated sentence case. HCA Kidney returns "B.cell" / "CD4.T.cell"
+# (make.names-style); CosMx 6K Kidney RCC returns "B cell" / "T cell".
+# Downstream code (step 11 focus regex, step 12 smide_annotation_subset)
+# expects a single scheme — apply at source so every celltype_* column is
+# consistent regardless of which reference the user selects.
+.normalize_label <- function(x) {
+  if (is.null(x) || length(x) == 0) return(x)
+  out <- gsub("[._]+", " ", as.character(x))
+  out <- gsub("\\s+", " ", out)
+  trimws(out)
+}
+
 #' Build a shared named colour map for a set of cell type labels.
 #' The ordering follows n_cells descending (same as the flightpath legend),
 #' so both the flightpath and the UMAP receive the exact same colour per type.
@@ -1632,7 +1646,7 @@ refine_annotation <- function(gobj,
   
   cat("  \u2713 refineClusters() complete\n")
   
-  refined_clust    <- insitu_refined$clust
+  refined_clust    <- .normalize_label(insitu_refined$clust)
   refined_prob_raw <- insitu_refined$prob
   
   refined_score <- if (is.matrix(refined_prob_raw)) {
@@ -2134,6 +2148,7 @@ annotate_cells <- function(gobj,
         reference_profiles = ref_profiles,
         align_genes        = align_genes
       ))
+      insitu_supervised$clust <- .normalize_label(insitu_supervised$clust)
       
       cat("\u2713 Supervised complete\n")
       cat("  Cell types found:", length(unique(insitu_supervised$clust)), "\n\n")
@@ -2291,6 +2306,7 @@ annotate_cells <- function(gobj,
         })
         
         if (!is.null(insitu_semi)) {
+          insitu_semi$clust <- .normalize_label(insitu_semi$clust)
           cat("\u2713 Semi-supervised complete\n")
           cat("  Cell types found:", length(unique(insitu_semi$clust)), "\n\n")
           annotation_diagnostics[[profile_name]]$semi_supervised_status <-
