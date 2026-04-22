@@ -995,8 +995,12 @@ run_sample_pipeline <- function(runtime_env,
     sample_row$output_dir <- sample_output_dir
 
     # Per-sample log: writes to <sample_output_dir>/Pipeline_log_<id>_<date>.log
-    # split = TRUE keeps output flowing to stdout so the shell-level tee in
-    # Run_Giotto_Pipeline.sh still captures a combined global log.
+    # split = TRUE duplicates stdout to both log and terminal so the shell-level
+    # tee in Run_Giotto_Pipeline.sh still captures a combined global log. R does
+    # NOT allow split = TRUE for the message stream — message sinks can only
+    # redirect to one destination, so messages go to the per-sample log only
+    # (they no longer appear on the terminal, but the per-sample log keeps them
+    # alongside the combined output stream).
     log_file <- file.path(
       sample_output_dir,
       sprintf("Pipeline_log_%s_%s.log",
@@ -1004,8 +1008,8 @@ run_sample_pipeline <- function(runtime_env,
     )
     log_con <- tryCatch(file(log_file, open = "wt"), error = function(e) NULL)
     if (!is.null(log_con)) {
-      sink(log_con, split = TRUE, type = "output")
-      sink(log_con, split = TRUE, type = "message")
+      sink(log_con, split = TRUE,  type = "output")
+      sink(log_con, split = FALSE, type = "message")
     }
 
     message("\n=== Sample: ", sample_name, " ===")
