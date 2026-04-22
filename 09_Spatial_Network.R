@@ -48,75 +48,120 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
                                  celltype_col,
                                  primary_network,
                                  sample_id,
-                                 prox_folder) {
-  
+                                 prox_folder,
+                                 file_label = NULL) {
+
   ann_net <- annotateSpatialNetwork(
     gobject              = gobj,
     spatial_network_name = primary_network,
     cluster_column       = celltype_col
   )
-  
+
   spat_locs <- getSpatialLocations(gobj, output = "data.table")
   meta      <- pDataDT(gobj)
-  
-  cell_dt <- merge(
-    spat_locs[, c("cell_ID", "sdimx", "sdimy")],
-    meta[,     c("cell_ID", celltype_col), with = FALSE],
-    by = "cell_ID"
-  )
-  names(cell_dt)[names(cell_dt) == celltype_col] <- "cell_type"
-  
-  int_edges    <- ann_net[ann_net$unified_int == interaction_name, ]
-  ct_pair      <- strsplit(interaction_name, "--")[[1]]
-  cell_dt$in_pair <- cell_dt$cell_type %in% ct_pair
-  
-  edge_dt     <- int_edges[, c("sdimx_begin", "sdimy_begin",
-                               "sdimx_end",   "sdimy_end")]
-  selected_dt <- cell_dt[cell_dt$in_pair, ]
-  other_dt    <- cell_dt[!cell_dt$in_pair, ]
-  
-  ct_colours <- setNames(
-    scales::hue_pal()(length(ct_pair)),
-    ct_pair
-  )
-  
-  p <- ggplot2::ggplot() +
-    ggplot2::geom_point(
-      data    = other_dt,
-      mapping = ggplot2::aes(x = sdimx, y = sdimy),
-      colour  = "grey85", size = 0.25, alpha = 0.35
-    ) +
-    ggplot2::geom_segment(
-      data    = edge_dt,
-      mapping = ggplot2::aes(x    = sdimx_begin, y    = sdimy_begin,
-                             xend = sdimx_end,   yend = sdimy_end),
-      colour = "grey40", linewidth = 0.2, alpha = 0.5
-    ) +
-    ggplot2::geom_point(
-      data    = selected_dt,
-      mapping = ggplot2::aes(x = sdimx, y = sdimy, colour = cell_type),
-      size    = 1.4, alpha = 0.9
-    ) +
-    ggplot2::scale_colour_manual(
-      values = ct_colours,
-      labels = function(x) pretty_plot_label(x, width = 18),
-      name = "Cell Type"
-    ) +
+
+  # Edge endpoints (centroid-to-centroid) - unchanged.
+  int_edges <- ann_net[ann_net$unified_int == interaction_name, ]
+  edge_dt   <- int_edges[, c("sdimx_begin", "sdimy_begin",
+                             "sdimx_end",   "sdimy_end")]
+
+  ct_pair <- strsplit(interaction_name, "--")[[1]]
+  in_pair <- meta$cell_ID[as.character(meta[[celltype_col]]) %in% ct_pair]
+
+  # Polygon geometry for cell bodies (replaces geom_point so the plot
+  # matches the pipeline-wide polygon convention). Falls back silently
+  # to the previous point rendering if polygons are unavailable.
+  poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+
+  ct_colours <- setNames(scales::hue_pal()(length(ct_pair)), ct_pair)
+
+  if (!is.null(poly_df) && nrow(poly_df) > 0) {
+    poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
+                                 poly_df$part, sep = "_")
+    poly_df$cell_type  <- as.character(
+      meta[[celltype_col]][match(poly_df$cell_ID, meta$cell_ID)]
+    )
+    poly_df$in_pair <- poly_df$cell_ID %in% in_pair
+
+    bg_poly <- poly_df[!poly_df$in_pair, , drop = FALSE]
+    fg_poly <- poly_df[ poly_df$in_pair, , drop = FALSE]
+
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_polygon(
+        data    = bg_poly,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+        fill    = "grey90", colour = "grey75", linewidth = 0.06
+      ) +
+      ggplot2::geom_segment(
+        data    = edge_dt,
+        mapping = ggplot2::aes(x = sdimx_begin, y = sdimy_begin,
+                               xend = sdimx_end, yend = sdimy_end),
+        colour  = "grey40", linewidth = 0.2, alpha = 0.6
+      ) +
+      ggplot2::geom_polygon(
+        data    = fg_poly,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group,
+                               fill = cell_type),
+        colour  = "grey30", linewidth = 0.15, alpha = 0.9
+      ) +
+      ggplot2::scale_fill_manual(
+        values = ct_colours,
+        labels = function(x) pretty_plot_label(x),
+        name   = "Cell Type"
+      )
+  } else {
+    cell_dt <- merge(
+      spat_locs[, c("cell_ID", "sdimx", "sdimy")],
+      meta[,     c("cell_ID", celltype_col), with = FALSE],
+      by = "cell_ID"
+    )
+    names(cell_dt)[names(cell_dt) == celltype_col] <- "cell_type"
+    cell_dt$in_pair <- cell_dt$cell_type %in% ct_pair
+    selected_dt <- cell_dt[cell_dt$in_pair, ]
+    other_dt    <- cell_dt[!cell_dt$in_pair, ]
+    p <- ggplot2::ggplot() +
+      ggplot2::geom_point(
+        data = other_dt, mapping = ggplot2::aes(x = sdimx, y = sdimy),
+        colour = "grey85", size = 0.25, alpha = 0.35
+      ) +
+      ggplot2::geom_segment(
+        data = edge_dt,
+        mapping = ggplot2::aes(x = sdimx_begin, y = sdimy_begin,
+                               xend = sdimx_end, yend = sdimy_end),
+        colour = "grey40", linewidth = 0.2, alpha = 0.5
+      ) +
+      ggplot2::geom_point(
+        data = selected_dt,
+        mapping = ggplot2::aes(x = sdimx, y = sdimy, colour = cell_type),
+        size = 1.4, alpha = 0.9
+      ) +
+      ggplot2::scale_colour_manual(
+        values = ct_colours,
+        labels = function(x) pretty_plot_label(x),
+        name   = "Cell Type"
+      )
+  }
+
+  # Axis / margin theme prevents axis text being cut off on composite figures.
+  p <- p +
     ggplot2::coord_fixed() +
     ggplot2::labs(
-      title    = sample_plot_title(sample_id, paste0("Cell Proximity: ", pretty_plot_label(interaction_name))),
-      subtitle = sprintf("%d interacting edges  |  network: %s",
-                         nrow(int_edges), primary_network),
+      title = sample_plot_title(sample_id,
+        paste0("Cell Proximity: ", pretty_plot_label(interaction_name))),
       x = "Global X Coordinate", y = "Global Y Coordinate"
     ) +
     presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
-      legend.key.height = grid::unit(0.45, "cm")
+      legend.key.height = grid::unit(0.45, "cm"),
+      axis.title.x      = ggplot2::element_text(margin = ggplot2::margin(t = 10)),
+      axis.title.y      = ggplot2::element_text(margin = ggplot2::margin(r = 10)),
+      plot.margin       = ggplot2::margin(t = 10, r = 20, b = 20, l = 20)
     )
-  
+
   safe_name <- gsub("[^A-Za-z0-9]", "_", interaction_name)
+  label_tag <- if (!is.null(file_label) && nzchar(file_label)) file_label else sample_id
   save_path <- file.path(prox_folder,
-                         paste0(sample_id, "_proximity_visplot_",
+                         paste0(label_tag, "_proximity_visplot_",
                                 safe_name, ".png"))
   save_presentation_plot(p, save_path, width = 14, height = 10, dpi = 150)
   cat("\u2713 Proximity vis plot saved:", basename(save_path), "\n")
@@ -124,9 +169,78 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
 }
 
 
-# ============================================================================== 
-# Internal helper: proximity heatmap via pheatmap (no ComplexHeatmap needed) 
-# ============================================================================== 
+# ==============================================================================
+# Internal helper: niche-deconvolution polygon plot (replaces spatPlot2D)
+# ==============================================================================
+#
+# Uses .extract_polygon_df() + ggplot2 instead of Giotto's spatPlot2D so that
+# the deconvolution score layer rendres with the same polygon convention as
+# the rest of the pipeline, gains a named legend, and gets explicit plot /
+# axis margins so axis text is never clipped. Falls back to spatPlot2D for
+# samples without polygon data.
+
+.plot_deconv_polygons <- function(gobj,
+                                  score_col,
+                                  enrichment_name,
+                                  sample_id,
+                                  deconv_folder,
+                                  legend_name = NULL,
+                                  file_label  = NULL) {
+
+  poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+  if (is.null(poly_df) || nrow(poly_df) == 0) return(NULL)
+  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
+                               poly_df$part, sep = "_")
+
+  enr <- tryCatch(
+    getSpatialEnrichment(gobj, name = enrichment_name, output = "data.table"),
+    error = function(e) NULL
+  )
+  if (is.null(enr) || !(score_col %in% names(enr))) return(NULL)
+
+  poly_df$score <- as.numeric(
+    enr[[score_col]][match(poly_df$cell_ID, enr$cell_ID)]
+  )
+
+  legend_title <- if (!is.null(legend_name) && nzchar(legend_name)) {
+    legend_name
+  } else {
+    paste(pretty_plot_label(score_col), "score")
+  }
+
+  p <- ggplot2::ggplot(poly_df,
+                       ggplot2::aes(x = x, y = y,
+                                    group = poly_group, fill = score)) +
+    ggplot2::geom_polygon(colour = "grey40", linewidth = 0.08) +
+    ggplot2::scale_fill_gradient(low = "lightgrey", high = "red",
+                                 name = legend_title, na.value = "grey85") +
+    ggplot2::coord_fixed() +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id,
+        paste0(enrichment_name, ": ", pretty_plot_label(score_col))),
+      x = "Global X Coordinate", y = "Global Y Coordinate"
+    ) +
+    presentation_theme(base_size = 11, legend_position = "right") +
+    ggplot2::theme(
+      axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 10)),
+      axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 10)),
+      plot.margin  = ggplot2::margin(t = 10, r = 20, b = 20, l = 20),
+      legend.key.height = grid::unit(0.45, "cm")
+    )
+
+  safe_ct <- gsub("[^A-Za-z0-9]", "_", score_col)
+  label_tag <- if (!is.null(file_label) && nzchar(file_label)) file_label else sample_id
+  save_path <- file.path(deconv_folder,
+                         paste0(label_tag, "_", enrichment_name, "_",
+                                safe_ct, ".png"))
+  save_presentation_plot(p, save_path, width = 12, height = 10, dpi = 200)
+  invisible(save_path)
+}
+
+
+# ==============================================================================
+# Internal helper: proximity heatmap via pheatmap (no ComplexHeatmap needed)
+# ==============================================================================
 
 #' @keywords internal
 .plot_proximity_heatmap <- function(prox_csv_path,
@@ -299,7 +413,9 @@ build_spatial_network <- function(gobj,
                                   create_plots           = TRUE,
                                   random_seed            = 42,
                                   min_page_genes         = 5,
-                                  max_delaunay_distance  = 50) {
+                                  max_delaunay_distance  = 50,
+                                  sample_row             = NULL,
+                                  sample_sheet_path      = NULL) {
   
   set.seed(random_seed)
   
@@ -714,6 +830,53 @@ build_spatial_network <- function(gobj,
           sample_id        = sample_id,
           prox_folder      = prox_folder
         )
+
+        # Composite CART slides: emit per-sub-biopsy proximity vis plots
+        # into prox_folder/subsamples/. Requires sample_row + sheet path
+        # from the orchestrator; silently no-ops for non-composite samples.
+        sub_rows <- tryCatch(
+          discover_composite_subsamples(sample_row, sample_sheet_path),
+          error = function(e) NULL
+        )
+        if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
+          meta_all <- as.data.frame(pDataDT(gobj))
+          if ("fov" %in% names(meta_all)) {
+            sub_dir <- file.path(prox_folder, "subsamples")
+            dir.create(sub_dir, recursive = TRUE, showWarnings = FALSE)
+            cat("  Composite sample - rendering ", nrow(sub_rows),
+                " per-sub-biopsy proximity variant(s)\n", sep = "")
+            for (k in seq_len(nrow(sub_rows))) {
+              sub_r  <- sub_rows[k, , drop = FALSE]
+              sub_id <- as.character(sub_r$sample_id)
+              fmin   <- as.integer(sub_r$fov_min)
+              fmax   <- as.integer(sub_r$fov_max)
+              if (anyNA(c(fmin, fmax))) next
+              cell_ids <- meta_all$cell_ID[
+                !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
+              ]
+              if (length(cell_ids) == 0) next
+              sub_gobj <- tryCatch(
+                subsetGiotto(gobj, cell_ids = cell_ids),
+                error = function(e) NULL
+              )
+              if (is.null(sub_gobj)) next
+              tryCatch(
+                .plot_cell_proximity(
+                  gobj             = sub_gobj,
+                  interaction_name = top_int,
+                  celltype_col     = celltype_col,
+                  primary_network  = primary_network,
+                  sample_id        = sub_id,
+                  prox_folder      = sub_dir,
+                  file_label       = sub_id
+                ),
+                error = function(e) cat("    \u26A0 ", sub_id,
+                  ": proximity sub-plot failed: ",
+                  conditionMessage(e), "\n", sep = "")
+              )
+            }
+          }
+        }
       }, error = function(e) {
         cat("\u26A0 Proximity vis plot failed:", conditionMessage(e), "\n")
       })
@@ -812,22 +975,33 @@ build_spatial_network <- function(gobj,
                       length(score_cols)))
           for (ct in score_cols) {
             tryCatch({
-              spatPlot2D(
-                gobject         = gobj,
-                cell_color      = ct,
-                color_as_factor = FALSE,
-                spat_enr_names  = "PAGE_enrichment",
-                point_size      = 0.4,
-                show_image      = FALSE,
-                save_plot       = TRUE,
-                save_param      = list(
-                  save_name   = paste0(sample_id, "_PAGE_",
-                                       gsub("[^A-Za-z0-9]", "_", ct)),
-                  save_dir    = deconv_folder,
-                  base_width  = 10,
-                  base_height = 8
-                )
+              saved <- .plot_deconv_polygons(
+                gobj            = gobj,
+                score_col       = ct,
+                enrichment_name = "PAGE_enrichment",
+                sample_id       = sample_id,
+                deconv_folder   = deconv_folder,
+                legend_name     = paste(pretty_plot_label(ct), "PAGE score")
               )
+              if (is.null(saved)) {
+                # Fallback: Giotto spatPlot2D when polygon data is missing.
+                spatPlot2D(
+                  gobject         = gobj,
+                  cell_color      = ct,
+                  color_as_factor = FALSE,
+                  spat_enr_names  = "PAGE_enrichment",
+                  point_size      = 0.4,
+                  show_image      = FALSE,
+                  save_plot       = TRUE,
+                  save_param      = list(
+                    save_name   = paste0(sample_id, "_PAGE_",
+                                         gsub("[^A-Za-z0-9]", "_", ct)),
+                    save_dir    = deconv_folder,
+                    base_width  = 10,
+                    base_height = 8
+                  )
+                )
+              }
             }, error = function(e) cat("  ⚠ PAGE plot failed for", ct, ":", conditionMessage(e), "\n"))
           }
           cat("  \u2713 Spatial enrichment plots saved\n")
@@ -964,10 +1138,27 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       bootstrap_pipeline_environment(current_script_dir(), load_pipeline_utils = TRUE, verbose = FALSE)
     }
     
+    # Composite-awareness: pick up the sample sheet path from env var so a
+    # direct Rscript invocation can emit per-sub-biopsy proximity variants.
+    sheet_env <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
+    sample_sheet_path_arg <- if (nzchar(sheet_env) && file.exists(sheet_env)) sheet_env else NULL
+    sample_row_arg <- NULL
+    if (!is.null(sample_sheet_path_arg) &&
+        exists("safe_read_sheet", mode = "function", inherits = TRUE)) {
+      sheet_df <- tryCatch(safe_read_sheet(sample_sheet_path_arg),
+                           error = function(e) NULL)
+      if (!is.null(sheet_df) && "sample_id" %in% names(sheet_df)) {
+        hit <- which(as.character(sheet_df$sample_id) == args[1])
+        if (length(hit) > 0) sample_row_arg <- sheet_df[hit[1], , drop = FALSE]
+      }
+    }
+
     build_spatial_network(
-      gobj       = args[2],
-      sample_id  = args[1],
-      output_dir = args[3]
+      gobj              = args[2],
+      sample_id         = args[1],
+      output_dir        = args[3],
+      sample_row        = sample_row_arg,
+      sample_sheet_path = sample_sheet_path_arg
     )
   } else {
     stop("Usage: Rscript 09_Spatial_Network.R <sample_id> <input_path> <output_dir>")

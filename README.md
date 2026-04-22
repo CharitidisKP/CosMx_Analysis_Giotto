@@ -29,6 +29,7 @@ CosMx_analysis/
 │   ├── 10_CCI_Analysis.R              # Step 10 – Cell–cell interaction (CCI)
 │   ├── 11_B_Cell_Analysis.R           # Step 11 – Focused immune microenvironment
 │   ├── 12_Spatial_Differential_Expression.R  # Step 12 – Spatial DE
+│   ├── 13_Pathway_Analysis.R           # Step 13 – Pathway enrichment + GSEA (merged-scope)
 │   ├── Helper_Scripts/
 │   │   ├── Merge_Batch_Correction.R   # Merge + Harmony batch correction
 │   │   ├── Pipeline_Utils.R           # Shared utilities

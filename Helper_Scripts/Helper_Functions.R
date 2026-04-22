@@ -1,7 +1,49 @@
-## Choose columns function ## 
+## Choose columns function ##
 pick_col <- function(df, candidates) {
   hit <- candidates[candidates %in% names(df)]
   if (length(hit) == 0) NA_character_ else hit[1]
+}
+
+## Composite sub-sample discovery ##
+# Look up the per-sub-biopsy split rows for a composite sample in the sample
+# sheet. Returns a data.frame (rows with sample_id, fov_min, fov_max, ...),
+# NULL if the current sample is not a composite, the sheet is unavailable, or
+# no split rows exist.
+#
+# Shared by 02_Quality_Control.R and 08_Visualisation.R; depends on
+# safe_read_sheet() from Pipeline_Utils.R, which every pipeline script sources.
+discover_composite_subsamples <- function(sample_row, sample_sheet_path) {
+  if (is.null(sample_row) || is.null(sample_sheet_path)) return(NULL)
+  if (!file.exists(sample_sheet_path)) return(NULL)
+  if (!exists("safe_read_sheet", mode = "function", inherits = TRUE)) return(NULL)
+
+  role <- tryCatch(as.character(sample_row$split_role)[1],
+                   error = function(e) NA_character_)
+  if (is.null(role) || is.na(role) || !nzchar(role) || role != "composite") {
+    return(NULL)
+  }
+
+  slide_num <- tryCatch(as.character(sample_row$slide_num)[1],
+                        error = function(e) NA_character_)
+
+  sheet <- tryCatch(safe_read_sheet(sample_sheet_path),
+                    error = function(e) NULL)
+  if (is.null(sheet)) return(NULL)
+  sheet <- as.data.frame(sheet, stringsAsFactors = FALSE)
+
+  matches_slide <- if (!is.na(slide_num) && "slide_num" %in% names(sheet)) {
+    as.character(sheet$slide_num) == slide_num
+  } else rep(TRUE, nrow(sheet))
+
+  keep <- matches_slide &
+    !is.na(sheet$split_role) &
+    as.character(sheet$split_role) == "split"
+
+  subs <- sheet[keep, , drop = FALSE]
+  if (nrow(subs) == 0) return(NULL)
+  subs <- subs[!is.na(subs$fov_min) & !is.na(subs$fov_max), , drop = FALSE]
+  if (nrow(subs) == 0) return(NULL)
+  subs
 }
 
 ## XY coordinate thingies ##

@@ -28,11 +28,104 @@
 #' @param top_n Top N markers per cluster
 #' @return Giotto object with marker results
 
+# Custom cluster-marker heatmap.
+# Replaces Giotto::plotMetaDataHeatmap() with a diverging blue/white/red z-score
+# tile heatmap. Genes are row-z-scored across clusters and clipped to [-2, 2]
+# so outlier clusters do not dominate the colour scale. Gene order on the y-axis
+# is preserved from the input vector (so callers control grouping — main markers
+# before subtype markers for the B-cell variant). Panel-absent genes drop
+# silently via an intersect with the expression matrix.
+.cluster_marker_heatmap <- function(gobj, sample_id, genes, cluster_column,
+                                    results_folder,
+                                    title_suffix    = "Cluster marker heatmap",
+                                    filename_suffix = "marker_heatmap") {
+  expr <- getExpression(gobj, values = "normalized", output = "matrix")
+  meta <- as.data.frame(pDataDT(gobj))
+
+  genes_in   <- unique(as.character(genes))
+  genes_in   <- genes_in[nzchar(genes_in)]
+  genes_hit  <- intersect(genes_in, rownames(expr))
+  genes_skip <- setdiff(genes_in, genes_hit)
+  if (length(genes_skip) > 0) {
+    cat(sprintf("  ℹ %d gene(s) absent from expression matrix: %s\n",
+                length(genes_skip), paste(genes_skip, collapse = ", ")))
+  }
+  if (length(genes_hit) == 0) {
+    cat("  ℹ no genes available for heatmap; skipping\n")
+    return(invisible(NULL))
+  }
+
+  cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
+  n_clusters <- length(cluster_levels)
+
+  mean_mat <- matrix(NA_real_,
+                     nrow = length(genes_hit),
+                     ncol = n_clusters,
+                     dimnames = list(genes_hit, cluster_levels))
+  for (cl in cluster_levels) {
+    keep <- meta[[cluster_column]] == cl
+    cell_ids <- meta$cell_ID[keep]
+    sub <- expr[genes_hit, cell_ids, drop = FALSE]
+    mean_mat[, cl] <- Matrix::rowMeans(sub)
+  }
+
+  z_mat <- t(scale(t(mean_mat), center = TRUE, scale = TRUE))
+  z_mat[!is.finite(z_mat)] <- 0
+
+  df <- data.frame(
+    gene    = factor(rep(genes_hit, times = n_clusters), levels = genes_hit),
+    cluster = factor(rep(cluster_levels, each = length(genes_hit)),
+                     levels = cluster_levels),
+    z       = as.vector(z_mat),
+    stringsAsFactors = FALSE
+  )
+
+  p <- ggplot2::ggplot(df,
+        ggplot2::aes(x = cluster, y = gene, fill = z)) +
+    ggplot2::geom_tile(colour = "grey90", linewidth = 0.1) +
+    ggplot2::scale_fill_gradient2(
+      low      = "#2166AC",
+      mid      = "white",
+      high     = "#B2182B",
+      midpoint = 0,
+      limits   = c(-2, 2),
+      oob      = scales::squish,
+      name     = "z-score"
+    ) +
+    ggplot2::scale_y_discrete(limits = rev(genes_hit)) +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id, title_suffix),
+      x     = "Cluster",
+      y     = "Gene"
+    ) +
+    presentation_theme(base_size = 11) +
+    ggplot2::theme(
+      panel.grid  = ggplot2::element_blank(),
+      axis.text.y = ggplot2::element_text(size = 8)
+    )
+
+  out_path <- file.path(results_folder,
+                        paste0(sample_id, "_", filename_suffix, ".png"))
+  save_presentation_plot(
+    plot     = p,
+    filename = out_path,
+    width    = max(6, 0.30 * n_clusters + 3),
+    height   = max(8, 0.22 * length(genes_hit) + 3),
+    dpi      = 300
+  )
+
+  cat("✓ Heatmap saved:", basename(out_path), "\n\n")
+  invisible(out_path)
+}
+
+
 marker_analysis <- function(gobj,
                             sample_id,
                             output_dir,
-                            cluster_column = "leiden_clust",
-                            top_n = 25) {
+                            cluster_column  = "leiden_clust",
+                            top_n           = 25,
+                            bcell_markers   = character(),
+                            subtype_markers = character()) {
   
   cat("\n========================================\n")
   cat("STEP 06: Cluster Marker Analysis (one-vs-all)\n")
@@ -81,29 +174,42 @@ marker_analysis <- function(gobj,
   
   cat("✓ Marker tables saved\n\n")
   
-  # Create heatmap of top markers
+  # Create heatmap of top markers (custom ggplot tile heatmap; replaces Giotto's
+  # plotMetaDataHeatmap() for visual consistency with the rest of the pipeline).
   cat("Creating marker heatmap...\n")
-  
+
   top_genes <- top_markers %>%
     group_by(cluster) %>%
     slice_head(n = 10) %>%
     pull(feats)
-  
-  plotMetaDataHeatmap(
-    gobject = gobj,
-    expression_values = "normalized",
-    metadata_cols = cluster_column,
-    selected_feats = top_genes,
-    save_plot = TRUE,
-    save_param = list(
-      save_name = paste0(sample_id, "_marker_heatmap"),
-      save_dir = results_folder,
-      base_width = 14,
-      base_height = 12
-    )
+  top_genes <- unique(top_genes)
+
+  .cluster_marker_heatmap(
+    gobj            = gobj,
+    sample_id       = sample_id,
+    genes           = top_genes,
+    cluster_column  = cluster_column,
+    results_folder  = results_folder,
+    title_suffix    = "Cluster marker heatmap",
+    filename_suffix = "marker_heatmap"
   )
-  
-  cat("✓ Heatmap saved\n\n")
+
+  # B-cell-specific heatmap: main B-cell markers first, then subtype markers.
+  # Skipped when no markers are provided via config / CLI env vars.
+  b_all <- unique(c(as.character(bcell_markers), as.character(subtype_markers)))
+  b_all <- b_all[nzchar(b_all)]
+  if (length(b_all) > 0) {
+    cat("Creating B-cell gene heatmap...\n")
+    .cluster_marker_heatmap(
+      gobj            = gobj,
+      sample_id       = sample_id,
+      genes           = b_all,
+      cluster_column  = cluster_column,
+      results_folder  = results_folder,
+      title_suffix    = "B-cell gene heatmap",
+      filename_suffix = "bcell_heatmap"
+    )
+  }
   
   # Violin plots for top markers
   cat("Creating violin plots for top 5 markers per cluster...\n")
@@ -114,22 +220,57 @@ marker_analysis <- function(gobj,
     pull(feats) %>%
     unique()
   
-  violinPlot(
-    gobject = gobj,
-    feats = head(top5_per_cluster, 20),  # Limit to avoid overcrowding
+  p_vio <- violinPlot(
+    gobject        = gobj,
+    feats          = head(top5_per_cluster, 20),  # Limit to avoid overcrowding
     cluster_column = cluster_column,
-    strip_text = 8,
+    strip_text     = 8,
     strip_position = "right",
-    save_plot = TRUE,
-    save_param = list(
-      save_name = paste0(sample_id, "_marker_violins"),
-      save_dir = results_folder,
-      base_width = 16,
-      base_height = 20
-    )
+    show_plot      = FALSE,
+    return_plot    = TRUE
+  ) + ggplot2::labs(title = sample_plot_title(sample_id, "Top marker violins"))
+
+  save_presentation_plot(
+    plot     = p_vio,
+    filename = file.path(results_folder,
+                         paste0(sample_id, "_marker_violins.png")),
+    width    = 16,
+    height   = 20,
+    dpi      = 300
   )
 
   cat("✓ Violin plots saved\n\n")
+
+  # B-cell-genes violin variant (panel-present subset; main + subtype markers).
+  if (length(b_all) > 0) {
+    expr_rows <- rownames(getExpression(gobj, values = "normalized",
+                                        output = "matrix"))
+    b_present <- intersect(b_all, expr_rows)
+    if (length(b_present) > 0) {
+      cat("Creating B-cell gene violin plots...\n")
+      p_vio_b <- violinPlot(
+        gobject        = gobj,
+        feats          = b_present,
+        cluster_column = cluster_column,
+        strip_text     = 8,
+        strip_position = "right",
+        show_plot      = FALSE,
+        return_plot    = TRUE
+      ) + ggplot2::labs(title = sample_plot_title(sample_id,
+                                                  "B-cell gene violins"))
+      save_presentation_plot(
+        plot     = p_vio_b,
+        filename = file.path(results_folder,
+                             paste0(sample_id, "_bcell_violins.png")),
+        width    = 14,
+        height   = max(8, 1.0 * length(b_present) + 2),
+        dpi      = 300
+      )
+      cat("✓ B-cell violin plots saved\n\n")
+    } else {
+      cat("  ℹ no B-cell markers present on panel; skipping B-cell violins\n\n")
+    }
+  }
 
   # Per-cluster volcano plots -------------------------------------------------
   cat("Creating per-cluster volcano plots...\n")
@@ -196,41 +337,23 @@ marker_analysis <- function(gobj,
   })
 
   # Top-markers dotplot -------------------------------------------------------
+  # Axes: clusters on x, genes on y so "many markers" grows height and
+  # clusters pack tight on x. The Giotto dotPlot() branch is dropped because
+  # it offers no axis-swap hook; the manual ggplot is now the only path.
   cat("Creating marker dotplot...\n")
   tryCatch({
     dp_genes <- unique(top_genes)
-    dp_fn <- NULL
-    if (requireNamespace("Giotto", quietly = TRUE) &&
-        exists("dotPlot", envir = asNamespace("Giotto"), inherits = FALSE)) {
-      dp_fn <- get("dotPlot", envir = asNamespace("Giotto"))
-    } else if (requireNamespace("GiottoVisuals", quietly = TRUE) &&
-               exists("dotPlot", envir = asNamespace("GiottoVisuals"), inherits = FALSE)) {
-      dp_fn <- get("dotPlot", envir = asNamespace("GiottoVisuals"))
-    }
-    if (!is.null(dp_fn)) {
-      dp_fn(
-        gobject           = gobj,
-        feats             = dp_genes,
-        cluster_column    = cluster_column,
-        expression_values = "normalized",
-        save_plot         = TRUE,
-        save_param        = list(
-          save_name   = paste0(sample_id, "_marker_dotplot"),
-          save_dir    = results_folder,
-          base_width  = max(10, 0.35 * length(dp_genes) + 4),
-          base_height = 8
-        )
-      )
-      cat("  \u2713 Dotplot saved (Giotto dotPlot)\n")
+    expr     <- getExpression(gobj, values = "normalized", output = "matrix")
+    meta     <- as.data.frame(pDataDT(gobj))
+    dp_genes <- intersect(dp_genes, rownames(expr))
+    if (length(dp_genes) == 0) {
+      cat("  \u26A0 No top-marker genes available; skipping dotplot\n")
     } else {
-      # Manual dotplot: mean expression + pct cells expressing per cluster
-      expr <- getExpression(gobj, values = "normalized", output = "matrix")
-      meta <- as.data.frame(pDataDT(gobj))
-      dp_genes <- intersect(dp_genes, rownames(expr))
+      cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
       rows <- list()
       for (g in dp_genes) {
         e <- expr[g, meta$cell_ID]
-        for (cl in sort(unique(meta[[cluster_column]]))) {
+        for (cl in cluster_levels) {
           keep <- meta[[cluster_column]] == cl
           rows[[length(rows) + 1L]] <- data.frame(
             gene = g, cluster = as.character(cl),
@@ -240,29 +363,30 @@ marker_analysis <- function(gobj,
           )
         }
       }
-      dot_df <- do.call(rbind, rows)
-      dot_df$gene <- factor(dot_df$gene, levels = dp_genes)
+      dot_df         <- do.call(rbind, rows)
+      dot_df$gene    <- factor(dot_df$gene,    levels = dp_genes)
+      dot_df$cluster <- factor(dot_df$cluster, levels = cluster_levels)
       p_dot <- ggplot2::ggplot(dot_df,
-          ggplot2::aes(x = gene, y = cluster, size = pct_expr, colour = mean_expr)) +
+          ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
         ggplot2::geom_point() +
         ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
                                        name = "mean expr") +
         ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
+        ggplot2::scale_y_discrete(limits = rev(dp_genes)) +
         ggplot2::labs(
           title = sample_plot_title(sample_id, "Top marker dotplot"),
-          x = "Gene", y = "Cluster"
+          x = "Cluster", y = "Gene"
         ) +
-        presentation_theme(base_size = 11) +
-        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
+        presentation_theme(base_size = 11)
       save_presentation_plot(
         plot     = p_dot,
         filename = file.path(results_folder,
                              paste0(sample_id, "_marker_dotplot.png")),
-        width    = max(10, 0.35 * length(dp_genes) + 4),
-        height   = max(6, 0.35 * length(unique(dot_df$cluster)) + 3),
+        width    = max(6, 0.35 * length(cluster_levels) + 2),
+        height   = max(8, 0.30 * length(dp_genes) + 3),
         dpi      = 300
       )
-      cat("  \u2713 Dotplot saved (manual ggplot2)\n")
+      cat("  \u2713 Dotplot saved\n")
     }
   }, error = function(e) {
     cat("\u26A0 Dotplot failed:", conditionMessage(e), "\n")
@@ -290,16 +414,31 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
       bootstrap_pipeline_environment(script_dir, load_pipeline_utils = FALSE, verbose = FALSE)
     }
     
-    sample_id <- args[1]
+    sample_id  <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
-    
+
+    # B-cell marker lists can be passed via env vars so the CLI entry point
+    # works the same way whether it's invoked by the orchestrator (which
+    # reads Parameters/config.yaml) or by hand via Rscript. Unset / empty →
+    # character(); the B-cell heatmap and violin blocks skip gracefully.
+    .parse_gene_env <- function(name) {
+      raw <- Sys.getenv(name, unset = "")
+      if (!nzchar(raw)) return(character())
+      parts <- unlist(strsplit(raw, "[,;]\\s*"))
+      parts[nzchar(parts)]
+    }
+    bcell_markers   <- .parse_gene_env("COSMX_BCELL_MARKERS")
+    subtype_markers <- .parse_gene_env("COSMX_BCELL_SUBTYPE_MARKERS")
+
     gobj <- marker_analysis(
-      gobj = input_path,
-      sample_id = sample_id,
-      output_dir = output_dir
+      gobj            = input_path,
+      sample_id       = sample_id,
+      output_dir      = output_dir,
+      bcell_markers   = bcell_markers,
+      subtype_markers = subtype_markers
     )
-    
+
     saveGiotto(gobj, dir = output_dir, foldername = "Giotto_Object_DEG_Markers", overwrite = TRUE)
   } else {
     stop("Usage: Rscript 06_Differential_Expression.R <sample_id> <input_path> <output_dir>")

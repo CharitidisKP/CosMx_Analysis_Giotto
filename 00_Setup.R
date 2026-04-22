@@ -231,7 +231,8 @@ setup_environment <- function(verbose = TRUE) {
     "Cluster_Visualisations.R",
     "Arrange_Feature_plots.R",
     "Feature_plots_panel.R",
-    "CCI_Summary.R"
+    "CCI_Summary.R",
+    "Plot_Helpers.R"
   )
   
   sourced_count <- 0

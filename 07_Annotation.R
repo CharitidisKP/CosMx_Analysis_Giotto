@@ -56,16 +56,25 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
 }
 
 #' Build a shared named colour map for a set of cell type labels.
-#' The ordering follows n_cells descending (same as the flightpath legend),
-#' so both the flightpath and the UMAP receive the exact same colour per type.
+#'
+#' Delegates to the universal celltype_palette() helper so every pipeline plot
+#' assigns the same colour to the same top-level celltype across scripts and
+#' runs. B cells are pinned to "mediumspringgreen"; other celltypes are
+#' assigned deterministically from a colourblind-safe pool. Legacy
+#' frequency-based ordering is no longer needed because the assignment is
+#' stable by celltype name.
 #'
 #' @param clust_vec  Named or unnamed character vector of per-cell assignments
 #' @return Named character vector: names = cell type, values = hex colour
 .build_colour_map <- function(clust_vec) {
-  ct_counts  <- sort(table(clust_vec), decreasing = TRUE)
-  ct_ordered <- names(ct_counts)
-  pal        <- .annotation_palette(length(ct_ordered))
-  stats::setNames(pal, ct_ordered)
+  ct <- sort(unique(stats::na.omit(as.character(clust_vec))))
+  if (exists("celltype_palette", mode = "function", inherits = TRUE)) {
+    return(celltype_palette(ct))
+  }
+  # Fallback to the legacy Brewer-pool assignment if Plot_Helpers.R is
+  # unavailable (e.g. partial sourcing during tests).
+  pal <- .annotation_palette(length(ct))
+  stats::setNames(pal, ct)
 }
 
 
@@ -702,10 +711,11 @@ select_best_annotation <- function(gobj,
                                                sample_id,
                                                out_dir,
                                                ann_type,
-                                               width  = 20,
-                                               height = 10,
+                                               width  = 24,
+                                               height = 14,
                                                dpi    = 300) {
-  title_txt <- paste0(sample_id, " \u2014 ", profile_name, " (", ann_type, ")")
+  # Hyphen (not em dash) so pipeline plot text stays clean.
+  title_txt <- paste0(sample_id, " - ", profile_name, " (", ann_type, ")")
   fname     <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
 
   # 1) Primary path: Giotto spatInSituPlotPoints with outlined styling.
@@ -737,10 +747,10 @@ select_best_annotation <- function(gobj,
     plot_df  <- merge(poly_coords, meta, by = "cell_ID", all.x = TRUE)
     plot_df[[celltype_col]] <- factor(plot_df[[celltype_col]], levels = names(colour_map))
 
-    wrapped_levels <- pretty_plot_label(names(colour_map), width = 24)
+    wrapped_levels <- pretty_plot_label(names(colour_map))
     wrapped_cmap   <- stats::setNames(unname(colour_map), wrapped_levels)
     plot_df$CellType_label <- factor(
-      pretty_plot_label(as.character(plot_df[[celltype_col]]), width = 24),
+      pretty_plot_label(as.character(plot_df[[celltype_col]])),
       levels = wrapped_levels
     )
 
@@ -797,6 +807,99 @@ select_best_annotation <- function(gobj,
       cat("  \u26A0 Spatial fallback also failed:", conditionMessage(e), "\n")
     }
   )
+}
+
+
+# Helper: composite-aware wrapper around .plot_spatial_annotation_polygons.
+# Always emits the whole-sample plot. When sample_row indicates a composite
+# CART slide, additionally subsets the Giotto object by each sub-biopsy's
+# FOV range and writes a per-sub-biopsy variant under out_dir/subsamples/.
+# Falls back to a single plot silently when no composite metadata is provided.
+
+.plot_spatial_annotation_with_composite <- function(gobj,
+                                                    celltype_col,
+                                                    colour_map,
+                                                    profile_name,
+                                                    sample_id,
+                                                    out_dir,
+                                                    ann_type,
+                                                    sample_row        = NULL,
+                                                    sample_sheet_path = NULL,
+                                                    width             = 24,
+                                                    height            = 14,
+                                                    dpi               = 300) {
+  .plot_spatial_annotation_polygons(
+    gobj         = gobj,
+    celltype_col = celltype_col,
+    colour_map   = colour_map,
+    profile_name = profile_name,
+    sample_id    = sample_id,
+    out_dir      = out_dir,
+    ann_type     = ann_type,
+    width        = width,
+    height       = height,
+    dpi          = dpi
+  )
+
+  sub_rows <- tryCatch(
+    discover_composite_subsamples(sample_row, sample_sheet_path),
+    error = function(e) NULL
+  )
+  if (is.null(sub_rows) || nrow(sub_rows) == 0) return(invisible(NULL))
+
+  meta_all <- as.data.frame(pDataDT(gobj))
+  if (!"fov" %in% names(meta_all)) {
+    cat("  \u26A0 No 'fov' column on Giotto object; skipping composite spatial variants\n")
+    return(invisible(NULL))
+  }
+
+  sub_dir <- file.path(out_dir, "subsamples")
+  dir.create(sub_dir, recursive = TRUE, showWarnings = FALSE)
+
+  cat("  Composite sample detected - rendering ", nrow(sub_rows),
+      " per-sub-biopsy spatial variant(s) for profile '", profile_name, "'\n", sep = "")
+
+  for (k in seq_len(nrow(sub_rows))) {
+    sub_r  <- sub_rows[k, , drop = FALSE]
+    sub_id <- as.character(sub_r$sample_id)
+    fmin   <- as.integer(sub_r$fov_min)
+    fmax   <- as.integer(sub_r$fov_max)
+    if (anyNA(c(fmin, fmax))) {
+      cat("    \u26A0 ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+      next
+    }
+    cell_ids <- meta_all$cell_ID[
+      !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
+    ]
+    if (length(cell_ids) == 0) {
+      cat("    \u26A0 ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
+          ", skipped\n", sep = "")
+      next
+    }
+    sub_gobj <- tryCatch(
+      subsetGiotto(gobj, cell_ids = cell_ids),
+      error = function(e) {
+        cat("    \u26A0 ", sub_id, ": subsetGiotto failed: ",
+            conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
+    if (is.null(sub_gobj)) next
+    .plot_spatial_annotation_polygons(
+      gobj         = sub_gobj,
+      celltype_col = celltype_col,
+      colour_map   = colour_map,
+      profile_name = profile_name,
+      sample_id    = sub_id,
+      out_dir      = sub_dir,
+      ann_type     = ann_type,
+      width        = width,
+      height       = height,
+      dpi          = dpi
+    )
+  }
+
+  invisible(NULL)
 }
 
 
@@ -875,8 +978,7 @@ plot_bcell_highlights <- function(gobj,
       ) +
       ggplot2::scale_alpha_manual(values = hi_alpha, guide = "none") +
       ggplot2::labs(
-        title    = sample_plot_title(sample_id, "B Cell Highlight \u2014 UMAP"),
-        subtitle = paste("Highlighted:", paste(bcell_types, collapse = ", ")),
+        title = sample_plot_title(sample_id, "B Cell Highlight - UMAP"),
         x = NULL, y = NULL
       ) +
       ggplot2::guides(colour = ggplot2::guide_legend(
@@ -926,8 +1028,7 @@ plot_bcell_highlights <- function(gobj,
       ggplot2::scale_alpha_manual(values = hi_alpha, guide = "none") +
       ggplot2::coord_equal() +
       ggplot2::labs(
-        title    = paste0(sample_id, " \u2014 B cells highlighted (", ann_type, ")"),
-        subtitle = paste("Highlighted:", paste(bcell_types, collapse = ", ")),
+        title = sample_plot_title(sample_id, "B Cell Highlight - Spatial"),
         x = NULL, y = NULL
       ) +
       ggplot2::guides(fill = ggplot2::guide_legend(
@@ -1004,12 +1105,12 @@ plot_giotto_umap <- function(gobj,
     return(invisible(NULL))
   }
   
-  wrapped_levels <- pretty_plot_label(names(colour_map), width = 24)
+  wrapped_levels <- pretty_plot_label(names(colour_map))
   wrapped_colour_map <- stats::setNames(unname(colour_map), wrapped_levels)
   plot_df <- plot_df %>%
     dplyr::mutate(
       CellType_label = factor(
-        pretty_plot_label(as.character(CellType), width = 24),
+        pretty_plot_label(as.character(CellType)),
         levels = wrapped_levels
       )
     )
@@ -1139,14 +1240,14 @@ plot_custom_flightpath <- function(insitu_result,
     ) %>%
     dplyr::mutate(
       Cluster_lab = sprintf(
-        "%s\n(n=%s, conf=%.2f)",
+        "%s (%s, %.2f)",
         as.character(Cluster),
         scales::comma(n_cells),
         dplyr::if_else(is.na(mean_conf), 0, mean_conf)
       )
     ) %>%
     dplyr::mutate(
-      Cluster_lab_pretty = pretty_plot_label(Cluster_lab, width = 24)
+      Cluster_lab_pretty = pretty_plot_label(Cluster_lab)
     ) %>%
     dplyr::arrange(dplyr::desc(n_cells))
   
@@ -1162,7 +1263,7 @@ plot_custom_flightpath <- function(insitu_result,
     dplyr::left_join(Cluster_stats, by = "Cluster") %>%
     dplyr::mutate(
       Cluster_lab_pretty = factor(
-        pretty_plot_label(Cluster_lab, width = 24),
+        pretty_plot_label(Cluster_lab),
         levels = Cluster_stats$Cluster_lab_pretty
       )
     )
@@ -1195,11 +1296,11 @@ plot_custom_flightpath <- function(insitu_result,
     ggplot2::labs(
       title    = title_txt,
       subtitle = "Cells are positioned in the InSituType flightpath layout and colored by inferred annotation.",
-      colour   = "Cluster\n(n cells, confidence)",
+      colour = "Celltype",
       x = NULL, y = NULL
     ) +
     ggplot2::guides(colour = ggplot2::guide_legend(
-      override.aes = list(size = 4), ncol = 2)) +
+      override.aes = list(size = 4), ncol = 1)) +
     presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
       axis.title = ggplot2::element_blank(),
@@ -1760,14 +1861,16 @@ refine_annotation <- function(gobj,
     
     # Refined — spatial (polygon-based, falls back to points)
     tryCatch({
-      .plot_spatial_annotation_polygons(
-        gobj         = gobj,
-        celltype_col = celltype_col_ref,
-        colour_map   = colour_map_ref,
-        profile_name = paste0(profile_name, "_refined"),
-        sample_id    = sample_id,
-        out_dir      = refined_folder,
-        ann_type     = "supervised_refined"
+      .plot_spatial_annotation_with_composite(
+        gobj              = gobj,
+        celltype_col      = celltype_col_ref,
+        colour_map        = colour_map_ref,
+        profile_name      = paste0(profile_name, "_refined"),
+        sample_id         = sample_id,
+        out_dir           = refined_folder,
+        ann_type          = "supervised_refined",
+        sample_row        = sample_row,
+        sample_sheet_path = sample_sheet_path
       )
       cat("  \u2713 Spatial (refined)\n")
     }, error = function(e) {
@@ -1928,19 +2031,21 @@ if (!exists("%||%")) {
 annotate_cells <- function(gobj,
                            sample_id,
                            output_dir,
-                           profiles         = NULL,
-                           default_profile  = NULL,
-                           align_genes      = TRUE,
-                           n_clusts_semi    = 3,
-                           n_starts         = 10,
-                           cohort_column    = "leiden_clust",
-                           min_gene_overlap = 100,
-                           create_plots     = TRUE,
-                           conf_threshold   = NULL,
-                           score_weights    = NULL,
-                           profile_strategy = "default",
-                           save_object      = TRUE,
-                           seed             = 42) {
+                           profiles          = NULL,
+                           default_profile   = NULL,
+                           align_genes       = TRUE,
+                           n_clusts_semi     = 3,
+                           n_starts          = 10,
+                           cohort_column     = "leiden_clust",
+                           min_gene_overlap  = 100,
+                           create_plots      = TRUE,
+                           conf_threshold    = NULL,
+                           score_weights     = NULL,
+                           profile_strategy  = "default",
+                           save_object       = TRUE,
+                           seed              = 42,
+                           sample_row        = NULL,
+                           sample_sheet_path = NULL) {
 
   cat("\n========================================\n")
   cat("STEP 07: Cell Type Annotation\n")
@@ -2406,14 +2511,16 @@ annotate_cells <- function(gobj,
         
         # Supervised — spatial (polygon-based, falls back to points)
         tryCatch({
-          .plot_spatial_annotation_polygons(
-            gobj         = gobj,
-            celltype_col = celltype_col_sup,
-            colour_map   = colour_map_sup,
-            profile_name = profile_name,
-            sample_id    = sample_id,
-            out_dir      = profile_folder,
-            ann_type     = "supervised"
+          .plot_spatial_annotation_with_composite(
+            gobj              = gobj,
+            celltype_col      = celltype_col_sup,
+            colour_map        = colour_map_sup,
+            profile_name      = profile_name,
+            sample_id         = sample_id,
+            out_dir           = profile_folder,
+            ann_type          = "supervised",
+            sample_row        = sample_row,
+            sample_sheet_path = sample_sheet_path
           )
           cat("  \u2713 Spatial (supervised)\n")
         }, error = function(e) {
@@ -2505,14 +2612,16 @@ annotate_cells <- function(gobj,
           
           # Semi — spatial (polygon-based, falls back to points)
           tryCatch({
-            .plot_spatial_annotation_polygons(
-              gobj         = gobj,
-              celltype_col = celltype_col_semi,
-              colour_map   = colour_map_semi,
-              profile_name = profile_name,
-              sample_id    = sample_id,
-              out_dir      = profile_folder,
-              ann_type     = "semi"
+            .plot_spatial_annotation_with_composite(
+              gobj              = gobj,
+              celltype_col      = celltype_col_semi,
+              colour_map        = colour_map_semi,
+              profile_name      = profile_name,
+              sample_id         = sample_id,
+              out_dir           = profile_folder,
+              ann_type          = "semi",
+              sample_row        = sample_row,
+              sample_sheet_path = sample_sheet_path
             )
             cat("  \u2713 Spatial (semi)\n")
           }, error = function(e) {
@@ -2642,14 +2751,16 @@ annotate_cells <- function(gobj,
   if ("leiden_clust" %in% names(pDataDT(gobj))) {
     tryCatch({
       leiden_vec <- as.character(pDataDT(gobj)[["leiden_clust"]])
-      .plot_spatial_annotation_polygons(
-        gobj         = gobj,
-        celltype_col = "leiden_clust",
-        colour_map   = .build_colour_map(leiden_vec),
-        profile_name = "leiden",
-        sample_id    = sample_id,
-        out_dir      = file.path(output_dir, "07_Annotation"),
-        ann_type     = "clusters"
+      .plot_spatial_annotation_with_composite(
+        gobj              = gobj,
+        celltype_col      = "leiden_clust",
+        colour_map        = .build_colour_map(leiden_vec),
+        profile_name      = "leiden",
+        sample_id         = sample_id,
+        out_dir           = file.path(output_dir, "07_Annotation"),
+        ann_type          = "clusters",
+        sample_row        = sample_row,
+        sample_sheet_path = sample_sheet_path
       )
       cat("  \u2713 Spatial (leiden comparator) saved\n")
     }, error = function(e) {
@@ -2820,14 +2931,17 @@ annotate_cells <- function(gobj,
             ) +
             presentation_theme(base_size = 10) +
             ggplot2::theme(
-              axis.text.x = ggplot2::element_text(angle = 45, hjust = 1)
+              axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1),
+              axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 12)),
+              axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 12)),
+              plot.margin  = ggplot2::margin(t = 10, r = 20, b = 20, l = 20)
             )
           save_presentation_plot(
             plot     = p_cm,
             filename = file.path(diag_dir,
               paste0(sample_id, "_confusion_", label_a, "_vs_", label_b, ".png")),
-            width    = max(10, 0.35 * ncol(tab) + 3),
-            height   = max(8, 0.35 * nrow(tab) + 3),
+            width    = max(14, 0.45 * ncol(tab) + 4),
+            height   = max(10, 0.40 * nrow(tab) + 4),
             dpi      = 300
           )
         }
@@ -2953,21 +3067,44 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     } else {
       stop("Config required")
     }
-    
+
+    # Composite-awareness: resolve sample sheet + sample_row so the spatial
+    # annotation wrapper can emit per-sub-biopsy variants. Optional: unset env
+    # var + missing sheet → single plot only (wrapper silently no-ops).
+    sheet_path <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
+    if (!nzchar(sheet_path) && !is.null(config$paths$sample_sheet)) {
+      sheet_path <- config$paths$sample_sheet
+    }
+    if (nzchar(sheet_path) && !file.exists(sheet_path)) sheet_path <- ""
+    sample_sheet_path_arg <- if (nzchar(sheet_path)) sheet_path else NULL
+
+    sample_row_arg <- NULL
+    if (!is.null(sample_sheet_path_arg) &&
+        exists("safe_read_sheet", mode = "function", inherits = TRUE)) {
+      sheet_df <- tryCatch(safe_read_sheet(sample_sheet_path_arg),
+                           error = function(e) NULL)
+      if (!is.null(sheet_df) && "sample_id" %in% names(sheet_df)) {
+        hit <- which(as.character(sheet_df$sample_id) == sample_id)
+        if (length(hit) > 0) sample_row_arg <- sheet_df[hit[1], , drop = FALSE]
+      }
+    }
+
     gobj <- annotate_cells(
-      gobj             = input_path,
-      sample_id        = sample_id,
-      output_dir       = output_dir,
-      profiles         = profiles,
-      default_profile  = default_profile,
-      align_genes      = align_genes,
-      n_starts         = n_starts,
-      n_clusts_semi    = n_clusts_semi,
-      cohort_column    = cohort_column,
-      min_gene_overlap = min_gene_overlap,
-      conf_threshold   = conf_threshold,
-      profile_strategy = profile_strategy,
-      save_object      = TRUE
+      gobj              = input_path,
+      sample_id         = sample_id,
+      output_dir        = output_dir,
+      profiles          = profiles,
+      default_profile   = default_profile,
+      align_genes       = align_genes,
+      n_starts          = n_starts,
+      n_clusts_semi     = n_clusts_semi,
+      cohort_column     = cohort_column,
+      min_gene_overlap  = min_gene_overlap,
+      conf_threshold    = conf_threshold,
+      profile_strategy  = profile_strategy,
+      save_object       = TRUE,
+      sample_row        = sample_row_arg,
+      sample_sheet_path = sample_sheet_path_arg
     )
   } else {
     stop("Usage: Rscript 07_Annotation.R <sample_id> <input_path> <output_dir> <config_file>")

@@ -642,20 +642,25 @@ plot_bcell_spatial_and_markers <- function(gobj,
   make_plot <- function(gene, df, fov_tag = NULL) {
     df$expr <- unname(expr[gene, ][df$cell_ID])
     bcell_df <- df[df$.is_bcell, , drop = FALSE]
+    # Per-FOV views get a thicker focus outline so B/T cells stand out
+    # at the reduced field of view; full-sample plots keep the default.
+    is_per_fov   <- !is.null(fov_tag)
+    bg_lw        <- if (is_per_fov) PER_FOV_LINEWIDTH else 0.08
+    focus_lw     <- if (is_per_fov) 0.60 else 0.15
     title_txt <- paste0(sample_id, " - ", gene, " expression",
-                        if (!is.null(fov_tag)) paste0(" (FOV ", fov_tag, ")") else "")
+                        if (is_per_fov) paste0(" (FOV ", fov_tag, ")") else "")
     subtitle_txt <- paste0(.pretty(highlight_label), " highlighted from ",
                            .pretty(annotation_column), " annotation")
     ggplot2::ggplot() +
       ggplot2::geom_polygon(
         data = df,
         mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = expr),
-        colour = "grey30", linewidth = 0.08
+        colour = "grey30", linewidth = bg_lw
       ) +
       ggplot2::geom_polygon(
         data = bcell_df,
         mapping = ggplot2::aes(x = x, y = y, group = poly_group),
-        fill = NA, colour = highlight_colour, linewidth = 0.15
+        fill = NA, colour = highlight_colour, linewidth = focus_lw
       ) +
       ggplot2::scale_fill_gradient(low = "lightgrey", high = "red",
                                     name = .pretty(gene)) +
@@ -816,12 +821,12 @@ plot_bcell_neighbourhoods <- function(gobj,
       ) +
       viridis::scale_fill_viridis(
         option = "magma", direction = -1,
-        name = "Distance to\nnearest B cell"
+        name = paste0("Distance to\nnearest ", tag$display)
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, " - B cell cluster ", i, " neighbourhood"),
-        subtitle = paste0(row$n_bcells, " B cell(s), k = ", k, " \u2014 ",
+        title = paste0(sample_id, " - ", tag$display, " cluster ", i, " neighbourhood"),
+        subtitle = paste0(row$n_bcells, " ", tag$display, "(s), k = ", k, " - ",
                           subtitle_common),
         x = NULL, y = NULL
       ) +
@@ -868,8 +873,9 @@ plot_bcell_neighbourhoods <- function(gobj,
         ggplot2::scale_y_continuous(labels = scales::percent_format()) +
         ggplot2::labs(
           title    = paste0(sample_id, " - neighbourhood composition"),
-          subtitle = "Non-B-cell neighbour cell-type fractions per B-cell cluster",
-          x = NULL, y = "Fraction of non-B-cell neighbours",
+          subtitle = paste0("Non-", tag$display, " neighbour cell-type fractions per ",
+                            tag$display, " cluster"),
+          x = NULL, y = paste0("Fraction of non-", tag$display, " neighbours"),
           fill = "Cell type"
         ) +
         presentation_theme(base_size = 11) +
@@ -994,17 +1000,19 @@ plot_bcell_niches <- function(gobj,
   subtitle_common <- paste0(.pretty(highlight_label), " highlighted from ",
                             .pretty(annotation_column), " annotation")
 
-  make_niche_plot <- function(df_poly, title_suffix = "") {
+  make_niche_plot <- function(df_poly, title_suffix = "", per_fov = FALSE) {
+    bg_lw    <- if (per_fov) PER_FOV_LINEWIDTH else 0.08
+    focus_lw <- if (per_fov) 0.60 else 0.15
     ggplot2::ggplot() +
       ggplot2::geom_polygon(
         data = df_poly,
         mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = niche),
-        colour = "grey30", linewidth = 0.08
+        colour = "grey30", linewidth = bg_lw
       ) +
       ggplot2::geom_polygon(
         data = df_poly[df_poly$is_bcell, , drop = FALSE],
         mapping = ggplot2::aes(x = x, y = y, group = poly_group),
-        fill = NA, colour = highlight_colour, linewidth = 0.15
+        fill = NA, colour = highlight_colour, linewidth = focus_lw
       ) +
       ggplot2::scale_fill_manual(values = niche_palette, name = "Niche",
                                   labels = .pretty) +
@@ -1035,12 +1043,12 @@ plot_bcell_niches <- function(gobj,
         ggplot2::aes(x = sdimx, y = sdimy, colour = distance_capped)) +
       ggplot2::geom_point(size = 0.25, alpha = 0.7) +
       viridis::scale_color_viridis(
-        name = paste0("Distance to\nnearest B cell\n(\u00b5m, capped at\n",
+        name = paste0("Distance to\nnearest ", tag$display, "\n(\u00b5m, capped at\n",
                       round(cap), ")")
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, " - distance to nearest B cell",
+        title = paste0(sample_id, " - distance to nearest ", tag$display,
                        title_suffix),
         subtitle = paste0(.pretty(highlight_label), " defined by ",
                           .pretty(annotation_column),
@@ -1080,7 +1088,8 @@ plot_bcell_niches <- function(gobj,
       if (!nrow(df_fv_poly) || !nrow(df_fv_cells)) next
 
       save_presentation_plot(
-        make_niche_plot(df_fv_poly, title_suffix = paste0(" (FOV ", fv, ")")),
+        make_niche_plot(df_fv_poly, title_suffix = paste0(" (FOV ", fv, ")"),
+                        per_fov = TRUE),
         filename = file.path(per_fov_dir,
                               paste0(sample_id, "_niches_annotated_FOV_",
                                       fv, ".png")),
@@ -1110,7 +1119,9 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
                                     sample_id,
                                     subtype_markers,
                                     out_dir,
-                                    cluster_column = "leiden_bcell_subcluster") {
+                                    cluster_column = "leiden_bcell_subcluster",
+                                    focus_label    = "BCell") {
+  tag <- .focus_tag(focus_label)
   umap_df <- .prepare_dim_plot_data(gobj_bcell, "umap", cluster_column)
   umap_df[[cluster_column]] <- factor(umap_df[[cluster_column]])
 
@@ -1120,7 +1131,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
     ) +
     ggplot2::geom_point(size = 0.6, alpha = 0.8) +
     ggplot2::labs(
-      title  = sample_plot_title(sample_id, "B-cell subclusters"),
+      title  = sample_plot_title(sample_id, paste0(tag$display, " subclusters")),
       x      = "UMAP 1",
       y      = "UMAP 2",
       colour = "Subcluster"
@@ -1129,7 +1140,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
 
   save_presentation_plot(
     plot     = leiden_plot,
-    filename = file.path(out_dir, paste0(sample_id, "_bcell_umap_leiden.png")),
+    filename = file.path(out_dir, paste0(sample_id, "_", tag$snake, "_umap_leiden.png")),
     width    = 12,
     height   = 10,
     dpi      = 300
@@ -1161,7 +1172,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
       ) +
       ggplot2::labs(
         title = sample_plot_title(
-          sample_id, paste0(g, " (B-cell subclusters)")
+          sample_id, paste0(g, " (", tag$display, " subclusters)")
         ),
         x = "UMAP 1", y = "UMAP 2"
       ) +
@@ -1169,7 +1180,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
     save_presentation_plot(
       plot     = p,
       filename = file.path(out_dir,
-                           paste0(sample_id, "_bcell_umap_", g, ".png")),
+                           paste0(sample_id, "_", tag$snake, "_umap_", g, ".png")),
       width    = 10,
       height   = 8,
       dpi      = 300
@@ -1185,7 +1196,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
       plot     = panel,
       filename = file.path(
         out_dir,
-        paste0(sample_id, "_bcell_umap_subtype_markers_panel.png")
+        paste0(sample_id, "_", tag$snake, "_umap_subtype_markers_panel.png")
       ),
       width    = grid$ncol * 5,
       height   = grid$nrow * 4,
@@ -1217,6 +1228,12 @@ run_bcell_subclustering <- function(gobj,
                                     python_path         = NULL,
                                     save_object         = TRUE,
                                     seed                = 42) {
+  # Resolve focus tag FIRST so the early-exit messages below reference
+  # the correct population (T-cell / Plasma / etc.) — previously tag was
+  # set after these messages, making them error out when annotation was
+  # missing and silently mislabel T cells as B cells when it was not.
+  tag <- .focus_tag(focus_label)
+
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!annotation_column %in% names(meta)) {
     message(tag$display, " subclustering skipped: annotation column '",
@@ -1241,7 +1258,6 @@ run_bcell_subclustering <- function(gobj,
             call. = FALSE)
   }
 
-  tag <- .focus_tag(focus_label)
 
   # Call subsetGiotto directly. Giotto uses match.call()[[1]] to
   # dispatch helpers in the caller frame, so calling via a variable
@@ -1301,6 +1317,7 @@ run_bcell_subclustering <- function(gobj,
   tryCatch({
     plot_bcell_subtype_umap(
       gobj_bcell      = gobj_bcell,
+      focus_label     = focus_label,
       sample_id       = sample_id,
       subtype_markers = subtype_markers,
       out_dir         = subcluster_dir,
@@ -1372,16 +1389,17 @@ run_bcell_subclustering <- function(gobj,
             name = "Mean fraction\n(k neighbours)"
           ) +
           ggplot2::labs(
-            title = paste0(sample_id, " - B-cell subcluster x proximity"),
-            subtitle = sprintf("Mean cell-type composition of k = %d nearest non-B neighbours",
+            title = paste0(sample_id, " - ", tag$display, " subcluster x proximity"),
+            subtitle = sprintf(paste0("Mean cell-type composition of k = %d nearest non-",
+                                      tag$display, " neighbours"),
                                k_prox),
-            x = "B-cell subcluster", y = "Neighbour cell type"
+            x = paste0(tag$display, " subcluster"), y = "Neighbour cell type"
           ) +
           presentation_theme(base_size = 11)
         save_presentation_plot(
           plot     = p_ct,
           filename = file.path(subcluster_dir,
-              paste0(sample_id, "_bcell_subcluster_proximity_crosstab.png")),
+              paste0(sample_id, "_", tag$snake, "_subcluster_proximity_crosstab.png")),
           width    = max(8, 0.5 * length(levels(agg$subcluster)) + 4),
           height   = max(6, 0.35 * length(unique(agg$celltype)) + 3),
           dpi      = 300
@@ -1389,7 +1407,7 @@ run_bcell_subclustering <- function(gobj,
         readr::write_csv(
           agg,
           file.path(subcluster_dir,
-              paste0(sample_id, "_bcell_subcluster_proximity_crosstab.csv"))
+              paste0(sample_id, "_", tag$snake, "_subcluster_proximity_crosstab.csv"))
         )
         cat("  ", tag$display, " subcluster proximity crosstab saved\n", sep = "")
       }
@@ -1447,6 +1465,12 @@ run_bcell_microenvironment_analysis <- function(gobj,
   cat("Sample:      ", sample_id, "\n")
   cat("Focus label: ", focus_label, "\n")
   cat("Focus regex: ", bcell_regex, "\n")
+
+  # Resolve the focus tag once so every output CSV filename tracks the
+  # focused population (e.g. tcell → _tcell_interactions.csv). Previously
+  # every focus emitted _bcell_*.csv regardless of the actual focus cell
+  # type, mislabelling T-cell outputs as B-cell.
+  env_tag <- .focus_tag(focus_label)
   cat("========================================\n\n")
 
   if (is.character(gobj)) {
@@ -1506,7 +1530,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
   )
   readr::write_csv(
     bcell_table,
-    file.path(results_dir, paste0(sample_id, "_bcell_interactions.csv"))
+    file.path(results_dir, paste0(sample_id, "_", env_tag$snake, "_interactions.csv"))
   )
   
   # Bring forward focused-celltype CCI outputs from step 10 when available.
@@ -1523,7 +1547,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         bcell_liana <- .filter_interactions_for_bcells(liana_tbl, bcell_regex = bcell_regex)
         readr::write_csv(
           bcell_liana,
-          file.path(results_dir, paste0(sample_id, "_bcell_liana_interactions.csv"))
+          file.path(results_dir, paste0(sample_id, "_", env_tag$snake, "_liana_interactions.csv"))
         )
       }
     }, error = function(e) {
@@ -1558,7 +1582,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         bcell_nichenet <- dplyr::bind_rows(nichenet_tables)
         readr::write_csv(
           bcell_nichenet,
-          file.path(results_dir, paste0(sample_id, "_bcell_nichenet_ligand_activities.csv"))
+          file.path(results_dir, paste0(sample_id, "_", env_tag$snake, "_nichenet_ligand_activities.csv"))
         )
       }
     }, error = function(e) {

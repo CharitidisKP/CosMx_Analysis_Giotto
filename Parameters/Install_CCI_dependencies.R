@@ -80,6 +80,116 @@ cci_dependency_registry <- function() {
           ref = "Main"
         )
       }
+    ),
+
+    # ------------------------------------------------------------------
+    # Pathway enrichment + GSEA stack used by 13_Pathway_Analysis.R.
+    # Install with: Rscript Parameters/Install_CCI_dependencies.R \
+    #   msigdbr,clusterprofiler,fgsea,enrichplot,reactomepa,orghs,annotationdbi,\
+    #   decoupler,gseabase,progeny,presto,pheatmap,upsetr,complexheatmap
+    # ------------------------------------------------------------------
+    msigdbr = list(
+      pkg = "msigdbr",
+      source = "cran",
+      install = function() install.packages("msigdbr", repos = "https://cloud.r-project.org")
+    ),
+    clusterprofiler = list(
+      pkg = "clusterProfiler",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("clusterProfiler", ask = FALSE, update = FALSE)
+      }
+    ),
+    fgsea = list(
+      pkg = "fgsea",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("fgsea", ask = FALSE, update = FALSE)
+      }
+    ),
+    enrichplot = list(
+      pkg = "enrichplot",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("enrichplot", ask = FALSE, update = FALSE)
+      }
+    ),
+    reactomepa = list(
+      pkg = "ReactomePA",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("ReactomePA", ask = FALSE, update = FALSE)
+      }
+    ),
+    orghs = list(
+      pkg = "org.Hs.eg.db",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("org.Hs.eg.db", ask = FALSE, update = FALSE)
+      }
+    ),
+    annotationdbi = list(
+      pkg = "AnnotationDbi",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("AnnotationDbi", ask = FALSE, update = FALSE)
+      }
+    ),
+    decoupler = list(
+      pkg = "decoupleR",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("decoupleR", ask = FALSE, update = FALSE)
+      }
+    ),
+    gseabase = list(
+      pkg = "GSEABase",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("GSEABase", ask = FALSE, update = FALSE)
+      }
+    ),
+    progeny = list(
+      pkg = "progeny",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("progeny", ask = FALSE, update = FALSE)
+      }
+    ),
+    presto = list(
+      pkg = "presto",
+      source = "github",
+      install = function() {
+        ensure_installer_package("remotes")
+        remotes::install_github("immunogenomics/presto", upgrade = "never")
+      }
+    ),
+    pheatmap = list(
+      pkg = "pheatmap",
+      source = "cran",
+      install = function() install.packages("pheatmap", repos = "https://cloud.r-project.org")
+    ),
+    upsetr = list(
+      pkg = "UpSetR",
+      source = "cran",
+      install = function() install.packages("UpSetR", repos = "https://cloud.r-project.org")
+    ),
+    complexheatmap = list(
+      pkg = "ComplexHeatmap",
+      source = "bioc",
+      install = function() {
+        ensure_installer_package("BiocManager")
+        BiocManager::install("ComplexHeatmap", ask = FALSE, update = FALSE)
+      }
     )
   )
 }

@@ -176,6 +176,34 @@ if (!exists("%||%")) {
   accessor(gobj, output = output)
 }
 
+# Extract cell polygons as a tidy data.frame (geom, part, x, y, hole, cell_ID).
+# Returns NULL when polygon data are not available (e.g. centroid-only
+# Giotto objects). Mirrors the helpers in 07_Annotation.R / 10_CCI_Analysis.R.
+.extract_polygon_df <- function(gobj) {
+  poly_sv <- tryCatch({
+    p <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell",
+                                      return_giottoPolygon = FALSE)
+    if (inherits(p, "giottoPolygon")) p@spatVector else p
+  }, error = function(e) {
+    tryCatch({
+      gp <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell")
+      if (inherits(gp, "giottoPolygon")) gp@spatVector else NULL
+    }, error = function(e2) NULL)
+  })
+  if (is.null(poly_sv)) {
+    poly_sv <- tryCatch(gobj@polygon$cell@spatVector, error = function(e) NULL)
+  }
+  if (is.null(poly_sv)) return(NULL)
+  poly_attr <- tryCatch(as.data.frame(poly_sv), error = function(e) NULL)
+  if (is.null(poly_attr) || nrow(poly_attr) == 0) return(NULL)
+  poly_coords <- tryCatch(terra::geom(poly_sv, df = TRUE), error = function(e) NULL)
+  if (is.null(poly_coords) || nrow(poly_coords) == 0) return(NULL)
+  id_col <- intersect(c("poly_ID", "cell_ID", "id"), names(poly_attr))
+  if (length(id_col) == 0) return(NULL)
+  poly_coords$cell_ID <- poly_attr[[id_col[1]]][poly_coords$geom]
+  poly_coords
+}
+
 inspect_smide_namespace <- function(verbose = TRUE) {
   if (!requireNamespace("smiDE", quietly = TRUE)) {
     stop("The smiDE package is not installed in the current R library.")
@@ -712,91 +740,435 @@ guess_significance_column <- function(result_df) {
   if (length(candidates) == 0) NULL else candidates[1]
 }
 
-# Guess the mean-expression column for MA plots.
-.guess_mean_column <- function(result_df) {
+# Guess lower / upper confidence-interval columns. Returns a 2-char vector
+# (lower, upper) or NULL if either end cannot be resolved. Recognises the
+# column naming patterns used by smiDE::results() (`*.lower`, `*.upper`,
+# `asymp.LCL`, `asymp.UCL`, `CI.L`, `CI.U`, etc.) and edgeR.
+.guess_ci_columns <- function(result_df) {
+  if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
+  nms <- names(result_df)
+  lower_pats <- c("lower.?cl$", "asymp\\.lcl$", "ci\\.?l$", "ci_?low$",
+                  "\\.lower$", "^lower$", "lcl$", "lwr$", "lo$", "2\\.5")
+  upper_pats <- c("upper.?cl$", "asymp\\.ucl$", "ci\\.?u$", "ci_?up$",
+                  "\\.upper$", "^upper$", "ucl$", "upr$", "hi$", "97\\.5")
+  lo <- unique(unlist(lapply(lower_pats,
+                             function(p) grep(p, nms, value = TRUE, ignore.case = TRUE))))
+  up <- unique(unlist(lapply(upper_pats,
+                             function(p) grep(p, nms, value = TRUE, ignore.case = TRUE))))
+  if (length(lo) == 0 || length(up) == 0) return(NULL)
+  c(lo[1], up[1])
+}
+
+# Guess the gene-identifier column. Returns NULL if no obvious candidate.
+.guess_gene_column <- function(result_df) {
   if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
   candidates <- grep(
-    "basemean|avgexpr|aveexpr|mean_expr|expression_mean|^mean$|avg_log|avg_expression",
+    "^gene$|^target$|^feature$|^symbol$|^gene_symbol$|^gene_name$|^genes$",
     names(result_df), value = TRUE, ignore.case = TRUE
   )
   candidates <- unique(candidates[candidates %in% names(result_df)])
   if (length(candidates) == 0) NULL else candidates[1]
 }
 
-# Emit MA plot + FDR histogram alongside a DE result table. Graceful
-# no-op if expected columns are missing. Multiple calls per run share
-# a `diagnostics/` subdirectory so per-contrast output is grouped.
-.save_de_diagnostic_plots <- function(result_df, output_dir, file_stub) {
+# Emit smiDE-paper-style DE visualisations (volcano + top-hits bar plot) plus
+# a lightweight FDR-distribution diagnostic. Publication plots go into a
+# `plots/` subdirectory; the FDR histogram stays in `diagnostics/`.
+# Graceful no-op when expected columns are missing.
+.save_spatial_de_plots <- function(result_df, output_dir, file_stub,
+                                   fdr_threshold = 0.05,
+                                   lfc_threshold = log2(1.5),
+                                   top_n_label = 10,
+                                   top_n_bar = 20,
+                                   top_n_forest = 15,
+                                   top_n_overlay = 4,
+                                   expr_mat = NULL,
+                                   polygon_df = NULL) {
   tryCatch({
     if (is.null(result_df) || nrow(result_df) == 0) return(invisible(NULL))
     sig_col  <- guess_significance_column(result_df)
     fc_col   <- .guess_fc_column(result_df)
-    mean_col <- .guess_mean_column(result_df)
-    if (is.null(sig_col)) return(invisible(NULL))
+    gene_col <- .guess_gene_column(result_df)
 
-    diag_dir <- file.path(output_dir, "diagnostics")
-    dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
+    plots_dir <- file.path(output_dir, "plots")
+    diag_dir  <- file.path(output_dir, "diagnostics")
+    dir.create(plots_dir, recursive = TRUE, showWarnings = FALSE)
+    dir.create(diag_dir,  recursive = TRUE, showWarnings = FALSE)
 
-    # FDR / p-value histogram
-    sig_vals <- as.numeric(result_df[[sig_col]])
-    sig_df <- data.frame(value = sig_vals[!is.na(sig_vals)])
-    if (nrow(sig_df) > 0) {
-      p_fdr <- ggplot2::ggplot(sig_df, ggplot2::aes(x = value)) +
-        ggplot2::geom_histogram(bins = 40, fill = "#4C72B0",
-                                colour = "white", linewidth = 0.2) +
-        ggplot2::geom_vline(xintercept = 0.05, linetype = "dashed",
-                            colour = "#C44E52") +
-        ggplot2::labs(
-          title    = paste0(file_stub, " - ", sig_col, " distribution"),
-          subtitle = sprintf("n = %d genes; %d with %s < 0.05",
-                             nrow(sig_df),
-                             sum(sig_df$value < 0.05, na.rm = TRUE),
-                             sig_col),
-          x = sig_col, y = "Genes"
-        ) +
-        presentation_theme(base_size = 11)
-      save_presentation_plot(
-        plot     = p_fdr,
-        filename = file.path(diag_dir, paste0(file_stub, "_fdr_hist.png")),
-        width    = 8, height = 5, dpi = 300
-      )
-    }
-
-    # MA plot — requires both fold-change and mean-expression columns
-    if (!is.null(fc_col) && !is.null(mean_col)) {
-      ma_df <- data.frame(
-        mean = as.numeric(result_df[[mean_col]]),
-        fc   = as.numeric(result_df[[fc_col]]),
-        sig  = sig_vals < 0.05
-      )
-      ma_df <- ma_df[is.finite(ma_df$mean) & is.finite(ma_df$fc), , drop = FALSE]
-      if (nrow(ma_df) > 5) {
-        p_ma <- ggplot2::ggplot(ma_df,
-            ggplot2::aes(x = mean, y = fc,
-                         colour = sig)) +
-          ggplot2::geom_point(size = 0.8, alpha = 0.7) +
-          ggplot2::geom_hline(yintercept = 0, colour = "grey40",
-                              linetype = "dashed") +
-          ggplot2::scale_colour_manual(
-            values = c(`TRUE` = "#C44E52", `FALSE` = "grey70"),
-            name = paste0(sig_col, " < 0.05"),
-            na.value = "grey70"
-          ) +
+    # --- 1. FDR / p-value histogram (diagnostic) ---
+    if (!is.null(sig_col)) {
+      sig_vals <- as.numeric(result_df[[sig_col]])
+      sig_df <- data.frame(value = sig_vals[!is.na(sig_vals)])
+      if (nrow(sig_df) > 0) {
+        p_fdr <- ggplot2::ggplot(sig_df, ggplot2::aes(x = value)) +
+          ggplot2::geom_histogram(bins = 40, fill = "#4C72B0",
+                                  colour = "white", linewidth = 0.2) +
+          ggplot2::geom_vline(xintercept = fdr_threshold, linetype = "dashed",
+                              colour = "#C44E52") +
           ggplot2::labs(
-            title = paste0(file_stub, " - MA plot"),
-            x = paste0("Mean expression (", mean_col, ")"),
-            y = paste0("Fold change (", fc_col, ")")
+            title    = paste0(file_stub, " - ", sig_col, " distribution"),
+            subtitle = sprintf("n = %d genes; %d with %s < %g",
+                               nrow(sig_df),
+                               sum(sig_df$value < fdr_threshold, na.rm = TRUE),
+                               sig_col, fdr_threshold),
+            x = sig_col, y = "Genes"
           ) +
           presentation_theme(base_size = 11)
         save_presentation_plot(
-          plot     = p_ma,
-          filename = file.path(diag_dir, paste0(file_stub, "_ma_plot.png")),
-          width    = 8, height = 6, dpi = 300
+          plot     = p_fdr,
+          filename = file.path(diag_dir, paste0(file_stub, "_fdr_hist.png")),
+          width    = 8, height = 5, dpi = 300
         )
       }
     }
+
+    if (is.null(sig_col) || is.null(fc_col)) return(invisible(NULL))
+
+    gene_vec <- if (!is.null(gene_col)) {
+      as.character(result_df[[gene_col]])
+    } else if (!is.null(rownames(result_df)) &&
+               !identical(rownames(result_df), as.character(seq_len(nrow(result_df))))) {
+      rownames(result_df)
+    } else {
+      as.character(seq_len(nrow(result_df)))
+    }
+
+    de_df <- data.frame(
+      gene = gene_vec,
+      fc   = as.numeric(result_df[[fc_col]]),
+      sig  = as.numeric(result_df[[sig_col]]),
+      stringsAsFactors = FALSE
+    )
+    de_df <- de_df[is.finite(de_df$fc) & is.finite(de_df$sig) & de_df$sig > 0,
+                   , drop = FALSE]
+    if (nrow(de_df) < 1) return(invisible(NULL))
+
+    # --- 2. Volcano plot (smiDE-aligned publication figure) ---
+    if (nrow(de_df) > 5) {
+      vol_df <- de_df
+      vol_df$neglog10 <- -log10(vol_df$sig)
+      vol_df$status <- ifelse(vol_df$sig >= fdr_threshold, "ns",
+                       ifelse(vol_df$fc >=  lfc_threshold, "up",
+                       ifelse(vol_df$fc <= -lfc_threshold, "down", "ns")))
+      vol_df$status <- factor(vol_df$status, levels = c("up", "down", "ns"))
+
+      label_candidates <- vol_df[vol_df$status %in% c("up", "down"), , drop = FALSE]
+      label_candidates <- label_candidates[order(label_candidates$sig), , drop = FALSE]
+      label_df <- utils::head(label_candidates, top_n_label)
+
+      p_vol <- ggplot2::ggplot(vol_df,
+          ggplot2::aes(x = fc, y = neglog10, colour = status)) +
+        ggplot2::geom_point(size = 1.3, alpha = 0.75, stroke = 0) +
+        ggplot2::geom_vline(xintercept = c(-lfc_threshold, lfc_threshold),
+                            linetype = "dashed", colour = "grey60",
+                            linewidth = 0.3) +
+        ggplot2::geom_hline(yintercept = -log10(fdr_threshold),
+                            linetype = "dashed", colour = "grey60",
+                            linewidth = 0.3) +
+        ggplot2::scale_colour_manual(
+          values = c(up = "#C44E52", down = "#4C72B0", ns = "grey75"),
+          breaks = c("up", "down", "ns"),
+          labels = c(
+            sprintf("Up (%s >= %.2f)",  fc_col, lfc_threshold),
+            sprintf("Down (%s <= -%.2f)", fc_col, lfc_threshold),
+            "Not significant"
+          ),
+          name = NULL, drop = FALSE, na.value = "grey75"
+        ) +
+        ggplot2::labs(
+          title    = paste0(file_stub, " volcano"),
+          subtitle = sprintf("%s < %g and |%s| >= %.2f flagged",
+                             sig_col, fdr_threshold, fc_col, lfc_threshold),
+          x = fc_col,
+          y = paste0("-log10(", sig_col, ")")
+        ) +
+        presentation_theme(base_size = 11)
+
+      if (nrow(label_df) > 0) {
+        if (requireNamespace("ggrepel", quietly = TRUE)) {
+          p_vol <- p_vol + ggrepel::geom_text_repel(
+            data = label_df,
+            mapping = ggplot2::aes(label = gene),
+            size = 3, max.overlaps = Inf, box.padding = 0.4,
+            segment.colour = "grey50", min.segment.length = 0,
+            show.legend = FALSE, inherit.aes = TRUE
+          )
+        } else {
+          p_vol <- p_vol + ggplot2::geom_text(
+            data = label_df,
+            mapping = ggplot2::aes(label = gene),
+            size = 3, vjust = -0.5, show.legend = FALSE,
+            inherit.aes = TRUE
+          )
+        }
+      }
+      save_presentation_plot(
+        plot     = p_vol,
+        filename = file.path(plots_dir, paste0(file_stub, "_volcano.png")),
+        width    = 10, height = 8, dpi = 300
+      )
+    }
+
+    # --- 3. Top-hits ranked bar plot (smiDE-aligned effect-size figure) ---
+    hits_df <- de_df[de_df$sig < fdr_threshold, , drop = FALSE]
+    if (nrow(hits_df) > 0) {
+      hits_df <- hits_df[order(abs(hits_df$fc), decreasing = TRUE), , drop = FALSE]
+      hits_df <- utils::head(hits_df, top_n_bar)
+      hits_df$direction <- ifelse(hits_df$fc >= 0, "Up", "Down")
+      hits_df$gene <- factor(hits_df$gene,
+                             levels = hits_df$gene[order(hits_df$fc)])
+      p_hits <- ggplot2::ggplot(hits_df,
+          ggplot2::aes(x = fc, y = gene, fill = direction)) +
+        ggplot2::geom_col(width = 0.7) +
+        ggplot2::geom_vline(xintercept = 0, colour = "grey30",
+                            linewidth = 0.3) +
+        ggplot2::scale_fill_manual(
+          values = c(Up = "#C44E52", Down = "#4C72B0"),
+          name = "Direction"
+        ) +
+        ggplot2::labs(
+          title    = paste0(file_stub, " - top ", nrow(hits_df), " hits"),
+          subtitle = sprintf("Ranked by |%s|; %s < %g",
+                             fc_col, sig_col, fdr_threshold),
+          x = fc_col, y = NULL
+        ) +
+        presentation_theme(base_size = 11)
+      save_presentation_plot(
+        plot     = p_hits,
+        filename = file.path(plots_dir, paste0(file_stub, "_top_hits.png")),
+        width    = 9,
+        height   = max(5, 0.28 * nrow(hits_df) + 2),
+        dpi      = 300
+      )
+    }
+
+    # --- 4. Forest plot of top-N effect sizes with 95% CI ---
+    # smiDE Fig 1i / 4f-g style: per-gene estimate +/- CI, one row per top gene.
+    ci_cols <- .guess_ci_columns(result_df)
+    if (!is.null(gene_col) && !is.null(ci_cols)) {
+      forest_df <- data.frame(
+        gene     = as.character(result_df[[gene_col]]),
+        estimate = as.numeric(result_df[[fc_col]]),
+        lower    = as.numeric(result_df[[ci_cols[1]]]),
+        upper    = as.numeric(result_df[[ci_cols[2]]]),
+        sig      = as.numeric(result_df[[sig_col]]),
+        stringsAsFactors = FALSE
+      )
+      forest_df <- forest_df[is.finite(forest_df$estimate) &
+                               is.finite(forest_df$lower) &
+                               is.finite(forest_df$upper) &
+                               is.finite(forest_df$sig),
+                             , drop = FALSE]
+      sig_forest <- forest_df[forest_df$sig < fdr_threshold, , drop = FALSE]
+      if (nrow(sig_forest) > 0) {
+        sig_forest <- sig_forest[order(abs(sig_forest$estimate), decreasing = TRUE),
+                                 , drop = FALSE]
+        sig_forest <- utils::head(sig_forest, top_n_forest)
+        sig_forest$direction <- ifelse(sig_forest$estimate >= 0, "Up", "Down")
+        sig_forest$gene <- factor(sig_forest$gene,
+                                  levels = sig_forest$gene[order(sig_forest$estimate)])
+        p_forest <- ggplot2::ggplot(sig_forest,
+            ggplot2::aes(x = estimate, y = gene, colour = direction)) +
+          ggplot2::geom_vline(xintercept = 0, colour = "grey40",
+                              linewidth = 0.3, linetype = "dashed") +
+          ggplot2::geom_errorbarh(
+            ggplot2::aes(xmin = lower, xmax = upper),
+            height = 0.2, linewidth = 0.5
+          ) +
+          ggplot2::geom_point(size = 2.2) +
+          ggplot2::scale_colour_manual(
+            values = c(Up = "#C44E52", Down = "#4C72B0"),
+            name = "Direction"
+          ) +
+          ggplot2::labs(
+            title    = paste0(file_stub, " - top ", nrow(sig_forest),
+                              " hits (effect +/- 95% CI)"),
+            subtitle = sprintf("Lower/upper from %s / %s; %s < %g",
+                               ci_cols[1], ci_cols[2], sig_col, fdr_threshold),
+            x = fc_col, y = NULL
+          ) +
+          presentation_theme(base_size = 11)
+        save_presentation_plot(
+          plot     = p_forest,
+          filename = file.path(plots_dir, paste0(file_stub, "_forest.png")),
+          width    = 9,
+          height   = max(5, 0.30 * nrow(sig_forest) + 2),
+          dpi      = 300
+        )
+      }
+    }
+
+    # --- 5. Spatial overlay of top-N DE genes (smiDE Fig 5g / 6f-g style) ---
+    # Optional — only emitted when the caller supplies an expression matrix
+    # and a polygon data.frame. Delegates to `.save_spatial_de_gene_overlay()`
+    # which builds a per-gene polygon heatmap and patchworks the panels.
+    if (!is.null(expr_mat) && !is.null(polygon_df) && !is.null(gene_col) &&
+        top_n_overlay > 0) {
+      overlay_hits <- de_df[de_df$sig < fdr_threshold, , drop = FALSE]
+      if (nrow(overlay_hits) > 0) {
+        overlay_hits <- overlay_hits[order(overlay_hits$sig), , drop = FALSE]
+        up_hits   <- utils::head(overlay_hits[overlay_hits$fc > 0, , drop = FALSE],
+                                 ceiling(top_n_overlay / 2))
+        down_hits <- utils::head(overlay_hits[overlay_hits$fc < 0, , drop = FALSE],
+                                 floor(top_n_overlay / 2))
+        overlay_genes <- unique(c(up_hits$gene, down_hits$gene))
+        # Backfill if one direction was empty
+        if (length(overlay_genes) < top_n_overlay) {
+          fill <- utils::head(overlay_hits$gene,
+                              top_n_overlay - length(overlay_genes))
+          overlay_genes <- unique(c(overlay_genes, fill))
+        }
+        if (length(overlay_genes) > 0) {
+          .save_spatial_de_gene_overlay(
+            genes       = overlay_genes,
+            expr_mat    = expr_mat,
+            polygon_df  = polygon_df,
+            plots_dir   = plots_dir,
+            file_stub   = file_stub
+          )
+        }
+      }
+    }
   }, error = function(e) {
-    message("  DE diagnostic plots skipped: ", conditionMessage(e))
+    message("  Spatial DE plots skipped: ", conditionMessage(e))
+  })
+  invisible(NULL)
+}
+
+# Spatial overlay of gene expression on cell polygons — one panel per gene,
+# patchworked into a single PNG. Renders all cells (no subsetting); the fill
+# gradient is log1p of the raw counts found in `expr_mat`. Gracefully skipped
+# if patchwork is unavailable or polygon/expression rows cannot be resolved.
+.save_spatial_de_gene_overlay <- function(genes,
+                                          expr_mat,
+                                          polygon_df,
+                                          plots_dir,
+                                          file_stub,
+                                          panel_ncol = NULL) {
+  tryCatch({
+    if (length(genes) == 0) return(invisible(NULL))
+    if (!is.data.frame(polygon_df) ||
+        !all(c("x", "y", "cell_ID") %in% names(polygon_df))) return(invisible(NULL))
+    genes <- unique(as.character(genes))
+    genes <- genes[genes %in% rownames(expr_mat)]
+    if (length(genes) == 0) return(invisible(NULL))
+
+    if (!"poly_group" %in% names(polygon_df)) {
+      group_parts <- if (all(c("geom", "part") %in% names(polygon_df))) {
+        paste(polygon_df$geom, polygon_df$part, sep = "_")
+      } else {
+        as.character(polygon_df$cell_ID)
+      }
+      polygon_df$poly_group <- group_parts
+    }
+
+    dir.create(plots_dir, recursive = TRUE, showWarnings = FALSE)
+
+    panels <- lapply(genes, function(g) {
+      vals <- as.numeric(expr_mat[g, , drop = TRUE])
+      names(vals) <- colnames(expr_mat)
+      expr_df <- data.frame(cell_ID = names(vals),
+                            expr    = log1p(vals),
+                            stringsAsFactors = FALSE)
+      plot_df <- merge(polygon_df, expr_df, by = "cell_ID", all.x = TRUE)
+      plot_df <- plot_df[!is.na(plot_df$expr), , drop = FALSE]
+      if (nrow(plot_df) == 0) return(NULL)
+
+      ggplot2::ggplot(plot_df,
+          ggplot2::aes(x = x, y = y, group = poly_group, fill = expr)) +
+        ggplot2::geom_polygon(colour = NA) +
+        ggplot2::scale_fill_viridis_c(option = "magma", name = "log1p(count)") +
+        ggplot2::coord_equal() +
+        ggplot2::labs(title = g, x = NULL, y = NULL) +
+        presentation_theme(base_size = 10) +
+        ggplot2::theme(
+          axis.text  = ggplot2::element_blank(),
+          axis.ticks = ggplot2::element_blank(),
+          panel.grid = ggplot2::element_blank(),
+          legend.key.height = grid::unit(0.4, "cm")
+        )
+    })
+    panels <- panels[!vapply(panels, is.null, logical(1))]
+    if (length(panels) == 0) return(invisible(NULL))
+
+    n_panel <- length(panels)
+    ncol_panel <- if (!is.null(panel_ncol)) panel_ncol else min(2, n_panel)
+    nrow_panel <- ceiling(n_panel / ncol_panel)
+
+    combined <- if (requireNamespace("patchwork", quietly = TRUE) && n_panel > 1) {
+      Reduce(`+`, panels) + patchwork::plot_layout(ncol = ncol_panel)
+    } else {
+      panels[[1]]
+    }
+
+    save_presentation_plot(
+      plot     = combined,
+      filename = file.path(plots_dir, paste0(file_stub, "_top_gene_overlay.png")),
+      width    = max(10, 6 * ncol_panel),
+      height   = max(6, 5 * nrow_panel),
+      dpi      = 300
+    )
+  }, error = function(e) {
+    message("  Spatial DE gene overlay skipped: ", conditionMessage(e))
+  })
+  invisible(NULL)
+}
+
+# Run-level overview: counts of FDR < 0.05 genes per cell type and contrast.
+# Replaces the old niche re-plot output that duplicated Script 09's niche maps.
+.save_spatial_de_summary_plot <- function(summary_df, plots_dir, run_label) {
+  tryCatch({
+    if (is.null(summary_df) || nrow(summary_df) == 0) return(invisible(NULL))
+    if (!"n_fdr_005" %in% names(summary_df)) return(invisible(NULL))
+
+    df <- summary_df
+    df$n_fdr_005 <- suppressWarnings(as.integer(df$n_fdr_005))
+    df$n_fdr_005[is.na(df$n_fdr_005)] <- 0L
+    if (all(df$n_fdr_005 == 0)) return(invisible(NULL))
+
+    label_col <- intersect(c("annotation", "cell_type"), names(df))[1]
+    if (is.na(label_col)) label_col <- names(df)[1]
+    df$label <- as.character(df[[label_col]])
+
+    facet_candidates <- intersect(
+      c("predictor", "comparison", "spatial_niche", "niche_treatment_groups"),
+      names(df)
+    )
+    facet_var <- if (length(facet_candidates) > 0) facet_candidates[1] else NA_character_
+
+    ord <- order(df$n_fdr_005)
+    df$label <- factor(df$label, levels = unique(df$label[ord]))
+
+    p <- ggplot2::ggplot(df, ggplot2::aes(x = n_fdr_005, y = label)) +
+      ggplot2::geom_col(fill = "#4C72B0", width = 0.7) +
+      ggplot2::geom_text(ggplot2::aes(label = n_fdr_005),
+                         hjust = -0.2, size = 3, colour = "grey30") +
+      ggplot2::labs(
+        title    = sample_plot_title(run_label,
+                                     "Spatial DE: significant genes per cell type"),
+        subtitle = "Gene counts with FDR < 0.05 (each bar = one contrast)",
+        x = "Significant genes (FDR < 0.05)",
+        y = NULL
+      ) +
+      presentation_theme(base_size = 11) +
+      ggplot2::theme(plot.margin = ggplot2::margin(t = 10, r = 24, b = 10, l = 10))
+
+    if (!is.na(facet_var)) {
+      p <- p + ggplot2::facet_wrap(
+        stats::as.formula(paste0("~", facet_var)),
+        ncol = 1, scales = "free_y"
+      )
+    }
+
+    n_bars <- nrow(df)
+    save_presentation_plot(
+      plot     = p,
+      filename = file.path(plots_dir, paste0(run_label, "_spatial_de_summary.png")),
+      width    = 11,
+      height   = max(6, 0.35 * n_bars + 2),
+      dpi      = 300
+    )
+  }, error = function(e) {
+    message("  Spatial DE summary plot skipped: ", conditionMessage(e))
   })
   invisible(NULL)
 }
@@ -872,14 +1244,15 @@ run_smide_sample_backend <- function(expr_mat,
                                      smide_partner_padj_threshold = 0.05,
                                      smide_include_self_partner = FALSE,
                                      smide_save_raw = TRUE,
-                                     smide_adaptive_thresholds = TRUE) {
+                                     smide_adaptive_thresholds = TRUE,
+                                     polygon_df = NULL) {
   sample_contrast <- match.arg(sample_contrast)
   smide_partner_source <- match.arg(smide_partner_source)
-  
+
   if (!requireNamespace("smiDE", quietly = TRUE)) {
     stop("smiDE is not installed, but backend = 'smiDE' was requested.")
   }
-  
+
   metadata <- align_metadata_with_spatial_locations(metadata, spatial_locations)
   
   # -------------------------------------------------------------------------
@@ -1301,9 +1674,11 @@ run_smide_sample_backend <- function(expr_mat,
         file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
         row.names = FALSE
       )
-      .save_de_diagnostic_plots(result_df,
-                                dirname(tables_dir),
-                                paste0(file_stub, "_spatial_de"))
+      .save_spatial_de_plots(result_df,
+                             dirname(tables_dir),
+                             paste0(file_stub, "_spatial_de"),
+                             expr_mat = expr_mat,
+                             polygon_df = polygon_df)
 
       sig_col <- guess_significance_column(result_df)
       n_sig <- if (!is.null(sig_col)) sum(result_df[[sig_col]] < 0.05, na.rm = TRUE) else NA_integer_
@@ -1381,7 +1756,8 @@ run_smide_merged_backend <- function(expr_mat,
                                      smide_annotation_subset = NULL,
                                      smide_min_detection_fraction = 0.05,
                                      smide_save_raw = TRUE,
-                                     smide_adaptive_thresholds = TRUE) {
+                                     smide_adaptive_thresholds = TRUE,
+                                     polygon_df = NULL) {
   if (!requireNamespace("smiDE", quietly = TRUE)) {
     stop("smiDE is not installed, but backend = 'smiDE' was requested.")
   }
@@ -1665,9 +2041,11 @@ run_smide_merged_backend <- function(expr_mat,
       utils::write.csv(result_df,
                        file.path(tables_dir, paste0(file_stub_base, "_results.csv")),
                        row.names = FALSE)
-      .save_de_diagnostic_plots(result_df,
-                                dirname(tables_dir),
-                                paste0(file_stub_base, "_results"))
+      .save_spatial_de_plots(result_df,
+                             dirname(tables_dir),
+                             paste0(file_stub_base, "_results"),
+                             expr_mat = expr_mat,
+                             polygon_df = polygon_df)
       all_results[[idx]] <- result_df
     }
 
@@ -2171,71 +2549,6 @@ ensure_replicate_units <- function(metadata,
   )
 }
 
-save_niche_plots <- function(metadata,
-                             spatial_locations,
-                             output_dir,
-                             run_label,
-                             annotation_column) {
-  merged_df <- merge(
-    spatial_locations[, c("cell_ID", "sdimx", "sdimy")],
-    metadata[, c("cell_ID", "spatial_niche", annotation_column)],
-    by = "cell_ID",
-    all.x = TRUE
-  )
-  
-  p1 <- ggplot2::ggplot(
-    merged_df,
-    ggplot2::aes(x = sdimx, y = sdimy, colour = spatial_niche)
-  ) +
-    ggplot2::geom_point(size = 0.35, alpha = 0.8) +
-    ggplot2::coord_fixed() +
-    ggplot2::labs(
-      title = sample_plot_title(run_label, "Spatial Niche Assignments"),
-      subtitle = "Cells colored by their inferred neighborhood niche",
-      x = "Global X Coordinate",
-      y = "Global Y Coordinate",
-      colour = "Spatial\nNiche"
-    ) +
-    presentation_theme(base_size = 12, legend_position = "right")
-  
-  save_presentation_plot(
-    plot = p1,
-    filename = file.path(output_dir, paste0(run_label, "_spatial_niches.png")),
-    width = 13,
-    height = 10
-  )
-  
-  niche_comp <- as.data.frame(table(metadata$spatial_niche, metadata[[annotation_column]]), stringsAsFactors = FALSE)
-  names(niche_comp) <- c("spatial_niche", "annotation", "n_cells")
-  
-  p2 <- ggplot2::ggplot(
-    niche_comp,
-    ggplot2::aes(x = spatial_niche, y = n_cells, fill = annotation)
-  ) +
-    ggplot2::geom_bar(stat = "identity", position = "fill") +
-    ggplot2::scale_fill_discrete(
-      labels = function(x) pretty_plot_label(x, width = 18)
-    ) +
-    ggplot2::labs(
-      title = sample_plot_title(run_label, "Cell-Type Composition per Spatial Niche"),
-      subtitle = "Relative cell-type abundance within each inferred spatial niche",
-      x = "Spatial Niche",
-      y = "Proportion",
-      fill = "Cell Type"
-    ) +
-    presentation_theme(base_size = 12, x_angle = 35) +
-    ggplot2::theme(
-      axis.text.x = ggplot2::element_text(angle = 35, hjust = 1, vjust = 1)
-    )
-  
-  save_presentation_plot(
-    plot = p2,
-    filename = file.path(output_dir, paste0(run_label, "_niche_composition.png")),
-    width = 12,
-    height = 8
-  )
-}
-
 run_sample_scope_spatial_de <- function(expr_mat,
                                         metadata,
                                         run_label,
@@ -2247,9 +2560,10 @@ run_sample_scope_spatial_de <- function(expr_mat,
                                         min_cells_per_replicate = 5,
                                         min_replicates_per_group = 2,
                                         n_spatial_patches = 8,
-                                        spatial_locations = NULL) {
+                                        spatial_locations = NULL,
+                                        polygon_df = NULL) {
   sample_contrast <- match.arg(sample_contrast)
-  
+
   sample_ids <- unique(stats::na.omit(metadata$sample_id))
   if (length(sample_ids) > 1) {
     stop("Sample-scope spatial DE expects a single-sample object.")
@@ -2389,6 +2703,11 @@ run_sample_scope_spatial_de <- function(expr_mat,
           file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
           row.names = FALSE
         )
+        .save_spatial_de_plots(de_tbl,
+                               dirname(tables_dir),
+                               paste0(file_stub, "_spatial_de"),
+                               expr_mat = expr_mat,
+                               polygon_df = polygon_df)
         
         summary_rows[[idx]] <- data.frame(
           analysis_scope = "sample",
@@ -2471,6 +2790,11 @@ run_sample_scope_spatial_de <- function(expr_mat,
           file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
           row.names = FALSE
         )
+        .save_spatial_de_plots(de_tbl,
+                               dirname(tables_dir),
+                               paste0(file_stub, "_spatial_de"),
+                               expr_mat = expr_mat,
+                               polygon_df = polygon_df)
         
         summary_rows[[idx]] <- data.frame(
           analysis_scope = "sample",
@@ -2507,13 +2831,14 @@ run_merged_scope_spatial_de <- function(expr_mat,
                                         tables_dir,
                                         min_cells_per_niche = 30,
                                         min_cells_per_sample = 10,
-                                        min_samples_per_group = 2) {
+                                        min_samples_per_group = 2,
+                                        polygon_df = NULL) {
   utils::write.csv(
     metadata,
     file.path(tables_dir, paste0(run_label, "_cell_metadata_with_niches.csv")),
     row.names = FALSE
   )
-  
+
   summary_rows <- list()
   all_results <- list()
   idx <- 1L
@@ -2597,6 +2922,11 @@ run_merged_scope_spatial_de <- function(expr_mat,
           file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
           row.names = FALSE
         )
+        .save_spatial_de_plots(de_tbl,
+                               dirname(tables_dir),
+                               paste0(file_stub, "_spatial_de"),
+                               expr_mat = expr_mat,
+                               polygon_df = polygon_df)
         
         summary_rows[[idx]] <- data.frame(
           analysis_scope = "merged",
@@ -2807,14 +3137,15 @@ run_spatial_differential_expression <- function(gobj,
   cat("Spatial niches identified:", length(unique(metadata$spatial_niche)), "\n\n")
   
   spatial_locations <- get_spatial_locations_df(gobj)
-  save_niche_plots(
-    metadata = metadata,
-    spatial_locations = spatial_locations,
-    output_dir = plots_dir,
-    run_label = run_label,
-    annotation_column = annotation_column
-  )
-  
+
+  # Extract polygon geometry once so backends can emit smiDE-paper-style
+  # spatial overlays of top DE genes. Silent fallback to NULL (no overlay)
+  # when polygon data are unavailable on centroid-only objects.
+  polygon_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+  if (is.null(polygon_df)) {
+    cat("  Polygon geometry not available; spatial gene overlays will be skipped.\n")
+  }
+
   niche_summary <- as.data.frame(table(metadata[[annotation_column]], metadata$spatial_niche), stringsAsFactors = FALSE)
   names(niche_summary) <- c("annotation", "spatial_niche", "n_cells")
   utils::write.csv(
@@ -2853,7 +3184,8 @@ run_spatial_differential_expression <- function(gobj,
         smide_save_raw = smide_save_raw,
         smide_adaptive_thresholds = smide_adaptive_thresholds,
         spatial_network_name = spatial_network_name,
-        neighbor_counts = niche_counts
+        neighbor_counts = niche_counts,
+        polygon_df = polygon_df
       )
     } else {
       run_sample_scope_spatial_de(
@@ -2868,7 +3200,8 @@ run_spatial_differential_expression <- function(gobj,
         min_cells_per_replicate = min_cells_per_replicate,
         min_replicates_per_group = min_replicates_per_group,
         n_spatial_patches = n_spatial_patches,
-        spatial_locations = spatial_locations
+        spatial_locations = spatial_locations,
+        polygon_df = polygon_df
       )
     }
   } else {
@@ -2892,7 +3225,8 @@ run_spatial_differential_expression <- function(gobj,
         smide_annotation_subset = smide_annotation_subset,
         smide_min_detection_fraction = smide_min_detection_fraction,
         smide_save_raw = smide_save_raw,
-        smide_adaptive_thresholds = smide_adaptive_thresholds
+        smide_adaptive_thresholds = smide_adaptive_thresholds,
+        polygon_df = polygon_df
       )
     } else {
       run_merged_scope_spatial_de(
@@ -2906,7 +3240,8 @@ run_spatial_differential_expression <- function(gobj,
         tables_dir = tables_dir,
         min_cells_per_niche = min_cells_per_niche,
         min_cells_per_sample = min_cells_per_sample,
-        min_samples_per_group = min_samples_per_group
+        min_samples_per_group = min_samples_per_group,
+        polygon_df = polygon_df
       )
     }
   }
@@ -2990,7 +3325,8 @@ run_spatial_differential_expression <- function(gobj,
         min_cells_per_replicate  = fallback_rep_min,
         min_replicates_per_group = min_replicates_per_group,
         n_spatial_patches        = n_spatial_patches,
-        spatial_locations        = spatial_locations
+        spatial_locations        = spatial_locations,
+        polygon_df               = polygon_df
       )
       if (nrow(fallback_out$results) > 0) {
         fallback_out$results$backend <- "edgeR_fallback"
@@ -3017,8 +3353,9 @@ run_spatial_differential_expression <- function(gobj,
       file.path(results_dir, paste0(run_label, "_spatial_de_summary.csv")),
       row.names = FALSE
     )
+    .save_spatial_de_summary_plot(summary_df, plots_dir, run_label)
   }
-  
+
   if (save_object) {
     save_giotto_checkpoint(
       gobj = gobj,

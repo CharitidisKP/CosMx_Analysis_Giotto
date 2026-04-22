@@ -40,25 +40,16 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("s
   source(pipeline_utils)
 }
 
-.run_spatial_qc_plot <- function(...) {
-  withCallingHandlers(
-    spatPlot2D(...),
-    warning = function(w) {
-      if (grepl("aes_string\\(\\)", conditionMessage(w))) {
-        invokeRestart("muffleWarning")
-      }
-    }
-  )
-}
-
-quality_control <- function(gobj, 
-                            sample_id, 
+quality_control <- function(gobj,
+                            sample_id,
                             output_dir,
                             gene_min_cells = 10,
                             cell_min_genes = 50,
                             cell_max_genes = NULL,
                             min_count = 100,
-                            max_mito_pct = NULL) {
+                            max_mito_pct = NULL,
+                            sample_row = NULL,
+                            sample_sheet_path = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 02: Quality Control\n")
@@ -168,60 +159,55 @@ quality_control <- function(gobj,
   # Create QC plots before filtering
   cat("Creating pre-filtering QC plots...\n")
   
-  gene_median_pre <- stats::median(metadata$nr_feats, na.rm = TRUE)
-  gene_mean_pre <- mean(metadata$nr_feats, na.rm = TRUE)
+  gene_median_pre  <- stats::median(metadata$nr_feats,        na.rm = TRUE)
   count_median_pre <- stats::median(metadata$total_expr_plot, na.rm = TRUE)
-  count_mean_pre <- mean(metadata$total_expr_plot, na.rm = TRUE)
-  
-  # Distribution plots
+
+  # Pre-filter distribution plots: black dotted threshold + red dotted median,
+  # same line style, different colour. No mean line.
   p1 <- ggplot(metadata, aes(x = nr_feats)) +
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
-    geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
-    geom_vline(xintercept = gene_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
-    geom_vline(xintercept = gene_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    geom_vline(xintercept = cell_min_genes,  color = "black", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = gene_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
     labs(
-      title = "Detected Genes Per Cell",
-      subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
-      x = "Detected genes",
-      y = "Number of cells"
+      title    = "Detected Genes Per Cell",
+      subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
+      x        = "Detected genes",
+      y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
-  
+
   if (!is.null(cell_max_genes)) {
-    p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
+    p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "black", linetype = "dotted", linewidth = 0.9)
   }
-  
+
   p2 <- ggplot(metadata, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
-    geom_vline(xintercept = min_count, color = "red", linetype = "dashed", linewidth = 1) +
-    geom_vline(xintercept = count_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
-    geom_vline(xintercept = count_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    geom_vline(xintercept = min_count,        color = "black", linetype = "dotted", linewidth = 0.9) +
+    geom_vline(xintercept = count_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
     scale_x_log10() +
     labs(
-      title = "Total Counts Per Cell",
-      subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
-      x = log10_axis_label("Total Counts Per Cell"),
-      y = "Number of cells"
+      title    = "Total Counts Per Cell",
+      subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
+      x        = log10_axis_label("Total Counts Per Cell"),
+      y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
-  
+
   if ("mito_pct" %in% names(metadata) && !is.null(max_mito_pct)) {
     mito_median_pre <- stats::median(metadata$mito_pct, na.rm = TRUE)
-    mito_mean_pre <- mean(metadata$mito_pct, na.rm = TRUE)
-    
+
     p3 <- ggplot(metadata, aes(x = mito_pct)) +
       geom_histogram(bins = 50, fill = "coral", color = "white") +
-      geom_vline(xintercept = max_mito_pct, color = "red", linetype = "dashed", linewidth = 1) +
-      geom_vline(xintercept = mito_median_pre, color = "navy", linetype = "dotted", linewidth = 0.9) +
-      geom_vline(xintercept = mito_mean_pre, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+      geom_vline(xintercept = max_mito_pct,    color = "black", linetype = "dotted", linewidth = 0.9) +
+      geom_vline(xintercept = mito_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
       labs(
-        title = "Mitochondrial Fraction",
-        subtitle = "Before filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
-        x = "Mitochondrial reads (%)",
-        y = "Number of cells"
+        title    = "Mitochondrial Fraction",
+        subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
+        x        = "Mitochondrial reads (%)",
+        y        = "Number of cells"
       ) +
       presentation_theme(base_size = 12)
-    
+
     combined <- (p1 | p2 | p3) +
       plot_annotation(
         title = sample_plot_title(sample_id, "Quality Control Metrics Before Filtering"),
@@ -246,66 +232,160 @@ quality_control <- function(gobj,
   
   cat("✓ Pre-filtering plots saved\n\n")
   
-  # Spatial QC plots
-  cat("Creating spatial QC plots...\n")
-  
-  tryCatch({
-    .run_spatial_qc_plot(
-      gobject = gobj,
-      show_image = FALSE,
-      point_alpha = 0.7,
-      point_size = 0.5,
-      cell_color = "nr_feats",
-      color_as_factor = FALSE,
-      ## Check if this is a thing in one of the packages ##
-      # gradient_style = "sequential",
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_spatial_genes_per_cell"),
-        save_dir = results_folder,
-        base_width = 12,
-        base_height = 10
-      )
+  # Spatial QC plots — polygon rendering (cells drawn as real polygons, not
+  # points). Each metric keeps its own PNG, and all metrics are additionally
+  # combined into one enlarged side-by-side figure. For composite samples,
+  # per-sub-biopsy top-bottom stacked variants are written into a subfolder.
+  cat("Creating spatial QC plots (polygon rendering)...\n")
+
+  has_mito <- "mito_pct" %in% names(metadata)
+  spatial_metrics <- list(
+    list(column = "nr_feats",   label = "Detected Genes Per Cell",    slug = "genes_per_cell"),
+    list(column = "total_expr", label = "Total Counts Per Cell",      slug = "total_counts")
+  )
+  if (has_mito) {
+    spatial_metrics[[length(spatial_metrics) + 1]] <-
+      list(column = "mito_pct", label = "Mitochondrial Fraction (%)", slug = "mito_pct")
+  }
+
+  # Render one polygon panel per metric (per-sample context: linewidth stays
+  # at the existing project default rather than PER_FOV_LINEWIDTH).
+  .render_qc_polygon_panel <- function(gobject_local, metric) {
+    tryCatch(
+      plot_cells_polygon(
+        gobject        = gobject_local,
+        fill_column    = metric$column,
+        fill_as_factor = FALSE,
+        context        = "sample",
+        polygon_alpha  = 0.9,
+        save_plot      = FALSE,
+        return_plot    = TRUE,
+        show_plot      = FALSE
+      ) + labs(title = metric$label),
+      error = function(e) {
+        cat("  ⚠ ", metric$column, ": ", conditionMessage(e), "\n", sep = "")
+        NULL
+      }
     )
-    
-    .run_spatial_qc_plot(
-      gobject = gobj,
-      show_image = FALSE,
-      point_alpha = 0.7,
-      point_size = 0.5,
-      cell_color = "total_expr",
-      color_as_factor = FALSE,
-      ## Check if this is a thing in one of the packages ##
-      # gradient_style = "sequential",
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_spatial_total_counts"),
-        save_dir = results_folder,
-        base_width = 12,
-        base_height = 10
-      )
-    )
-    
-    if ("mito_pct" %in% names(metadata)) {
-      .run_spatial_qc_plot(
-        gobject = gobj,
-        show_image = FALSE,
-        point_alpha = 0.7,
-        point_size = 0.5,
-        cell_color = "mito_pct",
-        color_as_factor = FALSE,
-        ## Check if this is a thing in one of the packages ##
-        # gradient_style = "sequential",
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_spatial_mito_pct"),
-          save_dir = results_folder,
-          base_width = 12,
-          base_height = 10
-        )
+  }
+
+  # Per-metric individual PNGs + one combined side-by-side PNG for the full sample.
+  .save_qc_spatial_group <- function(gobject_local,
+                                     out_dir,
+                                     file_prefix,
+                                     stack_direction = c("side", "stack"),
+                                     title_text = NULL) {
+    stack_direction <- match.arg(stack_direction)
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    panels <- lapply(spatial_metrics, function(m) .render_qc_polygon_panel(gobject_local, m))
+    names(panels) <- vapply(spatial_metrics, function(m) m$slug, character(1))
+    ok <- !vapply(panels, is.null, logical(1))
+    if (!any(ok)) return(invisible(FALSE))
+
+    # Individual files (one per metric). Kept alongside the combined file so
+    # both CART composite runs and regular samples have single-metric views.
+    for (i in which(ok)) {
+      m <- spatial_metrics[[i]]
+      save_presentation_plot(
+        plot     = panels[[i]],
+        filename = file.path(out_dir, paste0(file_prefix, "_spatial_", m$slug, ".png")),
+        width    = 12,
+        height   = 10,
+        dpi      = 300,
+        bg       = "white"
       )
     }
-    
+
+    # Combined figure.
+    combined <- if (stack_direction == "side") {
+      Reduce(`|`, panels[ok])
+    } else {
+      Reduce(`/`, panels[ok])
+    }
+    if (!is.null(title_text)) {
+      combined <- combined + plot_annotation(
+        title = title_text,
+        theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
+      )
+    }
+    combined_width  <- if (stack_direction == "side") 12 * sum(ok) else 14
+    combined_height <- if (stack_direction == "side") 10          else 10 * sum(ok)
+    combined_name   <- if (stack_direction == "side") {
+      paste0(file_prefix, "_spatial_qc_combined.png")
+    } else {
+      paste0(file_prefix, "_spatial_qc_stacked.png")
+    }
+    save_presentation_plot(
+      plot     = combined,
+      filename = file.path(out_dir, combined_name),
+      width    = combined_width,
+      height   = combined_height,
+      dpi      = 300,
+      bg       = "white"
+    )
+    invisible(TRUE)
+  }
+
+  tryCatch({
+    # Main sample: individual PNGs + side-by-side combined figure.
+    .save_qc_spatial_group(
+      gobject_local   = gobj,
+      out_dir         = results_folder,
+      file_prefix     = sample_id,
+      stack_direction = "side",
+      title_text      = sample_plot_title(sample_id, "Spatial Quality Control")
+    )
+
+    # Composite samples: also emit per-sub-biopsy top-bottom stacked variants.
+    sub_rows <- discover_composite_subsamples(sample_row, sample_sheet_path)
+    if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
+      cat("Composite sample detected - rendering", nrow(sub_rows),
+          "per-sub-biopsy stacked variant(s)...\n")
+      meta_all <- as.data.frame(pDataDT(gobj))
+      if (!"fov" %in% names(meta_all)) {
+        cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+      } else {
+        sub_dir <- file.path(results_folder, "subsamples")
+        for (k in seq_len(nrow(sub_rows))) {
+          sub_r  <- sub_rows[k, , drop = FALSE]
+          sub_id <- as.character(sub_r$sample_id)
+          fmin   <- as.integer(sub_r$fov_min)
+          fmax   <- as.integer(sub_r$fov_max)
+          if (anyNA(c(fmin, fmax))) {
+            cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+            next
+          }
+          cell_ids <- meta_all$cell_ID[
+            !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
+          ]
+          if (length(cell_ids) == 0) {
+            cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
+                ", skipped\n", sep = "")
+            next
+          }
+          sub_gobj <- tryCatch(
+            subsetGiotto(gobj, cell_ids = cell_ids),
+            error = function(e) {
+              cat("  ⚠ ", sub_id, ": subsetGiotto failed: ",
+                  conditionMessage(e), "\n", sep = "")
+              NULL
+            }
+          )
+          if (is.null(sub_gobj)) next
+          cat("  → ", sub_id, " (FOV ", fmin, "-", fmax,
+              ", ", length(cell_ids), " cells)\n", sep = "")
+          .save_qc_spatial_group(
+            gobject_local   = sub_gobj,
+            out_dir         = sub_dir,
+            file_prefix     = sub_id,
+            stack_direction = "stack",
+            title_text      = sample_plot_title(sub_id, "Spatial Quality Control")
+          )
+        }
+      }
+    }
+
     cat("✓ Spatial plots saved\n\n")
   }, error = function(e) {
     cat("⚠ Spatial plotting warning:", conditionMessage(e), "\n\n")
@@ -381,39 +461,31 @@ quality_control <- function(gobj,
     as_tibble() %>%
     mutate(total_expr_plot = pmax(total_expr, 1))
   
-  gene_median_post <- stats::median(metadata_post$nr_feats, na.rm = TRUE)
-  gene_mean_post <- mean(metadata_post$nr_feats, na.rm = TRUE)
+  gene_median_post  <- stats::median(metadata_post$nr_feats,        na.rm = TRUE)
   count_median_post <- stats::median(metadata_post$total_expr_plot, na.rm = TRUE)
-  count_mean_post <- mean(metadata_post$total_expr_plot, na.rm = TRUE)
-  
+
+  # Post-filter distribution plots: single red dotted line at the median. The
+  # threshold is no longer drawn because all remaining cells are above it.
   p1_post <- ggplot(metadata_post, aes(x = nr_feats)) +
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
-    geom_vline(xintercept = cell_min_genes, color = "red", linetype = "dashed", linewidth = 1) +
-    geom_vline(xintercept = gene_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
-    geom_vline(xintercept = gene_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    geom_vline(xintercept = gene_median_post, color = "red", linetype = "dotted", linewidth = 0.9) +
     labs(
-      title = "Detected Genes Per Cell",
-      subtitle = "After filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
-      x = "Detected genes",
-      y = "Number of cells"
+      title    = "Detected Genes Per Cell",
+      subtitle = "After filtering. Red dotted = median.",
+      x        = "Detected genes",
+      y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
-  
-  if (!is.null(cell_max_genes)) {
-    p1_post <- p1_post + geom_vline(xintercept = cell_max_genes, color = "red", linetype = "dashed", linewidth = 1)
-  }
-  
+
   p2_post <- ggplot(metadata_post, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
-    geom_vline(xintercept = min_count, color = "red", linetype = "dashed", linewidth = 1) +
-    geom_vline(xintercept = count_median_post, color = "navy", linetype = "dotted", linewidth = 0.9) +
-    geom_vline(xintercept = count_mean_post, color = "darkorange3", linetype = "dotdash", linewidth = 0.9) +
+    geom_vline(xintercept = count_median_post, color = "red", linetype = "dotted", linewidth = 0.9) +
     scale_x_log10() +
     labs(
-      title = "Total Counts Per Cell",
-      subtitle = "After filtering. Red dashed = threshold, blue dotted = median, orange dotdash = mean.",
-      x = log10_axis_label("Total Counts Per Cell"),
-      y = "Number of cells"
+      title    = "Total Counts Per Cell",
+      subtitle = "After filtering. Red dotted = median.",
+      x        = log10_axis_label("Total Counts Per Cell"),
+      y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
   
@@ -499,11 +571,30 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     sample_id <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
-    
+
+    # Resolve optional composite context from an environment variable so the
+    # CLI entrypoint can emit per-sub-biopsy stacked spatial plots without
+    # changing its argument signature.
+    cli_sheet_path <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
+    cli_sample_row <- NULL
+    if (nzchar(cli_sheet_path) && file.exists(cli_sheet_path) &&
+        exists("safe_read_sheet", mode = "function")) {
+      sheet_df <- tryCatch(
+        as.data.frame(safe_read_sheet(cli_sheet_path), stringsAsFactors = FALSE),
+        error = function(e) NULL
+      )
+      if (!is.null(sheet_df) && "sample_id" %in% names(sheet_df)) {
+        hit <- sheet_df[as.character(sheet_df$sample_id) == sample_id, , drop = FALSE]
+        if (nrow(hit) >= 1) cli_sample_row <- hit[1, , drop = FALSE]
+      }
+    }
+
     gobj <- quality_control(
-      gobj = input_path,
-      sample_id = sample_id,
-      output_dir = output_dir
+      gobj              = input_path,
+      sample_id         = sample_id,
+      output_dir        = output_dir,
+      sample_row        = cli_sample_row,
+      sample_sheet_path = if (nzchar(cli_sheet_path)) cli_sheet_path else NULL
     )
     
     # Save filtered object

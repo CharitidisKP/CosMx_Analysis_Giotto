@@ -117,6 +117,65 @@ cci:
   nichenet_include_self_pairs: false
   cleanup_between_sections: true
 
+# ==============================================================================
+# Step 13 — Pathway enrichment + GSEA.
+# Runs in merged scope because the four comparisons span multiple samples.
+# Required packages: msigdbr, clusterProfiler, fgsea, enrichplot, ReactomePA,
+# org.Hs.eg.db, decoupleR, progeny, presto, pheatmap, UpSetR, ComplexHeatmap.
+# Install with `Rscript Parameters/Install_CCI_dependencies.R msigdbr,clusterprofiler,\
+# fgsea,enrichplot,reactomepa,orghs,annotationdbi,decoupler,gseabase,progeny,presto,\
+# pheatmap,upsetr,complexheatmap`.
+# ==============================================================================
+pathway:
+  enabled: true
+  comparisons:
+    - label: "CART_before_vs_after"
+      group_a: { treatment: "CART",         timepoint: "T0" }
+      group_b: { treatment: "CART",         timepoint: "T12" }
+    - label: "CART_vs_Conv_before"
+      group_a: { treatment: "CART",         timepoint: "T0" }
+      group_b: { treatment: "Conventional", timepoint: "T0" }
+    - label: "CART_vs_Conv_after"
+      group_a: { treatment: "CART",         timepoint: "T12" }
+      group_b: { treatment: "Conventional", timepoint: "T12" }
+    - label: "CART_after_vs_Control"
+      group_a: { treatment: "CART",         timepoint: "T12" }
+      group_b: { treatment: "Control" }
+  # "celltype" uses celltype_column (auto-detected celltype_*_supervised if null).
+  # "leiden" uses leiden_column. List both for double stratification.
+  stratifications: ["celltype", "leiden"]
+  celltype_column: null
+  leiden_column: "leiden_clust"
+  focus_celltype: "^B cell$"
+  # Per-stratum cell and gene thresholds — strata that fail are skipped with a log note.
+  min_cells_per_stratum: 30
+  min_genes_tested: 50
+  species: "Homo sapiens"
+  # All MSigDB collections to pull (human). Leave subcollections null to include
+  # every subcollection within the collection.
+  databases:
+    - { collection: "H",  subcollections: null }
+    - { collection: "C2", subcollections: ["CP:KEGG", "CP:REACTOME", "CP:WIKIPATHWAYS", "CP:BIOCARTA", "CP:PID"] }
+    - { collection: "C5", subcollections: ["GO:BP", "GO:MF", "GO:CC"] }
+    - { collection: "C7", subcollections: null }
+    - { collection: "C8", subcollections: null }
+  gsea:
+    min_size: 10
+    max_size: 500
+    nperm_seed: 42
+    padj_threshold: 0.05
+  ora:
+    logfc_threshold: 0.5
+    padj_threshold: 0.05
+    universe_source: "tested"   # "tested" = all genes seen in DE; "panel" = full panel
+  # Cap the per-pathway leading-edge heatmaps to avoid file explosion
+  # (set to 0 to disable leading-edge heatmaps entirely).
+  leading_edge_top_n: 5
+  progeny:
+    enabled: true
+    top_n_genes: 500
+  pdf_summary: true
+
 spatial_de:
   sample_backend: "smiDE"
   annotation_column: "celltype_HCA_Kidney_supervised"

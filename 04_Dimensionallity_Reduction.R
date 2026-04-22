@@ -200,7 +200,9 @@ dimensionality_reduction <- function(gobj,
                                      umap_n_neighbors = 30,
                                      umap_min_dist = 0.3,
                                      spatial_hvg = FALSE,
-                                     seed = 42) {
+                                     seed = 42,
+                                     sample_row = NULL,
+                                     sample_sheet_path = NULL) {
 
   cat("\n========================================\n")
   cat("STEP 04: Dimensionality Reduction\n")
@@ -302,18 +304,26 @@ dimensionality_reduction <- function(gobj,
   
   cat("✓ PCA complete\n\n")
   
-  # Scree plot
+  # Scree plot - capture the ggplot so we can attach a title that matches the
+  # rest of the pipeline's presentation style, then save via the shared helper.
   tryCatch({
-    screePlot(
-      gobject = gobj,
-      ncp = min(30, n_pcs),
-      save_plot = TRUE,
-      save_param = list(
-        save_name = paste0(sample_id, "_scree_plot"),
-        save_dir = results_folder,
-        base_width = 10,
-        base_height = 6
-      )
+    scree_p <- screePlot(
+      gobject     = gobj,
+      ncp         = min(30, n_pcs),
+      save_plot   = FALSE,
+      return_plot = TRUE,
+      show_plot   = FALSE
+    )
+    scree_p <- scree_p + labs(
+      title = sample_plot_title(sample_id, "PCA Scree Plot")
+    )
+    save_presentation_plot(
+      plot     = scree_p,
+      filename = file.path(results_folder, paste0(sample_id, "_scree_plot.png")),
+      width    = 10,
+      height   = 6,
+      dpi      = 300,
+      bg       = "white"
     )
     cat("✓ Scree plot saved\n\n")
   }, error = function(e) {
@@ -387,7 +397,7 @@ dimensionality_reduction <- function(gobj,
       sample_id = sample_id
     )
 
-    # UMAP coloured by FOV — batch-drift / spatial-batch indicator.
+    # UMAP coloured by FOV - batch-drift / spatial-batch indicator.
     # Hide legend when there are too many FOVs for a readable key.
     if ("fov" %in% names(pDataDT(gobj))) {
       umap_fov <- .prepare_dim_plot_data(gobj, "umap", "fov")
@@ -411,6 +421,53 @@ dimensionality_reduction <- function(gobj,
                              paste0(sample_id, "_umap_by_fov.png")),
         width = 12, height = 8, dpi = 300, bg = "white"
       )
+    }
+
+    # Composite-only: UMAP coloured by sub-biopsy. Each cell's FOV is mapped
+    # to the sub-biopsy whose [fov_min, fov_max] range it falls inside. Useful
+    # for spotting biopsy-level batch structure inside a merged composite.
+    sub_rows <- discover_composite_subsamples(sample_row, sample_sheet_path)
+    if (!is.null(sub_rows) && nrow(sub_rows) > 0 &&
+        "fov" %in% names(pDataDT(gobj))) {
+      umap_sub <- .prepare_dim_plot_data(gobj, "umap", "fov")
+      assign_sub <- function(fov_val) {
+        if (is.na(fov_val)) return(NA_character_)
+        hit <- which(fov_val >= as.integer(sub_rows$fov_min) &
+                     fov_val <= as.integer(sub_rows$fov_max))
+        if (length(hit) == 0) NA_character_ else as.character(sub_rows$sample_id[hit[1]])
+      }
+      umap_sub$sub_sample_id <- vapply(umap_sub$fov, assign_sub, character(1))
+      umap_sub <- umap_sub[!is.na(umap_sub$sub_sample_id), , drop = FALSE]
+
+      if (nrow(umap_sub) > 0) {
+        umap_sub$sub_sample_id <- factor(
+          umap_sub$sub_sample_id,
+          levels = sort(unique(umap_sub$sub_sample_id))
+        )
+        sub_colours <- cluster_palette(levels(umap_sub$sub_sample_id))
+        sub_plot <- ggplot(
+          umap_sub,
+          aes(x = dim1, y = dim2, color = sub_sample_id)
+        ) +
+          geom_point(size = 0.35, alpha = 0.7) +
+          scale_color_manual(values = sub_colours) +
+          labs(
+            title = sample_plot_title(sample_id, "UMAP Embedding Colored By Sample"),
+            x     = embedding_axis_label("UMAP", 1),
+            y     = embedding_axis_label("UMAP", 2),
+            color = "Sample"
+          ) +
+          presentation_theme(base_size = 12) +
+          guides(color = guide_legend(ncol = 1, override.aes = list(size = 3)))
+        save_presentation_plot(
+          plot     = sub_plot,
+          filename = file.path(results_folder,
+                               paste0(sample_id, "_umap_by_sample.png")),
+          width    = 12, height = 8, dpi = 300, bg = "white"
+        )
+        cat("✓ Composite UMAP by sub-biopsy saved (",
+            nlevels(umap_sub$sub_sample_id), " sub-samples)\n", sep = "")
+      }
     }
 
     cat("✓ Plots saved\n\n")
@@ -470,12 +527,30 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     input_path <- args[2]
     output_dir <- args[3]
     spatial_hvg <- if (length(args) >= 4) as.logical(args[4]) else FALSE
-    
+
+    # Resolve optional composite context so the CLI entrypoint can emit the
+    # sub-biopsy UMAP without expanding its argument signature.
+    cli_sheet_path <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
+    cli_sample_row <- NULL
+    if (nzchar(cli_sheet_path) && file.exists(cli_sheet_path) &&
+        exists("safe_read_sheet", mode = "function")) {
+      sheet_df <- tryCatch(
+        as.data.frame(safe_read_sheet(cli_sheet_path), stringsAsFactors = FALSE),
+        error = function(e) NULL
+      )
+      if (!is.null(sheet_df) && "sample_id" %in% names(sheet_df)) {
+        hit <- sheet_df[as.character(sheet_df$sample_id) == sample_id, , drop = FALSE]
+        if (nrow(hit) >= 1) cli_sample_row <- hit[1, , drop = FALSE]
+      }
+    }
+
     gobj <- dimensionality_reduction(
-      gobj = input_path,
-      sample_id = sample_id,
-      output_dir = output_dir,
-      spatial_hvg = spatial_hvg
+      gobj              = input_path,
+      sample_id         = sample_id,
+      output_dir        = output_dir,
+      spatial_hvg       = spatial_hvg,
+      sample_row        = cli_sample_row,
+      sample_sheet_path = if (nzchar(cli_sheet_path)) cli_sheet_path else NULL
     )
     
     saveGiotto(gobj, dir = output_dir, foldername = "Giotto_Object_DimReduced", overwrite = TRUE)

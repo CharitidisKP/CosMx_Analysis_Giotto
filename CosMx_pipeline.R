@@ -133,7 +133,13 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
     "12_spatial_de" = "12_spatial_de",
     "12_spatial_differential_expression" = "12_spatial_de",
     "13_spatial_de" = "12_spatial_de",
-    "13_spatial_differential_expression" = "12_spatial_de"
+    "13_spatial_differential_expression" = "12_spatial_de",
+    "13_pathway" = "13_pathway",
+    "13_pathway_analysis" = "13_pathway",
+    "14_pathway" = "13_pathway",
+    "14_pathway_analysis" = "13_pathway",
+    "pathway" = "13_pathway",
+    "pathway_analysis" = "13_pathway"
   )
   
   aliases <- if (type == "sample") sample_aliases else merged_aliases
@@ -156,7 +162,7 @@ SAMPLE_STEP_ORDER <- c(
   "12_spatial_de"
 )
 
-MERGED_STEP_ORDER <- c("merge", "merge_batch", "12_spatial_de")
+MERGED_STEP_ORDER <- c("merge", "merge_batch", "12_spatial_de", "13_pathway")
 
 step_label <- function(step_id) {
   labels <- c(
@@ -173,6 +179,7 @@ step_label <- function(step_id) {
     "merge_batch" = "Merge batch correction",
     "11_bcell" = "11 Focused cell-type microenvironment",
     "12_spatial_de" = "12 Spatial differential expression",
+    "13_pathway" = "13 Pathway enrichment + GSEA",
     "merge" = "Merge sample objects"
   )
   labels[[step_id]] %||% step_id
@@ -655,7 +662,8 @@ runtime_script_paths <- function() {
       "10_CCI_Analysis.R",
       file.path("Helper_Scripts", "Merge_Batch_Correction.R"),
       "11_B_Cell_Analysis.R",
-      "12_Spatial_Differential_Expression.R"
+      "12_Spatial_Differential_Expression.R",
+      "13_Pathway_Analysis.R"
     )
   )
 }
@@ -758,7 +766,9 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         min_count      = .sample_qc_override("qc_min_count",
                          cfg$parameters$qc$min_count %||% 100),
         max_mito_pct   = .sample_qc_override("qc_max_mito_pct",
-                         cfg$parameters$qc$max_mito_pct %||% NULL)
+                         cfg$parameters$qc$max_mito_pct %||% NULL),
+        sample_row        = sample_row,
+        sample_sheet_path = cfg$paths$sample_sheet
       )
     },
     "03_norm" = runtime_env$normalize_expression(
@@ -777,7 +787,9 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       umap_n_neighbors = cfg$parameters$dim_reduction$umap_n_neighbors %||% 30,
       umap_min_dist = cfg$parameters$dim_reduction$umap_min_dist %||% 0.3,
       spatial_hvg = cfg$parameters$dim_reduction$spatial_hvg %||% FALSE,
-      seed = cfg$reproducibility$seed %||% 42
+      seed = cfg$reproducibility$seed %||% 42,
+      sample_row        = sample_row,
+      sample_sheet_path = cfg$paths$sample_sheet
     ),
     "05_cluster" = runtime_env$perform_clustering(
       gobj = gobj,
@@ -789,32 +801,38 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       leiden_n_iterations = cfg$parameters$clustering$n_iterations %||% 200,
       resolution_sweep = cfg$parameters$clustering$resolution_sweep %||% NULL,
       scripts_dir = cfg$paths$scripts_dir,
-      seed = cfg$reproducibility$seed %||% 42
+      seed = cfg$reproducibility$seed %||% 42,
+      sample_row        = sample_row,
+      sample_sheet_path = cfg$paths$sample_sheet
     ),
     "06_markers" = runtime_env$marker_analysis(
-      gobj = gobj,
-      sample_id = sample_id,
-      output_dir = output_dir,
-      cluster_column = cfg$parameters$markers$cluster_column %||% "leiden_clust",
-      top_n = cfg$parameters$markers$top_n %||% 25
+      gobj            = gobj,
+      sample_id       = sample_id,
+      output_dir      = output_dir,
+      cluster_column  = cfg$parameters$markers$cluster_column %||% "leiden_clust",
+      top_n           = cfg$parameters$markers$top_n          %||% 25,
+      bcell_markers   = as.character(cfg$parameters$visualization$marker_genes$b_cells         %||% character()),
+      subtype_markers = as.character(cfg$parameters$visualization$marker_genes$b_cell_subtypes %||% character())
     ),
     "07_annotate" = runtime_env$annotate_cells(
-      gobj = gobj,
-      sample_id = sample_id,
-      output_dir = output_dir,
-      profiles = cfg$parameters$annotation$profiles,
-      default_profile = cfg$parameters$annotation$default_profile %||% NULL,
-      align_genes = cfg$parameters$annotation$align_genes %||% TRUE,
-      n_starts = cfg$parameters$annotation$n_starts %||% 10,
-      n_clusts_semi = cfg$parameters$annotation$n_clusts_semi %||% 3,
-      cohort_column = cfg$parameters$annotation$cohort_column %||% "leiden_clust",
-      min_gene_overlap = cfg$parameters$annotation$min_gene_overlap %||% 100,
-      create_plots = cfg$parameters$annotation$create_plots %||% TRUE,
-      conf_threshold = cfg$parameters$annotation$conf_threshold %||% NULL,
-      score_weights = cfg$parameters$annotation$score_weights %||% NULL,
-      profile_strategy = cfg$parameters$annotation$profile_strategy %||% "default",
-      save_object = TRUE,
-      seed = cfg$reproducibility$seed %||% 42
+      gobj              = gobj,
+      sample_id         = sample_id,
+      output_dir        = output_dir,
+      profiles          = cfg$parameters$annotation$profiles,
+      default_profile   = cfg$parameters$annotation$default_profile %||% NULL,
+      align_genes       = cfg$parameters$annotation$align_genes %||% TRUE,
+      n_starts          = cfg$parameters$annotation$n_starts %||% 10,
+      n_clusts_semi     = cfg$parameters$annotation$n_clusts_semi %||% 3,
+      cohort_column     = cfg$parameters$annotation$cohort_column %||% "leiden_clust",
+      min_gene_overlap  = cfg$parameters$annotation$min_gene_overlap %||% 100,
+      create_plots      = cfg$parameters$annotation$create_plots %||% TRUE,
+      conf_threshold    = cfg$parameters$annotation$conf_threshold %||% NULL,
+      score_weights     = cfg$parameters$annotation$score_weights %||% NULL,
+      profile_strategy  = cfg$parameters$annotation$profile_strategy %||% "default",
+      save_object       = TRUE,
+      seed              = cfg$reproducibility$seed %||% 42,
+      sample_row        = sample_row,
+      sample_sheet_path = cfg$paths$sample_sheet
     ),
     "08_visualize" = runtime_env$create_visualizations(
       gobj = gobj,
@@ -829,14 +847,16 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       sample_sheet_path = cfg$paths$sample_sheet
     ),
     "09_spatial" = runtime_env$build_spatial_network(
-      gobj = gobj,
-      sample_id = sample_id,
-      output_dir = output_dir,
-      celltype_col = cfg$interaction$annotation_column %||% NULL,
-      n_simulations = cfg$interaction$number_of_simulations %||% 250,
+      gobj                  = gobj,
+      sample_id             = sample_id,
+      output_dir            = output_dir,
+      celltype_col          = cfg$interaction$annotation_column %||% NULL,
+      n_simulations         = cfg$interaction$number_of_simulations %||% 250,
       max_delaunay_distance = as.numeric(
         cfg$parameters$spatial_network$max_delaunay_distance %||% 50
-      )
+      ),
+      sample_row            = sample_row,
+      sample_sheet_path     = cfg$paths$sample_sheet
     ),
     # FIX #2: run_cci_analysis() does NOT mutate the Giotto object.  All CCI
     # outputs (InSituCor modules, LIANA tables, NicheNet ligand activities,
@@ -875,7 +895,9 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
           misty = TRUE,
           nnsvg = TRUE
         )),
-        cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE
+        cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE,
+        sample_row                = sample_row,
+        sample_sheet_path         = cfg$paths$sample_sheet
       )
       gobj  # CCI is file-based; gobj passes through unchanged
     },
@@ -1252,6 +1274,25 @@ run_merged_pipeline <- function(runtime_env,
           smide_save_raw = spatial_de_cfg$smide_save_raw %||% TRUE,
           save_object = TRUE
         )
+      } else if (step_id == "13_pathway") {
+        pathway_cfg <- cfg$pathway %||% list()
+        if (!isTRUE(pathway_cfg$enabled)) {
+          message("  pathway.enabled is FALSE — skipping step 13 for merged run")
+        } else {
+          # Pass the sample metadata table so .pathway_ensure_metadata()
+          # can inject treatment/timepoint if the merged cell metadata
+          # lost them during joinGiottoObjects().
+          runtime_env$run_pathway_analysis(
+            gobj            = current_gobj,
+            sample_id       = merged_name,
+            cfg             = cfg,
+            output_dir      = output_dir,
+            sample_table    = samples,
+            celltype_column = pathway_cfg$celltype_column %||% NULL,
+            leiden_column   = pathway_cfg$leiden_column %||% "leiden_clust",
+            focus_celltype  = pathway_cfg$focus_celltype %||% "^B cell$"
+          )
+        }
       } else {
         stop("Unsupported merged step: ", step_id)
       }

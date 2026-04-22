@@ -26,8 +26,8 @@
 #'                            Defaults to the directory of the current script.
 #' @param inspect_snn         Run sNN inspection after network construction?
 #'                            (default: TRUE)
-#' @param n_cells_subgraph    Maximum cells to subsample for the subgraph plot
-#'                            inside inspect_nn_network() (default: 100000)
+#' @param n_cells_subgraph    Fixed cell count used for the subgraph plot inside
+#'                            inspect_nn_network() (default: 10000)
 #' @param leiden_n_iterations Number of Leiden iterations for the primary
 #'                            clustering run (default: 200)
 #' @param resolution_sweep    Optional numeric vector of extra Leiden
@@ -46,10 +46,12 @@ perform_clustering <- function(gobj,
                                python_path          = NULL,
                                scripts_dir          = NULL,
                                inspect_snn          = TRUE,
-                               n_cells_subgraph     = 100000,
+                               n_cells_subgraph     = 10000,
                                leiden_n_iterations  = 200,
                                resolution_sweep     = NULL,
-                               seed                 = 42) {
+                               seed                 = 42,
+                               sample_row           = NULL,
+                               sample_sheet_path    = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 05: Clustering\n")
@@ -290,58 +292,11 @@ perform_clustering <- function(gobj,
     cat("\n")
   }
   
-  # ── Clustering visualisations ────────────────────────────────────────────────
-  cat("Creating clustering plots...\n")
-  
-  # UMAP coloured by cluster
-  dimPlot2D(
-    gobject              = gobj,
-    dim_reduction_to_use = "umap",
-    cell_color           = "leiden_clust",
-    point_size           = 0.8,
-    show_legend          = TRUE,
-    save_plot            = TRUE,
-    save_param           = list(
-      save_name   = paste0(sample_id, "_umap_clusters"),
-      save_dir    = results_folder,
-      base_width  = 11,
-      base_height = 8
-    )
-  )
-  
-  # t-SNE coloured by cluster
-  dimPlot2D(
-    gobject              = gobj,
-    dim_reduction_to_use = "tsne",
-    cell_color           = "leiden_clust",
-    point_size           = 0.8,
-    show_legend          = TRUE,
-    save_plot            = TRUE,
-    save_param           = list(
-      save_name   = paste0(sample_id, "_tsne_clusters"),
-      save_dir    = results_folder,
-      base_width  = 11,
-      base_height = 8
-    )
-  )
-  
-  # Spatial plot by cluster
-  spatPlot2D(
-    gobject    = gobj,
-    cell_color = "leiden_clust",
-    point_size = 0.5,
-    show_image = FALSE,
-    save_plot  = TRUE,
-    save_param = list(
-      save_name   = paste0(sample_id, "_spatial_clusters"),
-      save_dir    = results_folder,
-      base_width  = 14,
-      base_height = 10
-    )
-  )
-  
-  cat("✓ Plots saved\n\n")
-  
+  # The three non-custom Giotto-built-in dim_reduction and spatial plots
+  # (dimPlot2D / spatPlot2D) have been dropped. They duplicated the custom
+  # plots produced below by create_clustering_visualization() but at lower
+  # quality and with no centroid labels or polygon cell rendering.
+
   cluster_script_base <- if (is.null(scripts_dir)) getwd() else scripts_dir
   cluster_vis_candidates <- c(
     file.path(cluster_script_base, "Helper_Scripts", "Cluster_Visualisations.R"),
@@ -367,6 +322,81 @@ perform_clustering <- function(gobj,
       cat("⚠ Custom clustering visualizations failed:", conditionMessage(e), "\n\n")
     })
   }
+
+  # ── Spatial cluster plot (polygon rendering) ─────────────────────────────────
+  # Real cell polygons instead of geom_point. For composite samples, emit a
+  # per-sub-biopsy variant into subsamples/ so each biopsy can be inspected
+  # independently.
+  tryCatch({
+    cluster_levels_here <- sort(unique(as.character(pDataDT(gobj)$leiden_clust)))
+    clus_colour_map <- cluster_palette(cluster_levels_here)
+
+    .save_cluster_polygon <- function(gobject_local, out_dir, file_prefix, context = "sample") {
+      dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+      p <- plot_cells_polygon(
+        gobject        = gobject_local,
+        fill_column    = "leiden_clust",
+        fill_as_factor = TRUE,
+        context        = context,
+        polygon_alpha  = 0.85,
+        palette        = clus_colour_map,
+        save_plot      = FALSE,
+        return_plot    = TRUE,
+        show_plot      = FALSE
+      ) + labs(
+        title = sample_plot_title(file_prefix, "Leiden Clusters - Spatial (polygon)")
+      )
+      save_presentation_plot(
+        plot     = p,
+        filename = file.path(out_dir, paste0(file_prefix, "_custom_clusters_spatial_polygon.png")),
+        width    = 14, height = 10, dpi = 300, bg = "white"
+      )
+    }
+
+    .save_cluster_polygon(gobj, results_folder, sample_id, context = "sample")
+    cat("✓ Polygon spatial cluster plot saved\n")
+
+    sub_rows <- discover_composite_subsamples(sample_row, sample_sheet_path)
+    if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
+      meta_all <- as.data.frame(pDataDT(gobj))
+      if (!"fov" %in% names(meta_all)) {
+        cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+      } else {
+        sub_dir <- file.path(results_folder, "subsamples")
+        for (k in seq_len(nrow(sub_rows))) {
+          sub_r  <- sub_rows[k, , drop = FALSE]
+          sub_id <- as.character(sub_r$sample_id)
+          fmin   <- as.integer(sub_r$fov_min)
+          fmax   <- as.integer(sub_r$fov_max)
+          if (anyNA(c(fmin, fmax))) {
+            cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+            next
+          }
+          cell_ids <- meta_all$cell_ID[
+            !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
+          ]
+          if (length(cell_ids) == 0) {
+            cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax, ", skipped\n", sep = "")
+            next
+          }
+          sub_gobj <- tryCatch(
+            subsetGiotto(gobj, cell_ids = cell_ids),
+            error = function(e) {
+              cat("  ⚠ ", sub_id, ": subsetGiotto failed: ", conditionMessage(e), "\n", sep = "")
+              NULL
+            }
+          )
+          if (is.null(sub_gobj)) next
+          cat("  → ", sub_id, " (FOV ", fmin, "-", fmax, ", ",
+              length(cell_ids), " cells)\n", sep = "")
+          .save_cluster_polygon(sub_gobj, sub_dir, sub_id, context = "sample")
+        }
+      }
+    }
+  }, error = function(e) {
+    cat("⚠ Polygon cluster plot failed:", conditionMessage(e), "\n\n")
+  })
+  cat("\n")
   
   # ── Cluster statistics ───────────────────────────────────────────────────────
   cluster_stats <- pDataDT(gobj) %>%
@@ -398,7 +428,7 @@ perform_clustering <- function(gobj,
       ) +
       ggplot2::labs(
         title = sample_plot_title(sample_id, "Cells per Leiden cluster"),
-        x = "Cluster (ordered by size)", y = "Number of cells"
+        x = "Cluster", y = "Number of cells"
       ) +
       presentation_theme(base_size = 12)
     save_presentation_plot(
@@ -510,11 +540,27 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
     sample_id  <- args[1]
     input_path <- args[2]
     output_dir <- args[3]
-    
+
+    cli_sheet_path <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
+    cli_sample_row <- NULL
+    if (nzchar(cli_sheet_path) && file.exists(cli_sheet_path) &&
+        exists("safe_read_sheet", mode = "function")) {
+      sheet_df <- tryCatch(
+        as.data.frame(safe_read_sheet(cli_sheet_path), stringsAsFactors = FALSE),
+        error = function(e) NULL
+      )
+      if (!is.null(sheet_df) && "sample_id" %in% names(sheet_df)) {
+        hit <- sheet_df[as.character(sheet_df$sample_id) == sample_id, , drop = FALSE]
+        if (nrow(hit) >= 1) cli_sample_row <- hit[1, , drop = FALSE]
+      }
+    }
+
     gobj <- perform_clustering(
-      gobj       = input_path,
-      sample_id  = sample_id,
-      output_dir = output_dir
+      gobj              = input_path,
+      sample_id         = sample_id,
+      output_dir        = output_dir,
+      sample_row        = cli_sample_row,
+      sample_sheet_path = if (nzchar(cli_sheet_path)) cli_sheet_path else NULL
     )
     
     saveGiotto(gobj,

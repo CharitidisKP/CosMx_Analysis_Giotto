@@ -83,42 +83,14 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
     )
 }
 
-# Find the sub-biopsy split rows belonging to a composite sample.
-# Returns a data.frame (rows with sample_id, fov_min, fov_max, group_id,
-# patient_id, timepoint) or NULL if the current sample is not a composite
-# or the sheet is unavailable.
+# Composite sub-sample discovery — thin wrapper over the shared helper in
+# Helper_Scripts/Helper_Functions.R. Keeps the internal dot-prefixed name so
+# existing call sites in this file are unchanged.
 .discover_composite_subsamples <- function(sample_row, sample_sheet_path) {
-  if (is.null(sample_row) || is.null(sample_sheet_path)) return(NULL)
-  if (!file.exists(sample_sheet_path)) return(NULL)
-
-  role <- tryCatch(as.character(sample_row$split_role)[1],
-                   error = function(e) NA_character_)
-  if (is.null(role) || is.na(role) || !nzchar(role) || role != "composite") {
-    return(NULL)
+  if (exists("discover_composite_subsamples", mode = "function", inherits = TRUE)) {
+    return(discover_composite_subsamples(sample_row, sample_sheet_path))
   }
-
-  slide_num <- tryCatch(as.character(sample_row$slide_num)[1],
-                        error = function(e) NA_character_)
-
-  sheet <- tryCatch(safe_read_sheet(sample_sheet_path),
-                    error = function(e) NULL)
-  if (is.null(sheet)) return(NULL)
-  sheet <- as.data.frame(sheet, stringsAsFactors = FALSE)
-
-  matches_slide <- if (!is.na(slide_num) && "slide_num" %in% names(sheet)) {
-    as.character(sheet$slide_num) == slide_num
-  } else rep(TRUE, nrow(sheet))
-
-  keep <- matches_slide &
-    !is.na(sheet$split_role) &
-    as.character(sheet$split_role) == "split"
-
-  subs <- sheet[keep, , drop = FALSE]
-  if (nrow(subs) == 0) return(NULL)
-  # Require fov_min / fov_max to be set so we can actually subset.
-  subs <- subs[!is.na(subs$fov_min) & !is.na(subs$fov_max), , drop = FALSE]
-  if (nrow(subs) == 0) return(NULL)
-  subs
+  NULL
 }
 
 .muffle_known_giotto_plot_warnings <- function(expr) {
@@ -269,90 +241,13 @@ create_visualizations <- function(gobj,
     }
   }
   
-  # ============================================================================
-  # Section 1: Dimensionality Reduction Plots
-  # ============================================================================
-  
-  cat("Creating dimensionality reduction plots...\n")
-  dimred_folder <- file.path(results_folder, "01_DimReduction")
-  dir.create(dimred_folder, recursive = TRUE, showWarnings = FALSE)
-  
-  # UMAP - Clusters
-  tryCatch({
-    .muffle_known_giotto_plot_warnings(
-      dimPlot2D(
-        gobject = plot_gobj,
-        dim_reduction_to_use = "umap",
-        cell_color = cluster_column,
-        point_size = 0.8,
-        show_legend = TRUE,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_umap_clusters"),
-          save_dir = dimred_folder,
-          base_width = 12,
-          base_height = 9
-        )
-      )
-    )
-    cat("  ✓ UMAP clusters\n")
-  }, error = function(e) {
-    cat("  ⚠ UMAP clusters failed:", conditionMessage(e), "\n") 
-    }
-  )
-  
-  # UMAP - Cell types
-  for (ct_col in celltype_columns) {
-    tryCatch({
-      .muffle_known_giotto_plot_warnings(
-        dimPlot2D(
-          gobject = plot_gobj,
-          dim_reduction_to_use = "umap",
-          cell_color = ct_col,
-          point_size = 0.8,
-          show_legend = TRUE,
-          save_plot = TRUE,
-          save_param = list(
-            save_name = paste0(sample_id, "_umap_", ct_col),
-            save_dir = dimred_folder,
-            base_width = 12,
-            base_height = 9
-          )
-        )
-      )
-      cat("  ✓ UMAP", ct_col, "\n")
-    }, error = function(e) {
-      cat("  ⚠", ct_col, "warning", conditionMessage(e), "\n") 
-      }
-    )
-  }
-  
-  # t-SNE - Clusters
-  tryCatch({
-    .muffle_known_giotto_plot_warnings(
-      dimPlot2D(
-        gobject = plot_gobj,
-        dim_reduction_to_use = "tsne",
-        cell_color = cluster_column,
-        point_size = 0.8,
-        show_legend = TRUE,
-        save_plot = TRUE,
-        save_param = list(
-          save_name = paste0(sample_id, "_tsne_clusters"),
-          save_dir = dimred_folder,
-          base_width = 12,
-          base_height = 9
-        )
-      )
-    )
-    cat("  ✓ t-SNE clusters\n")
-  }, error = function(e) {
-    cat("  ⚠ t-SNE failed:", conditionMessage(e), "\n") 
-    }
-  )
-  
-  cat("✓ Dimensionality reduction plots complete\n\n")
-  
+  # Section 1 (Giotto dimPlot2D UMAP / t-SNE) removed: 05_Clustering.R and
+  # 07_Annotation.R already emit higher-quality custom UMAP / t-SNE plots
+  # (centroid-labelled, universal celltype palette, no Giotto-style banner).
+  # The downstream HTML report silently skips the missing 01_DimReduction
+  # folder, and the patchwork overview at the end of this function builds
+  # its own UMAP panel independently.
+
   # ============================================================================
   # Section 2+3: Polygon-based Spatial & Feature Plots
   # ============================================================================
@@ -489,14 +384,17 @@ create_visualizations <- function(gobj,
     invisible(NULL)
   }
 
-  # Defensive colour-map builder: prefer 07's .build_colour_map if present in
-  # the sourced env, else synthesise something usable locally.
+  # Defensive colour-map builder: prefer the universal celltype_palette()
+  # helper, fall back to 07's .build_colour_map, then a minimal HCL pool.
   if (!exists(".build_colour_map_safe", inherits = FALSE)) {
     .build_colour_map_safe <- function(vals) {
+      lev <- sort(unique(stats::na.omit(as.character(vals))))
+      if (exists("celltype_palette", mode = "function", inherits = TRUE)) {
+        return(celltype_palette(lev))
+      }
       if (exists(".build_colour_map", mode = "function", inherits = TRUE)) {
         return(.build_colour_map(vals))
       }
-      lev <- sort(unique(stats::na.omit(as.character(vals))))
       stats::setNames(
         grDevices::hcl.colors(max(length(lev), 1), palette = "Set3"),
         lev
@@ -574,49 +472,11 @@ create_visualizations <- function(gobj,
   summary_folder <- file.path(results_folder, "04_Summary")
   dir.create(summary_folder, recursive = TRUE, showWarnings = FALSE)
   
-  # Cell type proportions
-  for (ct_col in celltype_columns) {
-    tryCatch({
-      metadata <- metadata %>% as_tibble()
-      
-      type_counts <- metadata %>%
-        dplyr::group_by(!!rlang::sym(ct_col)) %>%
-        dplyr::summarise(n = dplyr::n(), .groups = "drop") %>%
-        dplyr::arrange(dplyr::desc(n))
-      
-      ct_display <- pretty_plot_label(gsub("celltype_", "", ct_col), width = 24)
-      type_counts$label <- factor(
-        pretty_plot_label(type_counts[[ct_col]], width = 24),
-        levels = pretty_plot_label(type_counts[[ct_col]], width = 24)
-      )
-      
-      p <- ggplot(type_counts, aes(x = reorder(label, n), y = n, fill = label)) +
-        geom_col() +
-        coord_flip() +
-        labs(
-          title = sample_plot_title(sample_id, paste(ct_display, "Cell Type Composition")),
-          subtitle = "Cell counts ranked from most abundant to least abundant annotation.",
-          x = "Cell Type",
-          y = "Number of Cells"
-        ) +
-        presentation_theme(base_size = 12) +
-        theme(legend.position = "none")
-      
-      save_presentation_plot(
-        plot = p,
-        filename = file.path(summary_folder, paste0(sample_id, "_proportions_", ct_col, ".png")),
-        width = 10,
-        height = max(6, nrow(type_counts) * 0.3),
-        dpi = 300
-      )
-      
-      cat("  ✓ Proportions", ct_col, "\n")
-    }, error = function(e) {
-      cat("  ⚠ Proportions", ct_col, "failed:", conditionMessage(e), "\n") 
-      }
-    )
-  }
-  
+  # Cell-type proportions block removed: 07_Annotation.R produces higher-
+  # quality proportion plots (per-profile, percentage labels, universal
+  # celltype palette) at output_dir/07_Annotation/<profile>/*_proportions_*.png.
+  # The cluster-composition plot below is kept - it's unique to Script 08.
+
   # Cluster composition by cell type
   if (length(celltype_columns) > 0) {
     for (ct_col in celltype_columns) {
@@ -694,11 +554,13 @@ create_visualizations <- function(gobj,
     
     html_content <- paste0(html_content, "</div>\n")
     
-    # Add sections with images
+    # Add sections with images. 01_DimReduction dropped because the Giotto
+    # built-in dim-reduction plots were removed in favour of 05 / 07's custom
+    # versions; 03_Features embeds the gene-expression polygon panels.
     sections <- list(
-      list(title = "Dimensionality Reduction", folder = "01_DimReduction"),
       list(title = "Spatial Visualization", folder = "02_Spatial"),
-      list(title = "Summary Statistics", folder = "04_Summary")
+      list(title = "Feature Plots",         folder = "03_Features"),
+      list(title = "Summary Statistics",    folder = "04_Summary")
     )
     
     for (section in sections) {

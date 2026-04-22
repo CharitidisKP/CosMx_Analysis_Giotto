@@ -205,8 +205,9 @@ create_clustering_plots <- function(umap_df,
       y = "UMAP Dimension 2"
     ) +
     presentation_theme(base_size = 12, legend_position = "right") +
-    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
-  
+    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    add_centroid_labels(umap_df, "cluster", x_col = "UMAP_1", y_col = "UMAP_2")
+
   cat("Creating tSNE plot...\n")
   custom_tsne <- ggplot(tsne_df, aes(x = tSNE_1, y = tSNE_2, color = cluster)) +
     geom_point(size = point_size_tsne, alpha = alpha, stroke = 0) +
@@ -220,36 +221,24 @@ create_clustering_plots <- function(umap_df,
       y = "t-SNE Dimension 2"
     ) +
     presentation_theme(base_size = 12, legend_position = "right") +
-    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
-  
-  cat("Creating spatial plot...\n")
-  custom_spatial <- ggplot(spatial_df, aes(x = sdimx, y = sdimy, color = cluster)) +
-    geom_point(size = point_size_spatial, alpha = alpha, stroke = 0) +
-    scale_color_manual(
-      values = clus_colors,
-      name = "Cluster"
-    ) +
-    labs(
-      title = paste0("Spatial Distribution", title_suffix),
-      x = "Spatial X (microns)",
-      y = "Spatial Y (microns)"
-    ) +
-    coord_fixed() +
-    presentation_theme(base_size = 12, legend_position = "right") +
-    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1)))
-  
-  cat("Creating combined plot...\n")
-  combined_plot <- (custom_umap + custom_tsne + custom_spatial) +
+    guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+    add_centroid_labels(tsne_df, "cluster", x_col = "tSNE_1", y_col = "tSNE_2")
+
+  # The custom spatial ggplot has been retired from this helper: per-pipeline
+  # rule, spatial cell plots must render actual cell polygons (not points).
+  # 05_Clustering.R invokes plot_cells_polygon() directly after the dim-reduction
+  # panels are produced. The combined figure therefore shows UMAP | t-SNE only.
+  cat("Creating combined plot (UMAP | t-SNE)...\n")
+  combined_plot <- (custom_umap + custom_tsne) +
     plot_layout(guides = "collect") +
     plot_annotation(
       title = paste0("Clustering Results", title_suffix),
       theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
     )
-  
+
   return(list(
-    custom_umap = custom_umap,
-    custom_tsne = custom_tsne,
-    custom_spatial = custom_spatial,
+    custom_umap   = custom_umap,
+    custom_tsne   = custom_tsne,
     combined_plot = combined_plot
   ))
 }
@@ -315,7 +304,7 @@ create_clustering_visualization <- function(gobject,
       dpi = 300,
       bg = "white"
     )
-    
+
     save_presentation_plot(
       plot = plots_list$custom_tsne,
       filename = file.path(save_dir, paste0(prefix, "_tsne.png")),
@@ -324,25 +313,19 @@ create_clustering_visualization <- function(gobject,
       dpi = 300,
       bg = "white"
     )
-    
-    save_presentation_plot(
-      plot = plots_list$custom_spatial,
-      filename = file.path(save_dir, paste0(prefix, "_spatial.png")),
-      width = 14,
-      height = 12,
-      dpi = 300,
-      bg = "white"
-    )
-    
+
+    # `_spatial.png` removed. The spatial panel is now a polygon plot emitted
+    # by 05_Clustering.R via plot_cells_polygon().
+
     save_presentation_plot(
       plot = plots_list$combined_plot,
       filename = file.path(save_dir, paste0(prefix, "_combined.png")),
-      width = 24,
+      width = 18,
       height = 8,
       dpi = 300,
       bg = "white"
     )
-    
+
     cat("\nPlots saved to:", save_dir, "\n")
   }
   

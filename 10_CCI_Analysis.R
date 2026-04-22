@@ -419,9 +419,11 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("s
 run_insitucor <- function(gobj,
                           sample_id,
                           output_dir,
-                          celltype_col = NULL,
-                          n_cores      = 4,
-                          expr_cache   = NULL) {
+                          celltype_col      = NULL,
+                          n_cores           = 4,
+                          expr_cache        = NULL,
+                          sample_row        = NULL,
+                          sample_sheet_path = NULL) {
   
   if (!requireNamespace("InSituCor", quietly = TRUE))
     stop("InSituCor not installed.\n",
@@ -546,13 +548,15 @@ run_insitucor <- function(gobj,
 
     # --- InSituCor visualisations --------------------------------------
     plot_insitucor_results(
-      cor_results = cor_results,
-      gobj        = gobj,
-      meta        = meta,
-      counts      = counts,
-      celltype_col = celltype_col,
-      out_dir     = out_dir,
-      sample_id   = sample_id
+      cor_results       = cor_results,
+      gobj              = gobj,
+      meta              = meta,
+      counts            = counts,
+      celltype_col      = celltype_col,
+      out_dir           = out_dir,
+      sample_id         = sample_id,
+      sample_row        = sample_row,
+      sample_sheet_path = sample_sheet_path
     )
 
     cat("\u2713 InSituCor complete. Results saved to:", out_dir, "\n")
@@ -587,7 +591,9 @@ plot_insitucor_results <- function(cor_results,
                                    celltype_col,
                                    out_dir,
                                    sample_id,
-                                   top_n_modules = 12) {
+                                   top_n_modules     = 12,
+                                   sample_row        = NULL,
+                                   sample_sheet_path = NULL) {
   modules_df <- tryCatch(tibble::as_tibble(cor_results$modules),
                          error = function(e) NULL)
   if (is.null(modules_df) || nrow(modules_df) == 0 ||
@@ -713,10 +719,19 @@ plot_insitucor_results <- function(cor_results,
                  all(top_modules$module %in% rownames(inv_mat))) {
         inv_mat <- t(inv_mat[top_modules$module, , drop = FALSE])
       }
-      # Drop all-zero celltype rows
-      row_max <- apply(inv_mat, 1, max, na.rm = TRUE)
-      inv_mat <- inv_mat[order(-row_max), , drop = FALSE]
-      inv_mat <- inv_mat[seq_len(min(nrow(inv_mat), 25)), , drop = FALSE]
+      # Order by max involvement, then take top 25 celltypes — but always
+      # preserve the B-cell row if it exists in the full matrix, even when
+      # its max involvement puts it outside the top 25 (otherwise B cells
+      # can silently drop out of the heatmap in samples where they are rare).
+      row_max  <- apply(inv_mat, 1, max, na.rm = TRUE)
+      inv_mat  <- inv_mat[order(-row_max), , drop = FALSE]
+      top_rows <- rownames(inv_mat)[seq_len(min(nrow(inv_mat), 25))]
+      # Match any row name that normalises to "B cell" (handles "B.cell",
+      # "B_cell", "B cell" variants across reference profiles).
+      .norm_nm <- function(x) trimws(tolower(gsub("[._]+", " ", x)))
+      bcell_row <- rownames(inv_mat)[.norm_nm(rownames(inv_mat)) == "b cell"]
+      keep_rows <- unique(c(top_rows, bcell_row))
+      inv_mat   <- inv_mat[keep_rows, , drop = FALSE]
 
       inv_long <- as.data.frame(inv_mat)
       inv_long$celltype <- rownames(inv_mat)
@@ -761,16 +776,19 @@ plot_insitucor_results <- function(cor_results,
         ) +
         presentation_theme(base_size = 11, legend_position = "right") +
         ggplot2::theme(
-          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
-          axis.text.y = ggplot2::element_text(size = 9)
+          axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y  = ggplot2::element_text(size = 9),
+          axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 12)),
+          axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 12)),
+          plot.margin  = ggplot2::margin(t = 10, r = 24, b = 24, l = 20)
         )
       save_presentation_plot(
         plot     = p2,
         filename = file.path(out_dir,
                              paste0(sample_id,
                                     "_insitucor_celltype_involvement.png")),
-        width    = max(10, ncol(inv_mat) * 0.55 + 4),
-        height   = max(8,  nrow(inv_mat) * 0.32 + 2),
+        width    = max(12, ncol(inv_mat) * 0.60 + 5),
+        height   = max(9,  nrow(inv_mat) * 0.34 + 3),
         dpi      = 150
       )
       cat("  \u2713 InSituCor celltype involvement plot saved\n")
@@ -890,6 +908,85 @@ plot_insitucor_results <- function(cor_results,
       }
       cat("  \u2713 InSituCor spatial module maps saved (", n_saved,
           " plots) \u2192 ", mod_spatial_dir, "\n", sep = "")
+
+      # Composite CART slides: emit per-sub-biopsy variants of the top
+      # modules into spatial_modules/subsamples/. Iterates the shared
+      # discover_composite_subsamples() helper; silently skips for
+      # non-composite samples.
+      sub_rows <- tryCatch(
+        discover_composite_subsamples(sample_row, sample_sheet_path),
+        error = function(e) NULL
+      )
+      if (!is.null(sub_rows) && nrow(sub_rows) > 0 && "fov" %in% names(meta)) {
+        sub_dir <- file.path(mod_spatial_dir, "subsamples")
+        dir.create(sub_dir, recursive = TRUE, showWarnings = FALSE)
+        cat("  Composite sample - rendering per-sub-biopsy spatial module variants\n")
+        # Cap to top 4 modules per sub-biopsy to keep the subsample output volume bounded.
+        sub_module_list <- head(module_list, min(length(module_list), 4))
+        for (k in seq_len(nrow(sub_rows))) {
+          sub_r  <- sub_rows[k, , drop = FALSE]
+          sub_id <- as.character(sub_r$sample_id)
+          fmin   <- as.integer(sub_r$fov_min)
+          fmax   <- as.integer(sub_r$fov_max)
+          if (anyNA(c(fmin, fmax))) next
+          sub_cells <- meta$cell_ID[
+            !is.na(meta$fov) & meta$fov >= fmin & meta$fov <= fmax
+          ]
+          if (length(sub_cells) == 0) next
+          sub_poly <- poly_df[poly_df$cell_ID %in% sub_cells, , drop = FALSE]
+          if (nrow(sub_poly) == 0) next
+          for (mod_id in sub_module_list) {
+            tryCatch({
+              genes_in_mod   <- modules_df$gene[modules_df$module == mod_id]
+              weights_in_mod <- modules_df$weight[modules_df$module == mod_id]
+              genes_in_mod   <- genes_in_mod[genes_in_mod %in% colnames(counts)]
+              if (length(genes_in_mod) == 0) return(invisible(NULL))
+              weights_in_mod <- weights_in_mod[match(genes_in_mod,
+                modules_df$gene[modules_df$module == mod_id])]
+              sub_counts  <- counts[sub_cells, , drop = FALSE]
+              sub_mat     <- sub_counts[, genes_in_mod, drop = FALSE]
+              cell_total  <- rowSums(sub_counts)
+              cell_total[cell_total == 0] <- 1
+              sub_norm    <- log1p(sub_mat / cell_total * 1e4)
+              mod_score_s <- as.numeric(sub_norm %*% weights_in_mod)
+              score_df_s  <- data.frame(cell_ID = rownames(sub_counts),
+                                        module_score = mod_score_s,
+                                        stringsAsFactors = FALSE)
+              plot_df_s   <- merge(sub_poly, score_df_s, by = "cell_ID", all.x = TRUE)
+              plot_df_s$module_score[is.na(plot_df_s$module_score)] <- 0
+              p_sub <- ggplot2::ggplot(plot_df_s,
+                       ggplot2::aes(x = x, y = y,
+                                    group = interaction(geom, part),
+                                    fill  = module_score)) +
+                ggplot2::geom_polygon(color = NA) +
+                ggplot2::scale_fill_viridis_c(option = "magma",
+                                              name = "Module\nscore") +
+                ggplot2::coord_equal() +
+                ggplot2::labs(
+                  title    = sample_plot_title(sub_id,
+                               paste0("InSituCor Module: ", mod_id)),
+                  subtitle = paste0(length(genes_in_mod),
+                                    " genes; weighted log1p aggregate expression")
+                ) +
+                presentation_theme(base_size = 11, legend_position = "right") +
+                ggplot2::theme(
+                  panel.background = ggplot2::element_rect(fill = "grey15")
+                )
+              fname_s <- paste0(sub_id, "_insitucor_spatial_",
+                                gsub("[^A-Za-z0-9]", "_", mod_id), ".png")
+              save_presentation_plot(
+                plot     = p_sub,
+                filename = file.path(sub_dir, fname_s),
+                width    = 12, height = 10, dpi = 180
+              )
+            }, error = function(e) {
+              cat("    \u26A0 sub-biopsy ", sub_id,
+                  ", module ", mod_id,
+                  " failed: ", conditionMessage(e), "\n", sep = "")
+            })
+          }
+        }
+      }
     }
   }, error = function(e) {
     cat("  \u26A0 InSituCor spatial module maps failed:",
@@ -904,22 +1001,36 @@ plot_insitucor_results <- function(cor_results,
       if (!requireNamespace("patchwork", quietly = TRUE)) {
         cat("  \u26A0 InSituCor combined spatial overlay skipped: 'patchwork' not installed.\n")
       } else {
+        # Patchwork layout — tighten title / subtitle spacing, constrain
+        # each panel to square aspect so composite slides (long, thin
+        # tissue) don't stretch the grid.
         ncol_panel <- if (length(spatial_plots) <= 4) 2L else min(3L, length(spatial_plots))
+        n_row_panel <- ceiling(length(spatial_plots) / ncol_panel)
         combined <- patchwork::wrap_plots(spatial_plots, ncol = ncol_panel) +
           patchwork::plot_annotation(
             title    = sample_plot_title(sample_id,
                          "InSituCor Modules - Combined Spatial Overlay"),
             subtitle = paste0(length(spatial_plots),
-                              " top modules; weighted log1p aggregate expression")
+                              " top modules; weighted log1p aggregate expression"),
+            theme    = ggplot2::theme(
+              plot.title    = ggplot2::element_text(face = "bold", size = 16,
+                                                    margin = ggplot2::margin(b = 8)),
+              plot.subtitle = ggplot2::element_text(size = 11,
+                                                    margin = ggplot2::margin(b = 14)),
+              plot.margin   = ggplot2::margin(t = 16, r = 20, b = 16, l = 20)
+            )
+          ) &
+          ggplot2::theme(
+            plot.margin = ggplot2::margin(t = 6, r = 8, b = 6, l = 8),
+            plot.title  = ggplot2::element_text(size = 12, margin = ggplot2::margin(b = 4))
           )
-        n_row_panel <- ceiling(length(spatial_plots) / ncol_panel)
         save_presentation_plot(
           plot     = combined,
           filename = file.path(out_dir,
                                paste0(sample_id,
                                       "_insitucor_spatial_modules_combined.png")),
-          width    = max(14, 6 * ncol_panel),
-          height   = max(10, 5 * n_row_panel),
+          width    = max(16, 6.5 * ncol_panel + 2),
+          height   = max(11, 5.5 * n_row_panel + 2),
           dpi      = 150
         )
         cat("  \u2713 InSituCor combined spatial modules overlay saved\n")
@@ -995,6 +1106,131 @@ plot_insitucor_results <- function(cor_results,
     }
   }, error = function(e) {
     cat("  \u26A0 InSituCor module correlation heatmap/CSV failed:",
+        conditionMessage(e), "\n")
+  })
+
+  # -- Plot 1b/6b: B-cell-only module size + gene weight panels ------------
+  # Ranks modules by B-cell involvement (from plot 2's involvement matrix)
+  # and re-uses the same rendering style as plots 1 and 6. Silent no-op when
+  # no B-cell row is present or the top B-cell involvement is zero.
+  tryCatch({
+    inv_all <- cor_results$celltypeinvolvement
+    if (!is.null(inv_all) && nrow(modules_df) > 0) {
+      inv_all_mat <- as.matrix(inv_all)
+      # Orient so modules are columns, celltypes are rows.
+      if (!is.null(colnames(inv_all_mat)) &&
+          any(modules_df$module %in% colnames(inv_all_mat))) {
+        # already module-cols; leave as is
+      } else if (!is.null(rownames(inv_all_mat)) &&
+                 any(modules_df$module %in% rownames(inv_all_mat))) {
+        inv_all_mat <- t(inv_all_mat)
+      }
+      .norm_nm2 <- function(x) trimws(tolower(gsub("[._]+", " ", x)))
+      bcell_row <- rownames(inv_all_mat)[.norm_nm2(rownames(inv_all_mat)) == "b cell"]
+      if (length(bcell_row) > 0) {
+        bcell_inv <- inv_all_mat[bcell_row[1], , drop = TRUE]
+        bcell_inv <- bcell_inv[!is.na(bcell_inv)]
+        bcell_inv <- sort(bcell_inv, decreasing = TRUE)
+        top_bc_modules <- head(names(bcell_inv[bcell_inv > 0]),
+                               min(top_n_modules, 8))
+        if (length(top_bc_modules) > 0) {
+          bc_stats <- module_stats[match(top_bc_modules, module_stats$module), ]
+          # (i) B-cell module sizes — same style as Plot 1 ---------------
+          tryCatch({
+            p1b <- ggplot2::ggplot(
+              bc_stats,
+              ggplot2::aes(x = stats::reorder(module, n_genes),
+                           y = n_genes, fill = mean_weight)
+            ) +
+              ggplot2::geom_col(color = "grey30", linewidth = 0.2) +
+              ggplot2::geom_text(
+                ggplot2::aes(label = top_genes),
+                hjust = -0.05, size = 3.2, color = "grey25"
+              ) +
+              ggplot2::coord_flip(clip = "off") +
+              ggplot2::scale_fill_viridis_c(option = "C", name = "Mean weight") +
+              ggplot2::scale_y_continuous(
+                expand = ggplot2::expansion(mult = c(0, 0.4))
+              ) +
+              ggplot2::labs(
+                title    = sample_plot_title(sample_id,
+                             "InSituCor Modules (B-cell-ranked)"),
+                subtitle = paste0("Top ", nrow(bc_stats),
+                                  " modules by B-cell involvement"),
+                x = NULL, y = "Number of genes"
+              ) +
+              presentation_theme(base_size = 12)
+            save_presentation_plot(
+              plot     = p1b,
+              filename = file.path(out_dir,
+                                   paste0(sample_id, "_insitucor_bcell_module_sizes.png")),
+              width = 12,
+              height = max(6, 0.5 * nrow(bc_stats) + 2),
+              dpi = 150
+            )
+            cat("  \u2713 InSituCor B-cell module sizes plot saved\n")
+          }, error = function(e) {
+            cat("  \u26A0 B-cell module sizes failed:",
+                conditionMessage(e), "\n")
+          })
+
+          # (ii) B-cell gene-weight panel — same style as Plot 6 ---------
+          tryCatch({
+            gw_b <- modules_df[modules_df$module %in% top_bc_modules, , drop = FALSE]
+            gw_b <- as.data.frame(gw_b, stringsAsFactors = FALSE)
+            gw_b$module <- factor(gw_b$module, levels = top_bc_modules)
+            gw_b <- gw_b[order(gw_b$module, -gw_b$weight), ]
+            gw_b$gene_ord <- factor(
+              paste(gw_b$module, gw_b$gene, sep = "__"),
+              levels = unique(paste(gw_b$module, gw_b$gene, sep = "__"))
+            )
+            n_mod_b   <- length(levels(gw_b$module))
+            ncol_fb   <- min(3L, n_mod_b)
+            p_gwb <- ggplot2::ggplot(
+              gw_b,
+              ggplot2::aes(x = gene_ord, y = weight, fill = weight)
+            ) +
+              ggplot2::geom_col(color = "grey30", linewidth = 0.15) +
+              ggplot2::scale_x_discrete(labels = function(x) sub(".*__", "", x)) +
+              ggplot2::scale_fill_viridis_c(option = "C", name = "Weight") +
+              ggplot2::facet_wrap(~ module, scales = "free", ncol = ncol_fb) +
+              ggplot2::coord_flip() +
+              ggplot2::labs(
+                title    = sample_plot_title(sample_id,
+                             "InSituCor Gene Weights (B-cell-ranked)"),
+                subtitle = paste0("All genes in the top ", n_mod_b,
+                                  " B-cell-involved modules"),
+                x = NULL, y = "Weight"
+              ) +
+              presentation_theme(base_size = 10) +
+              ggplot2::theme(
+                axis.text.y = ggplot2::element_text(size = 7),
+                strip.text  = ggplot2::element_text(face = "bold", size = 9),
+                panel.spacing = grid::unit(0.6, "lines")
+              )
+            n_row_fb <- ceiling(n_mod_b / ncol_fb)
+            save_presentation_plot(
+              plot     = p_gwb,
+              filename = file.path(out_dir,
+                                   paste0(sample_id, "_insitucor_bcell_gene_weights_panel.png")),
+              width = max(12, 4.2 * ncol_fb),
+              height = max(8, 3.0 * n_row_fb),
+              dpi = 150
+            )
+            cat("  \u2713 InSituCor B-cell gene-weight panel saved\n")
+          }, error = function(e) {
+            cat("  \u26A0 B-cell gene-weight panel failed:",
+                conditionMessage(e), "\n")
+          })
+        } else {
+          cat("  \u2139 No modules with positive B-cell involvement; skipping B-cell panels\n")
+        }
+      } else {
+        cat("  \u2139 No B-cell row in celltype involvement; skipping B-cell panels\n")
+      }
+    }
+  }, error = function(e) {
+    cat("  \u26A0 InSituCor B-cell module/gene panels failed:",
         conditionMessage(e), "\n")
   })
 
@@ -1238,8 +1474,10 @@ plot_liana_extended <- function(liana_agg,
                                 out_dir,
                                 sample_id,
                                 celltype_col,
-                                top_n        = 20,
-                                focus_celltype = NULL) {
+                                top_n             = 20,
+                                focus_celltype    = NULL,
+                                sample_row        = NULL,
+                                sample_sheet_path = NULL) {
 
   if (is.null(liana_agg) || nrow(liana_agg) == 0) return(invisible(NULL))
 
@@ -1294,18 +1532,21 @@ plot_liana_extended <- function(liana_agg,
     p1_w      <- max(14, ceiling(n_rows * 0.32) + 6)
     p1_h      <- max(8,  ceiling(n_rows * 0.28))
 
+    # Uniform divider thickness: map the outline colour via aes so focus
+    # rows stand out by colour (black vs grey) but every bar has the same
+    # linewidth — the old two-layer overlay gave focus bars a visibly
+    # thicker outline, which TASKS.md flagged as inconsistent.
     p1 <- ggplot2::ggplot(top_lr,
              ggplot2::aes(
-               x    = reorder(interaction_label, neg_log10_rank),
-               y    = neg_log10_rank,
-               fill = source
+               x     = reorder(interaction_label, neg_log10_rank),
+               y     = neg_log10_rank,
+               fill  = source,
+               color = is_focus
              )) +
-      # All bars get a thin coherent outline
-      ggplot2::geom_col(color = "grey40", linewidth = 0.15) +
-      # Focus cell type rows get a slightly stronger black outline
-      ggplot2::geom_col(
-        data   = top_lr[top_lr$is_focus, ],
-        color  = "black", linewidth = 0.35, fill = NA
+      ggplot2::geom_col(linewidth = 0.25) +
+      ggplot2::scale_color_manual(
+        values = c(`FALSE` = "grey40", `TRUE` = "black"),
+        guide  = "none"
       ) +
       ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
@@ -1968,16 +2209,28 @@ plot_liana_extended <- function(liana_agg,
 
     # Renders one ligand/receptor pair to the given directory. Reusable
     # closure so the default (top-10) and B-cell-all loops share logic.
-    render_lr_pair <- function(pair, out_path) {
+    render_lr_pair <- function(pair, out_path,
+                               cell_ids_subset = NULL,
+                               title_sample_id = NULL) {
       ligand_gene   <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
       receptor_gene <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
       sender_ct     <- as.character(pair$source)
       receiver_ct   <- as.character(pair$target)
 
-      sender_ids   <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
-                                     meta[[celltype_col]] == sender_ct]
-      receiver_ids <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
-                                     meta[[celltype_col]] == receiver_ct]
+      # Composite sub-biopsy support: when cell_ids_subset is supplied,
+      # restrict sender / receiver / background layers to those cells.
+      if (!is.null(cell_ids_subset) && length(cell_ids_subset) > 0) {
+        subset_meta <- meta[meta$cell_ID %in% cell_ids_subset, , drop = FALSE]
+        sender_ids   <- subset_meta$cell_ID[!is.na(subset_meta[[celltype_col]]) &
+                                              subset_meta[[celltype_col]] == sender_ct]
+        receiver_ids <- subset_meta$cell_ID[!is.na(subset_meta[[celltype_col]]) &
+                                              subset_meta[[celltype_col]] == receiver_ct]
+      } else {
+        sender_ids   <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                       meta[[celltype_col]] == sender_ct]
+        receiver_ids <- meta$cell_ID[!is.na(meta[[celltype_col]]) &
+                                       meta[[celltype_col]] == receiver_ct]
+      }
       lig_df <- extract_expr_vec(ligand_gene,   sender_ids)
       rec_df <- extract_expr_vec(receptor_gene, receiver_ids)
       if (is.null(lig_df) && is.null(rec_df)) return(FALSE)
@@ -1992,15 +2245,23 @@ plot_liana_extended <- function(liana_agg,
       ))
       panel_expr <- do.call(rbind, panels)
 
+      # When subsetting, restrict background polygons + centroid frame too.
+      .poly_df_use <- if (!is.null(cell_ids_subset)) {
+        poly_df[poly_df$cell_ID %in% cell_ids_subset, , drop = FALSE]
+      } else poly_df
+      .spat_use <- if (!is.null(cell_ids_subset) && !is.null(spat)) {
+        spat[spat$cell_ID %in% cell_ids_subset, , drop = FALSE]
+      } else spat
+
       if (use_polygons) {
         # Every polygon vertex gets the matching cell's expression so
         # geom_polygon fills by expression. Cells outside the current
         # panel's sender/receiver get fill = NA (drawn light grey).
-        bg_df <- poly_df  # all cell outlines
+        bg_df <- .poly_df_use  # all cell outlines (possibly subset)
         panel_df <- do.call(rbind, lapply(unique(panel_expr$panel),
           function(pnl) {
             sub <- panel_expr[panel_expr$panel == pnl, ]
-            m   <- merge(poly_df, sub[, c("cell_ID", "expression")],
+            m   <- merge(.poly_df_use, sub[, c("cell_ID", "expression")],
                          by = "cell_ID", all.x = FALSE)
             m$panel <- pnl
             m
@@ -2030,10 +2291,10 @@ plot_liana_extended <- function(liana_agg,
           ggplot2::coord_equal()
       } else {
         panel_df <- merge(panel_expr,
-                          spat[, c("cell_ID", "sdimx", "sdimy")],
+                          .spat_use[, c("cell_ID", "sdimx", "sdimy")],
                           by = "cell_ID")
         p5 <- ggplot2::ggplot() +
-          ggplot2::geom_point(data = spat,
+          ggplot2::geom_point(data = .spat_use,
             ggplot2::aes(x = sdimx, y = sdimy),
             color = "grey80", size = 0.15, alpha = 0.35) +
           ggplot2::geom_point(data = panel_df,
@@ -2044,9 +2305,10 @@ plot_liana_extended <- function(liana_agg,
           ggplot2::coord_equal()
       }
 
+      .title_id <- if (!is.null(title_sample_id) && nzchar(title_sample_id)) title_sample_id else sample_id
       p5 <- p5 +
         ggplot2::labs(
-          title    = sample_plot_title(sample_id,
+          title    = sample_plot_title(.title_id,
                        paste0("Spatial Expression: ",
                               ligand_gene, " \u2192 ", receptor_gene)),
           subtitle = paste0(sender_ct, " (ligand) \u2192 ",
@@ -2102,6 +2364,55 @@ plot_liana_extended <- function(liana_agg,
     cat("\u2713 LIANA spatial LR maps saved (", n_saved, "plots) \u2192",
         sp_lr_dir, "\n")
 
+    # Composite CART slides: split the main spatial_lr panels per sub-
+    # biopsy into spatial_lr/subsamples/{sub_id}/. Per-FOV variants are
+    # intentionally NOT emitted here (would produce hundreds of files
+    # per sample); the per-FOV asks in TASKS.md item (spatial_lr) remain
+    # a deferred enhancement pending user confirmation.
+    sub_rows_liana <- tryCatch(
+      discover_composite_subsamples(sample_row, sample_sheet_path),
+      error = function(e) NULL
+    )
+    if (!is.null(sub_rows_liana) && nrow(sub_rows_liana) > 0 &&
+        "fov" %in% names(meta)) {
+      sub_root <- file.path(sp_lr_dir, "subsamples")
+      dir.create(sub_root, recursive = TRUE, showWarnings = FALSE)
+      # Cap to top 5 pairs per sub-biopsy to keep file counts bounded.
+      sub_pairs <- head(pairs_to_plot, min(nrow(pairs_to_plot), 5))
+      for (k in seq_len(nrow(sub_rows_liana))) {
+        sub_r  <- sub_rows_liana[k, , drop = FALSE]
+        sub_id <- as.character(sub_r$sample_id)
+        fmin   <- as.integer(sub_r$fov_min)
+        fmax   <- as.integer(sub_r$fov_max)
+        if (anyNA(c(fmin, fmax))) next
+        sub_cells <- meta$cell_ID[
+          !is.na(meta$fov) & meta$fov >= fmin & meta$fov <= fmax
+        ]
+        if (length(sub_cells) == 0) next
+        sub_dir_k <- file.path(sub_root, sub_id)
+        dir.create(sub_dir_k, recursive = TRUE, showWarnings = FALSE)
+        for (i in seq_len(nrow(sub_pairs))) {
+          pair <- sub_pairs[i, ]
+          tryCatch({
+            lig_g <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
+            rec_g <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
+            fn <- paste0(sub_id, "_spatial_lr_",
+                         sprintf("%02d", i), "_",
+                         gsub("[^A-Za-z0-9]", "_", lig_g), "_",
+                         gsub("[^A-Za-z0-9]", "_", rec_g), ".png")
+            render_lr_pair(pair, file.path(sub_dir_k, fn),
+                           cell_ids_subset = sub_cells,
+                           title_sample_id = sub_id)
+          }, error = function(e) {
+            cat("    \u26A0 ", sub_id, " pair ", i,
+                " failed: ", conditionMessage(e), "\n", sep = "")
+          })
+        }
+      }
+      cat("\u2713 LIANA spatial LR per-sub-biopsy variants saved \u2192 ",
+          sub_root, "\n", sep = "")
+    }
+
     # Additionally: EVERY B-cell L-R pair in its own B_cell_specific subfolder
     if (!is.null(focus_celltype) && length(focus_celltype) > 0) {
       bcell_all <- agg[agg$source %in% focus_celltype |
@@ -2135,6 +2446,52 @@ plot_liana_extended <- function(liana_agg,
         }
         cat("\u2713 LIANA B-cell spatial LR maps saved (",
             n_bcell_saved, "plots) \u2192", bcell_sp_dir, "\n")
+
+        # Composite sub-biopsy split for B-cell LR pairs.
+        sub_rows_bcell <- tryCatch(
+          discover_composite_subsamples(sample_row, sample_sheet_path),
+          error = function(e) NULL
+        )
+        if (!is.null(sub_rows_bcell) && nrow(sub_rows_bcell) > 0 &&
+            "fov" %in% names(meta)) {
+          sub_root_b <- file.path(bcell_sp_dir, "subsamples")
+          dir.create(sub_root_b, recursive = TRUE, showWarnings = FALSE)
+          sub_pairs_b <- head(bcell_all, min(nrow(bcell_all), 5))
+          for (k in seq_len(nrow(sub_rows_bcell))) {
+            sub_r  <- sub_rows_bcell[k, , drop = FALSE]
+            sub_id <- as.character(sub_r$sample_id)
+            fmin   <- as.integer(sub_r$fov_min)
+            fmax   <- as.integer(sub_r$fov_max)
+            if (anyNA(c(fmin, fmax))) next
+            sub_cells <- meta$cell_ID[
+              !is.na(meta$fov) & meta$fov >= fmin & meta$fov <= fmax
+            ]
+            if (length(sub_cells) == 0) next
+            sub_dir_k <- file.path(sub_root_b, sub_id)
+            dir.create(sub_dir_k, recursive = TRUE, showWarnings = FALSE)
+            for (i in seq_len(nrow(sub_pairs_b))) {
+              pair <- sub_pairs_b[i, ]
+              tryCatch({
+                lig_g <- strsplit(as.character(pair$ligand_complex),   "_")[[1]][1]
+                rec_g <- strsplit(as.character(pair$receptor_complex), "_")[[1]][1]
+                fn <- paste0(sub_id, "_spatial_lr_bcell_",
+                             sprintf("%02d", i), "_",
+                             gsub("[^A-Za-z0-9]", "_", as.character(pair$source)), "_to_",
+                             gsub("[^A-Za-z0-9]", "_", as.character(pair$target)), "_",
+                             gsub("[^A-Za-z0-9]", "_", lig_g), "_",
+                             gsub("[^A-Za-z0-9]", "_", rec_g), ".png")
+                render_lr_pair(pair, file.path(sub_dir_k, fn),
+                               cell_ids_subset = sub_cells,
+                               title_sample_id = sub_id)
+              }, error = function(e) {
+                cat("    \u26A0 ", sub_id, " b-cell pair ", i,
+                    " failed: ", conditionMessage(e), "\n", sep = "")
+              })
+            }
+          }
+          cat("\u2713 LIANA B-cell spatial LR per-sub-biopsy variants saved \u2192 ",
+              sub_root_b, "\n", sep = "")
+        }
       }
     }
   }, error = function(e) {
@@ -2254,7 +2611,7 @@ plot_liana_extended <- function(liana_agg,
       ) +
       ggplot2::labs(
         title    = sample_plot_title(sample_id,
-                     "CCI L-R Activity \u2014 UMAP"),
+                     "CCI L-R Activity - UMAP"),
         subtitle = paste0("Per-cell score = sum of ligand expression (when ",
                           "sender) + receptor expression (when receiver) ",
                           "across top ", top_n_lr, " L-R pairs"),
@@ -2313,7 +2670,7 @@ plot_liana_extended <- function(liana_agg,
         ) +
         ggplot2::labs(
           title    = sample_plot_title(sample_id,
-                       "B-cell CCI L-R Activity \u2014 UMAP"),
+                       "B-cell CCI L-R Activity - UMAP"),
           subtitle = paste0("Per-cell score across top ", nrow(bcell_lr),
                             " ", paste(focus_celltype, collapse = "/"),
                             " L-R pairs"),
@@ -2530,10 +2887,12 @@ plot_liana_extended <- function(liana_agg,
 run_liana <- function(gobj,
                       sample_id,
                       output_dir,
-                      celltype_col   = NULL,
-                      methods        = NULL,
-                      expr_cache     = NULL,
-                      focus_celltype = "B cell") {
+                      celltype_col      = NULL,
+                      methods           = NULL,
+                      expr_cache        = NULL,
+                      focus_celltype    = "B cell",
+                      sample_row        = NULL,
+                      sample_sheet_path = NULL) {
   
   if (!requireNamespace("liana", quietly = TRUE))
     stop("liana not installed.\n  Install: remotes::install_github('saezlab/liana')")
@@ -2636,14 +2995,16 @@ run_liana <- function(gobj,
     # them without re-running the full LIANA pipeline.
 
     plot_liana_extended(
-      liana_agg      = liana_agg,
-      meta           = meta,
-      gobj           = gobj,
-      expr_cache     = expr_cache,
-      out_dir        = out_dir,
-      sample_id      = sample_id,
-      celltype_col   = celltype_col,
-      focus_celltype = resolved_focus
+      liana_agg         = liana_agg,
+      meta              = meta,
+      gobj              = gobj,
+      expr_cache        = expr_cache,
+      out_dir           = out_dir,
+      sample_id         = sample_id,
+      celltype_col      = celltype_col,
+      focus_celltype    = resolved_focus,
+      sample_row        = sample_row,
+      sample_sheet_path = sample_sheet_path
     )
 
     cat("\u2713 LIANA complete. Results saved to:", out_dir, "\n")
@@ -3973,7 +4334,9 @@ run_cci_analysis <- function(gobj,
                                                     nichenet  = FALSE,
                                                     misty     = TRUE,
                                                     nnsvg     = FALSE),
-                             cleanup_between_sections = TRUE) {
+                             cleanup_between_sections = TRUE,
+                             sample_row         = NULL,
+                             sample_sheet_path  = NULL) {
   
   cat("\n========================================\n")
   cat("STEP 10: CCI Analysis (Layer 2 & 3)\n")
@@ -4022,7 +4385,9 @@ run_cci_analysis <- function(gobj,
     section_out <- .run_cci_section(
       "InSituCor",
       function() run_insitucor(gobj, sample_id, output_dir, celltype_col,
-                               expr_cache = .cci_expr_cache)
+                               expr_cache        = .cci_expr_cache,
+                               sample_row        = sample_row,
+                               sample_sheet_path = sample_sheet_path)
     )
     results$insitucor <- section_out$result
     section_status["insitucor"] <- section_out$status
@@ -4034,8 +4399,10 @@ run_cci_analysis <- function(gobj,
     section_out <- .run_cci_section(
       "LIANA",
       function() run_liana(gobj, sample_id, output_dir, celltype_col,
-                           expr_cache     = .cci_expr_cache,
-                           focus_celltype = focus_celltype)
+                           expr_cache        = .cci_expr_cache,
+                           focus_celltype    = focus_celltype,
+                           sample_row        = sample_row,
+                           sample_sheet_path = sample_sheet_path)
     )
     results$liana <- section_out$result
     section_status["liana"] <- section_out$status
