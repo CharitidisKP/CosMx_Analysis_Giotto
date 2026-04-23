@@ -4276,19 +4276,12 @@ run_nnsvg <- function(gobj,
   ridge_ok <- tryCatch(requireNamespace("ridge", quietly = TRUE), error = function(e) FALSE)
 
   if (!isTRUE(ridge_ok)) {
-    # `ridge` needs libgsl.so.27 resolved at process start; LD_LIBRARY_PATH
-    # set from inside R is too late for dlopen(). Run_Giotto_Pipeline.sh
-    # forwards LD_LIBRARY_PATH to Apptainer (see GSL_LIB_DIR block) so the
-    # conda env lib dir is on the search path from R startup.
     skip_msg <- paste0(
       "MISTy skipped: the 'ridge' package could not load (needs libgsl.so.27).\n",
-      "  One-time fix (no sudo required):\n",
-      "    conda activate giotto_Py_3_11\n",
-      "    conda install -c conda-forge gsl\n",
-      "  Re-run the pipeline \u2014 Run_Giotto_Pipeline.sh already forwards\n",
-      "  LD_LIBRARY_PATH to the Apptainer container, so MISTy will find\n",
-      "  libgsl automatically. For a non-default env, set\n",
-      "  LD_LIBRARY_PATH_OVERRIDE before launching the pipeline."
+      "  The container image must ship Ubuntu's libgsl27 package; conda-forge\n",
+      "  GSL uses a different SONAME (libgsl.so.25 / .so.28) and will not work.\n",
+      "  Fix: rebuild the .sif from an Apptainer .def that includes 'libgsl27'\n",
+      "  in the apt install list of the %post section."
     )
     return(list(ok = FALSE, reason = skip_msg))
   }

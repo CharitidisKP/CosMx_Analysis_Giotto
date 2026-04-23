@@ -97,11 +97,6 @@ echo "  Args:    $*"
 echo "================================================"
 echo ""
 
-# GSL for the `ridge` R package (MISTy): we install libgsl.so.27 into the
-# conda env via `conda install -c conda-forge gsl`, then surface it to R at
-# process start. LD_LIBRARY_PATH set from inside R is too late for dlopen().
-GSL_LIB_DIR="${LD_LIBRARY_PATH_OVERRIDE:-$(dirname "$(dirname "$COSMX_PYTHON_PATH")")/lib}"
-
 apptainer exec --cleanenv \
   --env USER="$USER_NAME" \
   --env LOGNAME="$LOG_NAME" \
@@ -109,7 +104,6 @@ apptainer exec --cleanenv \
   --env R_LIBS= \
   --env COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH" \
   --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
-  --env LD_LIBRARY_PATH="$GSL_LIB_DIR" \
   --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
   --env TMPDIR="$TMPDIR_HOST" \
   --bind ~/rs-nss/passwd:/etc/passwd:ro \
