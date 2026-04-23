@@ -307,7 +307,7 @@ save_giotto_checkpoint <- function(gobj,
   if (save_method == "none" && requireNamespace("qs2", quietly = TRUE)) {
     tryCatch({
       qs2::qs_save(gobj, qs_file, compress_level = 1)
-      save_method <- "qs"
+      save_method <- "qs2"
       error_message <- NULL
     }, error = function(e) {
       error_message <<- conditionMessage(e)
