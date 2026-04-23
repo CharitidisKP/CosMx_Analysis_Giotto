@@ -104,17 +104,17 @@ save_giotto_safe <- function(gobj, output_dir, sample_id) {
     cat("✓ Saved using saveGiotto\n")
     return(TRUE)
   }, error = function(e) {
-    cat("⚠ saveGiotto failed, trying qs package...\n")
-    
-    # Try qs package (faster and handles large objects better)
-    if (requireNamespace("qs", quietly = TRUE)) {
+    cat("⚠ saveGiotto failed, trying qs2 package...\n")
+
+    # Try qs2 package (faster and handles large objects better)
+    if (requireNamespace("qs2", quietly = TRUE)) {
       tryCatch({
         output_file <- file.path(output_dir, paste0(sample_id, "_cosmx_loaded.qs"))
-        qs::qsave(gobj, output_file, preset = "fast")
-        cat("✓ Saved using qs package:", output_file, "\n")
+        qs2::qs_save(gobj, output_file, compress_level = 1)
+        cat("✓ Saved using qs2 package:", output_file, "\n")
         return(TRUE)
       }, error = function(e2) {
-        cat("⚠ qs save also failed\n")
+        cat("⚠ qs2 save also failed\n")
       })
     }
     

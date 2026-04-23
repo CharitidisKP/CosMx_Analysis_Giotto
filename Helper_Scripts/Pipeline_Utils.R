@@ -304,9 +304,9 @@ save_giotto_checkpoint <- function(gobj,
     error_message <<- conditionMessage(e)
   })
   
-  if (save_method == "none" && requireNamespace("qs", quietly = TRUE)) {
+  if (save_method == "none" && requireNamespace("qs2", quietly = TRUE)) {
     tryCatch({
-      qs::qsave(gobj, qs_file, preset = "fast")
+      qs2::qs_save(gobj, qs_file, compress_level = 1)
       save_method <- "qs"
       error_message <- NULL
     }, error = function(e) {
@@ -329,7 +329,7 @@ save_giotto_checkpoint <- function(gobj,
       "save_giotto_checkpoint: all three serialisation backends failed for '",
       checkpoint_dir, "'. Last error: ",
       if (is.null(error_message)) "<none>" else error_message,
-      "\n  Tried: saveGiotto(), qs::qsave(), saveRDS().",
+      "\n  Tried: saveGiotto(), qs2::qs_save(), saveRDS().",
       "\n  Check disk space, write permissions, and the Giotto object integrity."
     )
   }
@@ -366,8 +366,8 @@ load_giotto_checkpoint <- function(checkpoint_dir) {
   if (dir.exists(giotto_dir)) {
     return(loadGiotto(giotto_dir))
   }
-  if (file.exists(qs_file) && requireNamespace("qs", quietly = TRUE)) {
-    return(qs::qread(qs_file))
+  if (file.exists(qs_file) && requireNamespace("qs2", quietly = TRUE)) {
+    return(qs2::qs_read(qs_file))
   }
   if (file.exists(rds_file)) {
     return(readRDS(rds_file))

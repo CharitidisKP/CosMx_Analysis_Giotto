@@ -566,8 +566,8 @@ load_saved_object <- function(path) {
   if (grepl("\\.rds$", path, ignore.case = TRUE)) {
     return(readRDS(path))
   }
-  if (grepl("\\.qs$", path, ignore.case = TRUE) && requireNamespace("qs", quietly = TRUE)) {
-    return(qs::qread(path))
+  if (grepl("\\.qs$", path, ignore.case = TRUE) && requireNamespace("qs2", quietly = TRUE)) {
+    return(qs2::qs_read(path))
   }
   stop("Unsupported saved object path: ", path)
 }
