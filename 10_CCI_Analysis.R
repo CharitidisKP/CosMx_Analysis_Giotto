@@ -3842,7 +3842,7 @@ run_nnsvg <- function(gobj,
          'Install: BiocManager::install("nnSVG")')
   
   cat("\n--- nnSVG: Spatially variable gene detection ---\n")
-  cat("  \u26A0 nnSVG is computationally heavy (~30-120 min per sample at 50k cells).\n")
+  cat("  \u26A0 nnSVG is computationally heavy (~15-60 min per sample at 20k cells).\n")
   
   out_dir <- file.path(output_dir, "10_CCI_Analysis", "svg")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -3923,11 +3923,83 @@ run_nnsvg <- function(gobj,
   
   if (is.null(spe)) return(invisible(NULL))
   
+  # ---- B-cell-focused pass (uses full spe, before tissue-wide downsampling) --
+  # Runs nnSVG on B cells only to answer: "what varies spatially WITHIN the
+  # B-cell compartment?". Complements the tissue-wide pass below, which asks
+  # "what is spatially structured across the whole tissue, and which of those
+  # top hits are B-cell enriched?". Output prefix: <sample>_bcell_nnSVG_*
+  bcell_nnsvg_df <- tryCatch({
+    celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+    bcell_ids_all <- .resolve_bcell_ids(gobj, celltype_col_local, focus_celltype)
+    bcell_cols    <- intersect(bcell_ids_all, colnames(spe))
+    if (length(bcell_cols) < 50) {
+      cat("\n--- nnSVG B-cell-focused pass skipped: only ",
+          length(bcell_cols), " B cells (need >= 50).\n", sep = "")
+      NULL
+    } else {
+      cat("\n--- nnSVG: B-cell-focused pass ---\n")
+      cat("  B cells:", length(bcell_cols), "\n")
+      spe_b <- spe[, bcell_cols]
+      # Re-filter: drop genes with too few counts among B cells specifically.
+      counts_b    <- SummarizedExperiment::assay(spe_b, "counts")
+      min_spots_b <- max(1L, ceiling(0.005 * ncol(spe_b)))
+      keep_b <- if (inherits(counts_b, "Matrix")) {
+        Matrix::rowSums(counts_b >= 3) >= min_spots_b
+      } else {
+        base::rowSums(counts_b >= 3) >= min_spots_b
+      }
+      spe_b <- spe_b[keep_b, ]
+      cat("  Genes after B-cell-level filtering:", nrow(spe_b), "\n\n")
+      if (nrow(spe_b) < 5) {
+        cat("\u26A0 B-cell pass skipped: < 5 genes survived B-cell-level filtering.\n")
+        NULL
+      } else {
+        res_b <- nnSVG::nnSVG(spe_b, assay_name = "logcounts",
+                              n_threads = n_cores)
+        df_b  <- as.data.frame(SummarizedExperiment::rowData(res_b))
+        df_b  <- df_b[order(df_b$rank), ]
+        write.csv(df_b,
+                  file.path(out_dir,
+                            paste0(sample_id, "_bcell_nnSVG_results.csv")))
+        # Rank plot
+        lr_col_b <- intersect(c("LR_stat", "stat"), names(df_b))[1]
+        if (!is.na(lr_col_b)) {
+          df_plot_b <- df_b
+          df_plot_b$.gene <- rownames(df_plot_b)
+          p_rank_b <- ggplot2::ggplot(
+            df_plot_b, ggplot2::aes(x = rank, y = .data[[lr_col_b]])
+          ) +
+            ggplot2::geom_point(size = 0.6, alpha = 0.5, colour = "grey40") +
+            ggplot2::geom_point(
+              data = utils::head(df_plot_b, 20L),
+              colour = "firebrick", size = 1.2
+            ) +
+            ggplot2::labs(
+              x = "nnSVG rank", y = lr_col_b,
+              title = sprintf("%s \u2014 B-cell-only nnSVG: rank vs %s",
+                              sample_id, lr_col_b)
+            ) +
+            ggplot2::theme_minimal(base_size = 11)
+          ggplot2::ggsave(
+            file.path(out_dir,
+                      paste0(sample_id, "_bcell_nnSVG_rank_plot.png")),
+            p_rank_b, width = 7, height = 5, dpi = 150
+          )
+        }
+        cat("\u2713 B-cell-focused nnSVG complete.\n\n")
+        df_b
+      }
+    }
+  }, error = function(e) {
+    cat("\u26A0 B-cell-focused nnSVG pass failed:", conditionMessage(e), "\n")
+    NULL
+  })
+  
   # FIX #7: Guard against running nnSVG on datasets too large for GP-based
   # SVG detection. nnSVG was designed for Visium-scale data (~5k spots); at
-  # >50k cells the nearest-neighbor GP approximation becomes prohibitively
-  # slow (hours to days).
-  MAX_CELLS_NNSVG <- 50000
+  # single-cell CosMx scale (>20k cells) the nearest-neighbor GP approximation
+  # becomes prohibitively slow (hours+).
+  MAX_CELLS_NNSVG <- 20000
   if (ncol(spe) > MAX_CELLS_NNSVG) {
     cat("\u26A0 nnSVG: Dataset has", ncol(spe), "cells, which exceeds the recommended",
         MAX_CELLS_NNSVG, "cell limit for GP-based SVG detection.\n")
@@ -4061,9 +4133,10 @@ run_nnsvg <- function(gobj,
     cat("  Top 10 SVGs:", paste(head(top_svgs, 10), collapse = ", "), "\n")
     cat("  Results saved to:", out_dir, "\n\n")
     
+    attr(result_df, "bcell_nnsvg") <- bcell_nnsvg_df
     invisible(result_df)
   } else {
-    invisible(NULL)
+    invisible(bcell_nnsvg_df)
   }
 }
 
