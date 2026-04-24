@@ -63,6 +63,22 @@ if [[ ! -f "$CONFIG" ]]; then
   exit 1
 fi
 
+# ---- Python interpreter sanity check ----------------------------------------
+# COSMX_PYTHON_PATH often gets overridden by a stale export in ~/.bashrc or
+# ~/.profile (most common: /usr/bin/python3 which lacks umap/igraph/leidenalg).
+# Fail loudly before the pipeline runs for an hour and then can't do UMAP.
+if [[ ! -x "$COSMX_PYTHON_PATH" ]]; then
+  echo "ERROR: COSMX_PYTHON_PATH does not point to an executable: $COSMX_PYTHON_PATH" >&2
+  echo "  Expected: conda env with umap, igraph, leidenalg (e.g. giotto_Py_3_11)." >&2
+  echo "  Fix: unset COSMX_PYTHON_PATH, or export the correct path before launch." >&2
+  exit 1
+fi
+if [[ "$COSMX_PYTHON_PATH" == "/usr/bin/python3" ]]; then
+  echo "WARNING: COSMX_PYTHON_PATH=/usr/bin/python3 — this is the system python," >&2
+  echo "  which usually lacks umap/igraph/leidenalg. Giotto dim-reduction and" >&2
+  echo "  clustering will fail. Check 'env | grep -i python' and your shell rc." >&2
+fi
+
 mkdir -p "$TMPDIR_HOST" "$LOG_DIR" "$R_LIBS_USER"
 
 # ---- Resolve current user (fall back to id -un inside containerless envs) ---
@@ -91,6 +107,7 @@ echo "  Config:  $CONFIG"
 echo "  Image:   $(basename "$SIF")"
 echo "  User:    $USER_NAME"
 echo "  R libs:  $R_LIBS_USER"
+echo "  Python:  $COSMX_PYTHON_PATH"
 echo "  TmpDir:  $TMPDIR_HOST"
 echo "  Log:     $LOG_FILE"
 echo "  Args:    $*"
