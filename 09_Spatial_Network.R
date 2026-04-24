@@ -153,8 +153,8 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
     presentation_theme(base_size = 12, legend_position = "right") +
     ggplot2::theme(
       legend.key.height = grid::unit(0.45, "cm"),
-      axis.title.x      = ggplot2::element_text(margin = ggplot2::margin(t = 10)),
-      axis.title.y      = ggplot2::element_text(margin = ggplot2::margin(r = 10)),
+      axis.title.x      = element_markdown_safe(margin = ggplot2::margin(t = 10)),
+      axis.title.y      = element_markdown_safe(margin = ggplot2::margin(r = 10)),
       plot.margin       = ggplot2::margin(t = 10, r = 20, b = 20, l = 20)
     )
 
@@ -222,8 +222,8 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
     ) +
     presentation_theme(base_size = 11, legend_position = "right") +
     ggplot2::theme(
-      axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 10)),
-      axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 10)),
+      axis.title.x = element_markdown_safe(margin = ggplot2::margin(t = 10)),
+      axis.title.y = element_markdown_safe(margin = ggplot2::margin(r = 10)),
       plot.margin  = ggplot2::margin(t = 10, r = 20, b = 20, l = 20),
       legend.key.height = grid::unit(0.45, "cm")
     )

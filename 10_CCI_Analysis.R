@@ -778,8 +778,8 @@ plot_insitucor_results <- function(cor_results,
         ggplot2::theme(
           axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
           axis.text.y  = ggplot2::element_text(size = 9),
-          axis.title.x = ggplot2::element_text(margin = ggplot2::margin(t = 12)),
-          axis.title.y = ggplot2::element_text(margin = ggplot2::margin(r = 12)),
+          axis.title.x = element_markdown_safe(margin = ggplot2::margin(t = 12)),
+          axis.title.y = element_markdown_safe(margin = ggplot2::margin(r = 12)),
           plot.margin  = ggplot2::margin(t = 10, r = 24, b = 24, l = 20)
         )
       save_presentation_plot(
@@ -1022,7 +1022,7 @@ plot_insitucor_results <- function(cor_results,
           ) &
           ggplot2::theme(
             plot.margin = ggplot2::margin(t = 6, r = 8, b = 6, l = 8),
-            plot.title  = ggplot2::element_text(size = 12, margin = ggplot2::margin(b = 4))
+            plot.title  = element_markdown_safe(size = 12, margin = ggplot2::margin(b = 4))
           )
         save_presentation_plot(
           plot     = combined,
@@ -1601,12 +1601,28 @@ plot_liana_extended <- function(liana_agg,
       stop("Could not identify LIANA plot columns for the selected methods.")
     }
 
-    n_targets <- length(target_groups %||% unique(agg$target))
+    # Pre-filter to requested source/target groups so liana_dotplot()'s
+    # internal ntop cut doesn't leave the facet variable empty (which
+    # aborts ggplot2's facet_wrap with "Faceting variables must have at
+    # least one value").
+    agg_sub <- liana_agg
+    if (!is.null(source_groups) && length(source_groups) > 0) {
+      agg_sub <- agg_sub[agg_sub$source %in% source_groups, , drop = FALSE]
+    }
+    if (!is.null(target_groups) && length(target_groups) > 0) {
+      agg_sub <- agg_sub[agg_sub$target %in% target_groups, , drop = FALSE]
+    }
+    if (nrow(agg_sub) == 0) {
+      cat("\u26A0 LIANA dotplot skipped: no rows after source/target filter.\n")
+      return(invisible(FALSE))
+    }
+
+    n_targets <- length(target_groups %||% unique(agg_sub$target))
     dp_width  <- max(22, n_targets * width_per_target + 10)
     dp_height <- max(16, 20 * 0.6 + 8)
 
     p <- liana::liana_dotplot(
-      liana_agg,
+      agg_sub,
       source_groups = source_groups,
       target_groups = target_groups,
       ntop          = 20,
