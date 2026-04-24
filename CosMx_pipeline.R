@@ -670,12 +670,20 @@ runtime_script_paths <- function() {
 
 ensure_runtime <- function(cfg) {
   runtime_env <- new.env(parent = globalenv())
-  
-  Sys.setenv(
+
+  # Only promote config values into the env when they're actually set.
+  # Empty cfg$paths$python_path (from YAML `python_path: null`) previously
+  # overwrote a correct wrapper-injected COSMX_PYTHON_PATH with "", which
+  # then caused 00_Setup.R to fall through to Sys.which("python3") =
+  # /usr/bin/python3 (Python 3.12, no umap/igraph/leidenalg).
+  env_updates <- list(
     COSMX_PROJECT_DIR = cfg$paths$project_dir,
-    COSMX_PYTHON_PATH = cfg$paths$python_path,
-    COSMX_HELPER_DIR = file.path(cfg$paths$scripts_dir, "Helper_Scripts")
+    COSMX_HELPER_DIR  = file.path(cfg$paths$scripts_dir, "Helper_Scripts")
   )
+  if (nzchar(cfg$paths$python_path %||% "")) {
+    env_updates$COSMX_PYTHON_PATH <- cfg$paths$python_path
+  }
+  do.call(Sys.setenv, env_updates)
   
   old_disable_cli <- getOption("cosmx.disable_cli")
   options(cosmx.disable_cli = TRUE)
