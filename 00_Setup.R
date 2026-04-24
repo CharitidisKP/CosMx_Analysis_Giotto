@@ -62,14 +62,26 @@ setup_environment <- function(verbose = TRUE) {
   # package calling reticulate::use_python / use_condaenv in its .onLoad
   # (Giotto, SpatialDecon, etc.) finds python already initialised and cannot
   # override it back to /usr/bin/python3.
+  if (verbose) {
+    cat("Early python pin:\n")
+    cat("  COSMX_PYTHON_PATH env:", Sys.getenv("COSMX_PYTHON_PATH", unset = "<unset>"), "\n")
+    cat("  RETICULATE_PYTHON env:", Sys.getenv("RETICULATE_PYTHON", unset = "<unset>"), "\n")
+    cat("  python_path chosen:   ", python_path, "\n")
+    cat("  python_path exists:   ", file.exists(python_path), "\n")
+  }
   if (nzchar(python_path) && file.exists(python_path) &&
       requireNamespace("reticulate", quietly = TRUE)) {
     tryCatch({
       reticulate::use_python(python_path, required = TRUE)
       reticulate::py_run_string("pass")
+      if (verbose) {
+        cat("  ✓ reticulate pinned to: ", reticulate::py_config()$python, "\n\n")
+      }
     }, error = function(e) {
-      if (verbose) cat("  ⚠ early reticulate pin failed:", conditionMessage(e), "\n")
+      if (verbose) cat("  ⚠ early reticulate pin failed:", conditionMessage(e), "\n\n")
     })
+  } else if (verbose) {
+    cat("  ⚠ skipping pin (path missing or reticulate unavailable)\n\n")
   }
 
   # Define package list in STRICT load order

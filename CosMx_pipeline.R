@@ -732,10 +732,16 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
               "(fov_min=", fov_min_val, ", fov_max=", fov_max_val, ")."
             )
           }
-          gobj <- get("subsetGiotto", envir = asNamespace("Giotto"))(
-            gobject  = gobj,
-            cell_ids = keep_ids
-          )
+          # Call subsetGiotto directly by name. Giotto uses match.call()[[1]]
+          # for dynamic dispatch — wrapping via get() makes the name resolve
+          # to "asNamespace(...)" and fails in sys.frame(-2). See cerebrum.
+          gobj <- if (requireNamespace("GiottoClass", quietly = TRUE) &&
+                      exists("subsetGiotto", envir = asNamespace("GiottoClass"),
+                             inherits = FALSE)) {
+            GiottoClass::subsetGiotto(gobject = gobj, cell_ids = keep_ids)
+          } else {
+            Giotto::subsetGiotto(gobject = gobj, cell_ids = keep_ids)
+          }
           message("  Retained ", length(keep_ids), " cells after FOV subsetting.")
         }
       }
