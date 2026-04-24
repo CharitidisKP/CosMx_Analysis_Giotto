@@ -36,6 +36,11 @@ setup_environment <- function(verbose = TRUE) {
   project_dir <- Sys.getenv("COSMX_PROJECT_DIR", unset = current_setup_dir())
   project_dir <- normalizePath(project_dir, winslash = "/", mustWork = FALSE)
   
+  # Capture raw env values BEFORE any overwriting, so diagnostics can tell
+  # whether the wrapper's --env / APPTAINERENV_ propagation actually worked.
+  raw_cosmx_env      <- Sys.getenv("COSMX_PYTHON_PATH", unset = "<unset>")
+  raw_reticulate_env <- Sys.getenv("RETICULATE_PYTHON", unset = "<unset>")
+
   python_candidates <- unique(c(
     getOption("cosmx.python_path", NULL),
     Sys.which("python3"),
@@ -48,7 +53,7 @@ setup_environment <- function(verbose = TRUE) {
       logical(1)
     )
   ]
-  
+
   python_path <- Sys.getenv("COSMX_PYTHON_PATH", unset = "")
   if (!nzchar(python_path)) {
     python_path <- if (length(python_candidates) > 0) python_candidates[[1]] else "python3"
@@ -64,10 +69,11 @@ setup_environment <- function(verbose = TRUE) {
   # override it back to /usr/bin/python3.
   if (verbose) {
     cat("Early python pin:\n")
-    cat("  COSMX_PYTHON_PATH env:", Sys.getenv("COSMX_PYTHON_PATH", unset = "<unset>"), "\n")
-    cat("  RETICULATE_PYTHON env:", Sys.getenv("RETICULATE_PYTHON", unset = "<unset>"), "\n")
-    cat("  python_path chosen:   ", python_path, "\n")
-    cat("  python_path exists:   ", file.exists(python_path), "\n")
+    cat("  COSMX_PYTHON_PATH (raw):", raw_cosmx_env, "\n")
+    cat("  RETICULATE_PYTHON (raw):", raw_reticulate_env, "\n")
+    cat("  Sys.which('python3'):   ", Sys.which("python3"), "\n")
+    cat("  python_path chosen:     ", python_path, "\n")
+    cat("  python_path exists:     ", file.exists(python_path), "\n")
   }
   if (nzchar(python_path) && file.exists(python_path) &&
       requireNamespace("reticulate", quietly = TRUE)) {

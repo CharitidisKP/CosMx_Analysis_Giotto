@@ -114,6 +114,19 @@ echo "  Args:    $*"
 echo "================================================"
 echo ""
 
+# Use APPTAINERENV_* prefixing in addition to --env. Some apptainer builds
+# drop --env values under --cleanenv; the APPTAINERENV_ prefix is honored
+# unconditionally by every apptainer/singularity version and survives
+# --cleanenv. Belt-and-braces.
+export APPTAINERENV_USER="$USER_NAME"
+export APPTAINERENV_LOGNAME="$LOG_NAME"
+export APPTAINERENV_R_LIBS_USER="$R_LIBS_USER"
+export APPTAINERENV_R_LIBS=""
+export APPTAINERENV_COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH"
+export APPTAINERENV_RETICULATE_PYTHON="$COSMX_PYTHON_PATH"
+export APPTAINERENV_VROOM_TEMP_PATH="$TMPDIR_HOST"
+export APPTAINERENV_TMPDIR="$TMPDIR_HOST"
+
 apptainer exec --cleanenv \
   --env USER="$USER_NAME" \
   --env LOGNAME="$LOG_NAME" \
