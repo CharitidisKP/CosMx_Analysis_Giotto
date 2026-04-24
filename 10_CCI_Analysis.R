@@ -3851,7 +3851,8 @@ run_nnsvg <- function(gobj,
                       n_cores    = 4,
                       expr_cache = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "^B cell$") {
+                      focus_celltype = "^B cell$",
+                      raster_resolution = 50) {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
     stop("nnSVG not installed.\n",
@@ -4011,26 +4012,78 @@ run_nnsvg <- function(gobj,
     NULL
   })
   
-  # FIX #7: Guard against running nnSVG on datasets too large for GP-based
-  # SVG detection. nnSVG was designed for Visium-scale data (~5k spots); at
-  # single-cell CosMx scale (>20k cells) the nearest-neighbor GP approximation
-  # becomes prohibitively slow (hours+).
+  # SEraster rasterization preprocessing. nnSVG's nearest-neighbor GP does
+  # not scale to im-SRT cell counts (CosMx slides routinely exceed 50k cells,
+  # and the paper's own guidance is Visium-scale ~5k spots). Pattanayak et
+  # al. 2023 (PMC10491191) show that aggregating cells into square pixels
+  # with SEraster before nnSVG is the recommended route for MERFISH/CosMx:
+  # it preserves every cell's signal by averaging into bins rather than
+  # discarding cells, and the pixel-level SpatialExperiment fits nnSVG's
+  # design scale. Falls back to random subsampling if SEraster is not
+  # installed.
   MAX_CELLS_NNSVG <- 20000
-  if (ncol(spe) > MAX_CELLS_NNSVG) {
-    cat("\u26A0 nnSVG: Dataset has", ncol(spe), "cells, which exceeds the recommended",
-        MAX_CELLS_NNSVG, "cell limit for GP-based SVG detection.\n")
-    cat("  Downsampling to", MAX_CELLS_NNSVG, "cells (random subsample).\n")
-    set.seed(42)
-    keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
-    spe <- spe[, keep_idx]
-    cat("  Cells after downsampling:", ncol(spe), "\n\n")
+  use_raster <- !is.null(raster_resolution) && is.numeric(raster_resolution) &&
+                raster_resolution > 0 &&
+                ncol(spe) > MAX_CELLS_NNSVG
+  nnsvg_assay <- "logcounts"
+  if (use_raster) {
+    if (!requireNamespace("SEraster", quietly = TRUE)) {
+      cat("\u26A0 nnSVG: dataset has", ncol(spe),
+          "cells but SEraster is not installed.\n",
+          "  Falling back to random subsample (",
+          MAX_CELLS_NNSVG, " cells).\n",
+          "  Install: Rscript Parameters/Install_CCI_dependencies.R seraster\n",
+          sep = "")
+      set.seed(42)
+      keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
+      spe <- spe[, keep_idx]
+      cat("  Cells after downsampling:", ncol(spe), "\n\n")
+    } else {
+      n_cells_in <- ncol(spe)
+      cat("  Rasterizing with SEraster (resolution = ",
+          raster_resolution,
+          " coord units, square pixels, fun = mean)...\n", sep = "")
+      spe_raster <- tryCatch(
+        SEraster::rasterizeGeneExpression(
+          spe,
+          assay_name = "logcounts",
+          resolution = raster_resolution,
+          fun        = "mean",
+          square     = TRUE
+        ),
+        error = function(e) {
+          cat("\u26A0 SEraster::rasterizeGeneExpression failed: ",
+              conditionMessage(e), "\n", sep = "")
+          NULL
+        }
+      )
+      if (is.null(spe_raster) || ncol(spe_raster) < 50) {
+        cat("\u26A0 Rasterization produced too few pixels (",
+            if (is.null(spe_raster)) 0 else ncol(spe_raster),
+            "); falling back to random subsample.\n", sep = "")
+        set.seed(42)
+        keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
+        spe <- spe[, keep_idx]
+      } else {
+        cat("  \u2713 Rasterized: ", n_cells_in, " cells \u2192 ",
+            ncol(spe_raster), " pixels (",
+            sprintf("%.1fx", n_cells_in / ncol(spe_raster)),
+            " reduction)\n", sep = "")
+        spe <- spe_raster
+        # SEraster emits the aggregated assay under the name "pixelval".
+        nnsvg_assay <- "pixelval"
+      }
+    }
   }
-  
+
   cat("  Genes after filtering:", nrow(spe), "\n")
-  cat("  Cells:", ncol(spe), "\n\n")
-  
+  cat("  Spots (",
+      if (nnsvg_assay == "pixelval") "pixels" else "cells",
+      "): ", ncol(spe), "\n\n", sep = "")
+
+  set.seed(42)
   nnsvg_res <- tryCatch(
-    nnSVG::nnSVG(spe, assay_name = "logcounts", n_threads = n_cores),
+    nnSVG::nnSVG(spe, assay_name = nnsvg_assay, n_threads = n_cores),
     error = function(e) {
       cat("\u26A0 nnSVG failed:", conditionMessage(e), "\n")
       NULL
@@ -4416,6 +4469,7 @@ run_cci_analysis <- function(gobj,
                                                     nichenet  = FALSE,
                                                     misty     = TRUE,
                                                     nnsvg     = FALSE),
+                             nnsvg_raster_resolution = 50,
                              cleanup_between_sections = TRUE,
                              sample_row         = NULL,
                              sample_sheet_path  = NULL) {
@@ -4656,9 +4710,10 @@ run_cci_analysis <- function(gobj,
     section_out <- .run_cci_section(
       "nnSVG",
       function() run_nnsvg(gobj, sample_id, output_dir,
-                           expr_cache     = .cci_expr_cache,
-                           celltype_col   = celltype_col,
-                           focus_celltype = focus_celltype)
+                           expr_cache        = .cci_expr_cache,
+                           celltype_col      = celltype_col,
+                           focus_celltype    = focus_celltype,
+                           raster_resolution = nnsvg_raster_resolution)
     )
     results$nnsvg <- section_out$result
     section_status["nnsvg"] <- section_out$status

@@ -909,6 +909,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
           misty = TRUE,
           nnsvg = TRUE
         )),
+        nnsvg_raster_resolution = cci_cfg$nnsvg_raster_resolution %||% 50,
         cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE,
         sample_row                = sample_row,
         sample_sheet_path         = cfg$paths$sample_sheet

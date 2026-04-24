@@ -61,6 +61,17 @@ cci_dependency_registry <- function() {
         BiocManager::install("nnSVG", ask = FALSE, update = FALSE)
       }
     ),
+    seraster = list(
+      pkg = "SEraster",
+      source = "github",
+      install = function() {
+        ensure_installer_package("remotes")
+        remotes::install_github(
+          "JEFworks-Lab/SEraster",
+          upgrade = "never"
+        )
+      }
+    ),
     spatialexperiment = list(
       pkg = "SpatialExperiment",
       source = "bioc",
