@@ -3939,7 +3939,17 @@ run_nnsvg <- function(gobj,
   })
   
   if (is.null(spe)) return(invisible(NULL))
-  
+
+  # Resolve celltype column once and attach to colData so SEraster::rasterizeCellType
+  # aggregates onto the same pixel grid as gene expression. Used by P14 / P15.
+  celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+  if (!is.null(celltype_col_local)) {
+    pdata_full <- as.data.frame(.giotto_pdata_dt(gobj))
+    rownames(pdata_full) <- pdata_full$cell_ID
+    ct_vec <- pdata_full[colnames(spe), celltype_col_local, drop = TRUE]
+    SummarizedExperiment::colData(spe)$celltype <- as.character(ct_vec)
+  }
+
   # ---- B-cell-focused pass (uses full spe, before tissue-wide downsampling) --
   # Runs nnSVG on B cells only to answer: "what varies spatially WITHIN the
   # B-cell compartment?". Complements the tissue-wide pass below, which asks
@@ -4026,6 +4036,11 @@ run_nnsvg <- function(gobj,
                 raster_resolution > 0 &&
                 ncol(spe) > MAX_CELLS_NNSVG
   nnsvg_assay <- "logcounts"
+  # Cell-level snapshot (used by rasterizeCellType on the same grid as the
+  # gene-expression raster) and slot for the celltype pixel counts that
+  # P14/P15 below consume.
+  spe_cells <- spe
+  ct_raster <- NULL
   if (use_raster) {
     if (!requireNamespace("SEraster", quietly = TRUE)) {
       cat("\u26A0 nnSVG: dataset has", ncol(spe),
@@ -4072,6 +4087,44 @@ run_nnsvg <- function(gobj,
         spe <- spe_raster
         # SEraster emits the aggregated assay under the name "pixelval".
         nnsvg_assay <- "pixelval"
+
+        # Rasterize cell-type counts onto the same pixel grid. Pixel IDs
+        # align with spe_raster because both rasterizations use the same
+        # input coordinates + resolution. Required for P14 / P15 overlays.
+        if (!is.null(celltype_col_local)) {
+          ct_raster <- tryCatch(
+            SEraster::rasterizeCellType(
+              spe_cells,
+              col_name   = "celltype",
+              resolution = raster_resolution,
+              square     = TRUE
+            ),
+            error = function(e) {
+              cat("\u26A0 SEraster::rasterizeCellType failed: ",
+                  conditionMessage(e), "\n", sep = "")
+              NULL
+            }
+          )
+          if (!is.null(ct_raster)) {
+            ct_counts_mat <- as.matrix(
+              SummarizedExperiment::assay(ct_raster, 1)
+            )
+            tryCatch(
+              write.csv(
+                ct_counts_mat,
+                file.path(out_dir,
+                  paste0(sample_id, "_celltype_pixel_counts.csv"))
+              ),
+              error = function(e) {
+                cat("\u26A0 celltype pixel counts CSV write failed: ",
+                    conditionMessage(e), "\n", sep = "")
+              }
+            )
+            cat("  \u2713 Celltype rasterized: ",
+                nrow(ct_counts_mat), " types \u00D7 ",
+                ncol(ct_counts_mat), " pixels\n", sep = "")
+          }
+        }
       }
     }
   }
@@ -4196,7 +4249,177 @@ run_nnsvg <- function(gobj,
     }, error = function(e) {
       cat("\u26A0 nnSVG B-cell polygon overlays failed:", conditionMessage(e), "\n")
     })
-    
+
+    # --- P14: pixel-level gene x celltype correlation heatmap ---
+    # Pearson correlation between each top-20 SVG gene's pixel-mean expression
+    # and each celltype's pixel count. High r means that gene's spatial
+    # pattern tracks where that celltype lives. Requires rasterization.
+    tryCatch({
+      if (!is.null(ct_raster) && exists("spe_raster", inherits = FALSE) &&
+          nnsvg_assay == "pixelval") {
+        top20_p14 <- utils::head(rownames(result_df), 20L)
+        expr_mat  <- SummarizedExperiment::assay(spe_raster, "pixelval")
+        ct_mat    <- as.matrix(SummarizedExperiment::assay(ct_raster, 1))
+        common_px <- intersect(colnames(expr_mat), colnames(ct_mat))
+        expr_sub  <- expr_mat[intersect(top20_p14, rownames(expr_mat)),
+                              common_px, drop = FALSE]
+        ct_sub    <- ct_mat[, common_px, drop = FALSE]
+        # Drop celltypes with zero variance (correlation undefined).
+        ct_var    <- apply(ct_sub, 1, stats::var, na.rm = TRUE)
+        ct_sub    <- ct_sub[is.finite(ct_var) & ct_var > 0, , drop = FALSE]
+
+        if (nrow(expr_sub) > 0 && nrow(ct_sub) > 0) {
+          cor_mat <- cor(t(as.matrix(expr_sub)), t(ct_sub),
+                         method = "pearson",
+                         use    = "pairwise.complete.obs")
+          write.csv(
+            cor_mat,
+            file.path(out_dir,
+              paste0(sample_id,
+                     "_nnSVG_top20_x_celltype_correlation.csv"))
+          )
+
+          cor_long <- data.frame(
+            gene     = rep(rownames(cor_mat), ncol(cor_mat)),
+            celltype = rep(colnames(cor_mat), each = nrow(cor_mat)),
+            r        = as.vector(cor_mat)
+          )
+          cor_long$gene     <- factor(cor_long$gene,
+                                      levels = rev(rownames(cor_mat)))
+          cor_long$celltype <- factor(cor_long$celltype,
+                                      levels = colnames(cor_mat))
+
+          p_cor <- ggplot2::ggplot(cor_long,
+                     ggplot2::aes(x = celltype, y = gene, fill = r)) +
+            ggplot2::geom_tile(colour = "grey92", linewidth = 0.2) +
+            ggplot2::scale_fill_gradient2(low = "#2166ac", mid = "white",
+                                          high = "#b2182b", midpoint = 0,
+                                          limits = c(-1, 1),
+                                          name = "Pearson r") +
+            ggplot2::labs(
+              title    = sprintf(
+                "%s \u2014 top-20 SVGs \u00D7 celltype pixel correlation",
+                sample_id),
+              subtitle = sprintf(
+                "Resolution: %s coord units; pixels: %d",
+                raster_resolution, ncol(expr_sub)),
+              x = NULL, y = NULL
+            ) +
+            presentation_theme(base_size = 11, legend_position = "right",
+                               x_angle = 45)
+          save_presentation_plot(
+            plot     = p_cor,
+            filename = file.path(out_dir,
+              paste0(sample_id,
+                     "_nnSVG_top20_x_celltype_correlation.png")),
+            width    = max(10, ncol(cor_mat) * 0.5 + 5),
+            height   = max(8,  nrow(cor_mat) * 0.34 + 3),
+            dpi      = 150
+          )
+          cat("  \u2713 P14 gene \u00D7 celltype correlation heatmap saved\n")
+        }
+      }
+    }, error = function(e) {
+      cat("\u26A0 nnSVG gene x celltype correlation failed: ",
+          conditionMessage(e), "\n", sep = "")
+    })
+
+    # --- P15: focus-celltype side-by-side pixel maps ---
+    # For each top-20 SVG gene, render two pixel maps: (a) gene pixel-mean
+    # expression; (b) focus-celltype pixel count, both on the same grid.
+    tryCatch({
+      if (!is.null(ct_raster) && exists("spe_raster", inherits = FALSE) &&
+          nnsvg_assay == "pixelval") {
+        ct_mat    <- as.matrix(SummarizedExperiment::assay(ct_raster, 1))
+        expr_mat  <- SummarizedExperiment::assay(spe_raster, "pixelval")
+        focus_rows <- grep(focus_celltype, rownames(ct_mat),
+                           value = TRUE, ignore.case = TRUE, perl = TRUE)
+        if (length(focus_rows) == 0) {
+          cat("  \u2139 P15 skipped: focus_celltype (", focus_celltype,
+              ") matched no rows in celltype raster.\n", sep = "")
+        } else {
+          focus_label <- paste(focus_rows, collapse = " / ")
+          focus_count <- colSums(ct_mat[focus_rows, , drop = FALSE])
+          coords_mat  <- as.data.frame(
+            SpatialExperiment::spatialCoords(spe_raster)
+          )
+          names(coords_mat)[1:2] <- c("px_x", "px_y")
+          coords_mat$pixel_id <- rownames(coords_mat)
+          if (is.null(coords_mat$pixel_id) || all(is.na(coords_mat$pixel_id))) {
+            coords_mat$pixel_id <- colnames(spe_raster)
+          }
+
+          top20_p15 <- intersect(utils::head(rownames(result_df), 20L),
+                                 rownames(expr_mat))
+          if (length(top20_p15) > 0) {
+            expr_long <- reshape2::melt(
+              expr_mat[top20_p15, , drop = FALSE],
+              varnames = c("gene", "pixel_id"),
+              value.name = "value"
+            )
+            expr_long$layer <- "Gene expression"
+            # Align focus count to pixel ids referenced in expr_long.
+            fc_aligned <- focus_count[as.character(expr_long$pixel_id)]
+            ct_long <- data.frame(
+              gene     = expr_long$gene,
+              pixel_id = expr_long$pixel_id,
+              value    = as.numeric(fc_aligned),
+              layer    = sprintf("%s count", focus_label)
+            )
+            pl_df <- rbind(
+              data.frame(gene = expr_long$gene,
+                         pixel_id = expr_long$pixel_id,
+                         value = expr_long$value,
+                         layer = expr_long$layer,
+                         stringsAsFactors = FALSE),
+              ct_long
+            )
+            pl_df <- merge(pl_df, coords_mat, by = "pixel_id", all.x = TRUE)
+            pl_df$gene  <- factor(pl_df$gene, levels = top20_p15)
+            pl_df$layer <- factor(pl_df$layer,
+                                  levels = c("Gene expression",
+                                             sprintf("%s count", focus_label)))
+
+            p_sbs <- ggplot2::ggplot(pl_df,
+                      ggplot2::aes(x = px_x, y = px_y, fill = value)) +
+              ggplot2::geom_tile() +
+              ggplot2::coord_fixed() +
+              ggplot2::facet_grid(gene ~ layer, scales = "free") +
+              ggplot2::scale_fill_viridis_c(option = "magma",
+                                            na.value = "grey92") +
+              ggplot2::labs(
+                title = sprintf(
+                  "%s \u2014 top-20 SVGs vs %s pixel counts",
+                  sample_id, focus_label),
+                subtitle = sprintf(
+                  "Pixel grid at resolution = %s coord units",
+                  raster_resolution),
+                x = NULL, y = NULL
+              ) +
+              presentation_theme(base_size = 10, legend_position = "right") +
+              ggplot2::theme(
+                axis.text = ggplot2::element_blank(),
+                axis.ticks = ggplot2::element_blank(),
+                panel.grid = ggplot2::element_blank()
+              )
+            save_presentation_plot(
+              plot     = p_sbs,
+              filename = file.path(out_dir,
+                paste0(sample_id,
+                       "_nnSVG_top20_focus_pixel_sidebyside.png")),
+              width    = 9,
+              height   = min(24, 1.0 * length(top20_p15) + 2),
+              dpi      = 120
+            )
+            cat("  \u2713 P15 focus-celltype side-by-side panel saved\n")
+          }
+        }
+      }
+    }, error = function(e) {
+      cat("\u26A0 nnSVG focus-celltype side-by-side failed: ",
+          conditionMessage(e), "\n", sep = "")
+    })
+
     top_svgs <- head(rownames(result_df), n_top_svgs)
     cat("\u2713 nnSVG complete.\n")
     cat("  Top 10 SVGs:", paste(head(top_svgs, 10), collapse = ", "), "\n")
