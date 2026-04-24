@@ -57,7 +57,21 @@ setup_environment <- function(verbose = TRUE) {
     COSMX_PYTHON_PATH = python_path,
     RETICULATE_PYTHON = python_path
   )
-  
+
+  # Pin reticulate to the chosen python BEFORE other packages load, so any
+  # package calling reticulate::use_python / use_condaenv in its .onLoad
+  # (Giotto, SpatialDecon, etc.) finds python already initialised and cannot
+  # override it back to /usr/bin/python3.
+  if (nzchar(python_path) && file.exists(python_path) &&
+      requireNamespace("reticulate", quietly = TRUE)) {
+    tryCatch({
+      reticulate::use_python(python_path, required = TRUE)
+      reticulate::py_run_string("pass")
+    }, error = function(e) {
+      if (verbose) cat("  ⚠ early reticulate pin failed:", conditionMessage(e), "\n")
+    })
+  }
+
   # Define package list in STRICT load order
   packages <- c(
     "Matrix", "data.table", "tibble", "dplyr", "tidyr", "readr",
