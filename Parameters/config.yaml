@@ -118,11 +118,13 @@ cci:
   cleanup_between_sections: true
   # nnSVG rasterization (SEraster). On imaging-based SRT (CosMx/MERFISH) the
   # per-cell SpatialExperiment is aggregated into square pixels at this side
-  # length (in coordinate units, typically µm) before nnSVG runs. Follows
-  # Pattanayak et al., Genome Biology 2023 (PMC10491191): 50 µm default
-  # reproduces the MERFISH/CosMx analysis in that paper. Set to null or 0 to
-  # disable rasterization and fall back to the legacy random-downsample path.
-  nnsvg_raster_resolution: 50
+  # length BEFORE nnSVG runs. Set to "auto" (recommended) to compute the side
+  # length from the SPE's coordinate extent so it scales correctly whether
+  # coords are µm, mm, or native imaging units (CosMx ships with ~0.12 µm/unit
+  # on this cluster, so a hard-coded value silently no-ops). Set to a numeric
+  # value to override; set to 0 to disable rasterization and use the legacy
+  # random-downsample path. Reference: Pattanayak et al. 2023 (PMC10491191).
+  nnsvg_raster_resolution: auto
 
 # ==============================================================================
 # Step 13 — Pathway enrichment + GSEA.

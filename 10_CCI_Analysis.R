@@ -3834,6 +3834,24 @@ run_misty <- function(gobj,
 # SECTION 4 — nnSVG: spatially variable gene detection
 # ==============================================================================
 
+# Pick a SEraster pixel side length that aggregates ~target cells per pixel.
+# Unit-agnostic: extent and resolution share whatever unit spatialCoords() uses,
+# so this works regardless of whether the export is in micrometers, mm, or
+# native imaging units (CosMx ships with ~0.12 um/unit on this cluster, which
+# silently no-ops a hard-coded resolution = 50).
+.autopick_raster_resolution <- function(coords,
+                                        target_cells_per_pixel = 30,
+                                        floor_min = 10) {
+  if (is.null(coords) || nrow(coords) < 100) return(NULL)
+  rng_x <- diff(range(coords[, 1], na.rm = TRUE))
+  rng_y <- diff(range(coords[, 2], na.rm = TRUE))
+  if (!is.finite(rng_x) || !is.finite(rng_y) || rng_x <= 0 || rng_y <= 0) {
+    return(NULL)
+  }
+  R <- sqrt(target_cells_per_pixel * rng_x * rng_y / nrow(coords))
+  max(R, floor_min)
+}
+
 #' Run nnSVG: spatially variable gene detection
 #'
 #' @param gobj          Annotated Giotto object
@@ -3852,7 +3870,7 @@ run_nnsvg <- function(gobj,
                       expr_cache = NULL,
                       celltype_col   = NULL,
                       focus_celltype = "^B cell$",
-                      raster_resolution = 50) {
+                      raster_resolution = "auto") {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
     stop("nnSVG not installed.\n",
@@ -4031,14 +4049,41 @@ run_nnsvg <- function(gobj,
   # discarding cells, and the pixel-level SpatialExperiment fits nnSVG's
   # design scale. Falls back to random subsampling if SEraster is not
   # installed.
-  MAX_CELLS_NNSVG <- 20000
-  use_raster <- !is.null(raster_resolution) && is.numeric(raster_resolution) &&
-                raster_resolution > 0 &&
+  MAX_CELLS_NNSVG        <- 20000
+  TARGET_CELLS_PER_PIXEL <- 30
+  MIN_REDUCTION_OK       <- 3   # sub-3x reduction = bins are sub-cellular
+
+  # Resolve "auto" / NULL / numeric into a single numeric R (or NULL = disabled).
+  # "auto" picks resolution from coord extent so it is robust to whatever unit
+  # the SPE coords use (CosMx exports often use ~0.12 um/unit, which silently
+  # no-ops a hard-coded resolution = 50).
+  resolved_resolution <- raster_resolution
+  if (is.character(resolved_resolution) &&
+      identical(tolower(resolved_resolution), "auto")) {
+    resolved_resolution <- .autopick_raster_resolution(
+      coords = SpatialExperiment::spatialCoords(spe),
+      target_cells_per_pixel = TARGET_CELLS_PER_PIXEL
+    )
+    if (!is.null(resolved_resolution)) {
+      cat("  Auto-picked SEraster resolution = ",
+          sprintf("%.2f", resolved_resolution),
+          " coord units (target ", TARGET_CELLS_PER_PIXEL,
+          " cells/pixel)\n", sep = "")
+    } else {
+      cat("  \u26A0 Auto-pick failed (fewer than 100 cells or zero coord ",
+          "extent); rasterization disabled.\n", sep = "")
+    }
+  }
+
+  use_raster <- !is.null(resolved_resolution) &&
+                is.numeric(resolved_resolution) &&
+                resolved_resolution > 0 &&
                 ncol(spe) > MAX_CELLS_NNSVG
   nnsvg_assay <- "logcounts"
   # Cell-level snapshot (used by rasterizeCellType on the same grid as the
-  # gene-expression raster) and slot for the celltype pixel counts that
-  # P14/P15 below consume.
+  # gene-expression raster, AND as the source for the random-subsample
+  # fallback below) and slot for the celltype pixel counts that P14/P15
+  # consume.
   spe_cells <- spe
   ct_raster <- NULL
   if (use_raster) {
@@ -4056,13 +4101,13 @@ run_nnsvg <- function(gobj,
     } else {
       n_cells_in <- ncol(spe)
       cat("  Rasterizing with SEraster (resolution = ",
-          raster_resolution,
+          sprintf("%.2f", resolved_resolution),
           " coord units, square pixels, fun = mean)...\n", sep = "")
       spe_raster <- tryCatch(
         SEraster::rasterizeGeneExpression(
           spe,
           assay_name = "logcounts",
-          resolution = raster_resolution,
+          resolution = resolved_resolution,
           fun        = "mean",
           square     = TRUE
         ),
@@ -4072,17 +4117,33 @@ run_nnsvg <- function(gobj,
           NULL
         }
       )
-      if (is.null(spe_raster) || ncol(spe_raster) < 50) {
-        cat("\u26A0 Rasterization produced too few pixels (",
+
+      reduction <- if (!is.null(spe_raster) && ncol(spe_raster) > 0) {
+        n_cells_in / ncol(spe_raster)
+      } else 0
+      acceptable <- !is.null(spe_raster) &&
+                    ncol(spe_raster) >= 50 &&
+                    reduction >= MIN_REDUCTION_OK
+
+      if (!acceptable) {
+        cat("\u26A0 Rasterization rejected: pixels = ",
             if (is.null(spe_raster)) 0 else ncol(spe_raster),
-            "); falling back to random subsample.\n", sep = "")
+            ", reduction = ", sprintf("%.2fx", reduction),
+            " (need pixels >= 50 AND reduction >= ", MIN_REDUCTION_OK,
+            "x).\n",
+            "  Bins are at sub-cellular scale for these coord units.\n",
+            "  Falling back to random subsample (", MAX_CELLS_NNSVG,
+            " cells).\n",
+            "  Override by setting cci.nnsvg_raster_resolution: ",
+            "<larger number> in config.yaml.\n", sep = "")
+        if (exists("spe_raster", inherits = FALSE)) rm(spe_raster)
         set.seed(42)
-        keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
-        spe <- spe[, keep_idx]
+        keep_idx <- sample(ncol(spe_cells), MAX_CELLS_NNSVG)
+        spe <- spe_cells[, keep_idx]
       } else {
         cat("  \u2713 Rasterized: ", n_cells_in, " cells \u2192 ",
             ncol(spe_raster), " pixels (",
-            sprintf("%.1fx", n_cells_in / ncol(spe_raster)),
+            sprintf("%.1fx", reduction),
             " reduction)\n", sep = "")
         spe <- spe_raster
         # SEraster emits the aggregated assay under the name "pixelval".
@@ -4096,7 +4157,7 @@ run_nnsvg <- function(gobj,
             SEraster::rasterizeCellType(
               spe_cells,
               col_name   = "celltype",
-              resolution = raster_resolution,
+              resolution = resolved_resolution,
               square     = TRUE
             ),
             error = function(e) {
@@ -4692,7 +4753,7 @@ run_cci_analysis <- function(gobj,
                                                     nichenet  = FALSE,
                                                     misty     = TRUE,
                                                     nnsvg     = FALSE),
-                             nnsvg_raster_resolution = 50,
+                             nnsvg_raster_resolution = "auto",
                              cleanup_between_sections = TRUE,
                              sample_row         = NULL,
                              sample_sheet_path  = NULL) {
