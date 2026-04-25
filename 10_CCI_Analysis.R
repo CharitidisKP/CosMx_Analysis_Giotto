@@ -4413,8 +4413,12 @@ run_nnsvg <- function(gobj,
           top20_p15 <- intersect(utils::head(rownames(result_df), 20L),
                                  rownames(expr_mat))
           if (length(top20_p15) > 0) {
+            # SEraster's pixelval assay is a dgCMatrix; reshape2::melt
+            # cannot coerce sparse matrices to data.frame, so densify the
+            # top-20 x n_pixel subset (small; ~100k cells at 437 pixels).
+            expr_mat_p15 <- as.matrix(expr_mat[top20_p15, , drop = FALSE])
             expr_long <- reshape2::melt(
-              expr_mat[top20_p15, , drop = FALSE],
+              expr_mat_p15,
               varnames = c("gene", "pixel_id"),
               value.name = "value"
             )
