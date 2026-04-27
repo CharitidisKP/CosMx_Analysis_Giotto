@@ -235,7 +235,6 @@ pathway:
   pdf_summary: true
 
 spatial_de:
-  sample_backend: "smiDE"
   annotation_column: "celltype_HCA_Kidney_supervised"
   # Leiden cluster column used as the alternative stratifier when
   # stratify_by includes "leiden". Falls back to "leiden_clust" if absent.
@@ -243,8 +242,8 @@ spatial_de:
   # Per-comparison + multi-stratifier extension. When non-empty, smiDE runs
   # once per (stratifier × comparison) — see run_smide_per_comparison_backend.
   # Each label maps to a column: celltype → annotation_column (above);
-  # leiden → leiden_column. Set to [] to fall back to the legacy single-call
-  # one_vs_rest backend (per-celltype only, no comparison subsetting).
+  # leiden → leiden_column. Set to [] to fall back to the single-call
+  # run_smide_merged_backend() one_vs_rest pass (per-celltype only).
   stratify_by: ["celltype", "leiden"]
   # Use the same comparisons that drive step 13 pathway DE (pathway.comparisons)
   # so the two steps stay aligned. Set to false + populate spatial_de.comparisons
@@ -272,9 +271,6 @@ spatial_de:
   min_samples_per_group: 2
   sample_replicate_column: "fov"
   sample_contrast: "one_vs_rest"
-  min_cells_per_replicate: 3
-  min_replicates_per_group: 2
-  n_spatial_patches: 8
   smide_family: "nbinom2"
   # Verify coordinate units. CosMx coordinates are typically in
   # microns (range ~10,000-50,000). If the coordinates are in microns,
@@ -304,6 +300,11 @@ spatial_de:
   smide_partner_top_n: 5
   smide_partner_padj_threshold: 0.05
   smide_include_self_partner: false
+  # WTX-guide-style continuous predictor: when "count" the partner-celltype
+  # path emits a continuous tally per partner instead of the categorical
+  # hi/lo split. Sample-scope only — merged scope keeps the niche-treatment
+  # categorical predictor regardless.
+  smide_predictor_mode: "group"
   smide_save_raw: true
 
 parameters:

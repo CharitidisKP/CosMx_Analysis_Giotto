@@ -2,32 +2,16 @@
 # ==============================================================================
 # 12_Spatial_Differential_Expression.R
 #
-# Spatially resolved differential expression for CosMx / Giotto objects.
+# Spatially resolved differential expression for CosMx / Giotto objects via
+# smiDE (sample and merged scopes). Aligned with the NanoString WTX-guide
+# recipe: per-gene RankNorm(otherct_expr) covariate + library-size offset
+# + per-cell-type total-count scalefactors.
 #
 # Supported scopes:
 # - sample: single-sample niche DE within one sample, comparing the same cell
-#   type across spatial niches using FOV-level pseudobulk replicates
+#   type across spatial niches.
 # - merged: cohort-level niche DE on merged objects, comparing treatments
-#   within the same cell type and niche across samples
-#
-# The preferred sample-mode backend is smiDE, which is designed for spatially
-# resolved DE with explicit attention to segmentation bias and spatial
-# correlation. edgeR pseudobulk remains available as a fallback backend and is
-# retained for merged multi-sample contrasts.
-#
-# AUDIT CHANGES (v2):
-# - FIX #12a: smide_annotation_subset default changed from NULL to B-cell
-#   subset in config; added runtime warning when NULL (all-vs-all).
-# - FIX #12b: get_counts_genes_by_cells() no longer densifies the full
-#   expression matrix. Dense conversion is deferred to after cell-type
-#   subsetting in run_smide_sample_backend(), saving ~10 GB per iteration.
-# - FIX #12c: smide_radius auto-validation added. If spatial coordinates
-#   are in microns (range > 100) and radius < 1, a warning is issued.
-# - FIX #12d: smide_overlap_threshold default changed from 1 to 0.7 in
-#   config to filter CosMx transcript diffusion artifacts.
-# - Added gc() calls after each cell-type smiDE iteration.
-# - Added early validation of smide_annotation_subset against actual labels.
-# - Added RAM estimate warning for large workloads.
+#   within the same cell type and niche across samples.
 # ==============================================================================
 
 current_script_dir <- function() {
@@ -61,6 +45,19 @@ if (!exists("%||%")) {
       return(y)
     }
     x
+  }
+}
+
+# Inverse-normal-transform helper used inside the smi_de() formula to
+# rank-normalise the per-gene neighbour-of-other-celltype covariate
+# (`otherct_expr`). Matches the WTX-guide recipe without an RNOmni dependency.
+# A constant input (e.g. all-zero neighbour expression for a sparsely-detected
+# gene) returns zeros instead of NaN so the per-gene loop can't crash.
+if (!exists("RankNorm")) {
+  RankNorm <- function(x) {
+    n <- length(x)
+    if (n == 0L || length(unique(x)) < 2L) return(rep(0, n))
+    stats::qnorm((rank(x, ties.method = "average") - 0.5) / n)
   }
 }
 
@@ -204,38 +201,6 @@ if (!exists("%||%")) {
   poly_coords
 }
 
-inspect_smide_namespace <- function(verbose = TRUE) {
-  if (!requireNamespace("smiDE", quietly = TRUE)) {
-    stop("The smiDE package is not installed in the current R library.")
-  }
-  
-  exports <- tryCatch(sort(getNamespaceExports("smiDE")), error = function(e) character())
-  extdata_dir <- system.file("extdata", package = "smiDE")
-  extdata_files <- if (nzchar(extdata_dir) && dir.exists(extdata_dir)) {
-    sort(list.files(extdata_dir))
-  } else {
-    character()
-  }
-  
-  info <- list(
-    version = as.character(utils::packageVersion("smiDE")),
-    exports = exports,
-    extdata_dir = extdata_dir,
-    extdata_files = extdata_files,
-    has_spatial_model = "spatial_model" %in% exports,
-    has_overlap_ratio_metric = "overlap_ratio_metric" %in% exports
-  )
-  
-  if (verbose) {
-    cat("\n=== smiDE namespace inspection ===\n")
-    cat("Version:", info$version, "\n")
-    cat("Exports:", if (length(exports) > 0) paste(exports, collapse = ", ") else "<none>", "\n")
-    cat("Extdata:", if (length(extdata_files) > 0) paste(extdata_files, collapse = ", ") else "<none>", "\n\n")
-  }
-  
-  invisible(info)
-}
-
 align_metadata_with_spatial_locations <- function(metadata, spatial_locations) {
   if (all(c("sdimx", "sdimy") %in% names(metadata))) {
     return(metadata)
@@ -255,13 +220,9 @@ align_metadata_with_spatial_locations <- function(metadata, spatial_locations) {
   )
 }
 
-# =============================================================================
-# FIX #12b: get_counts_genes_by_cells() NO LONGER calls as.matrix() on the
-# full expression matrix up front.  It now accepts and returns sparse matrices
-# when the input is sparse.  Dense conversion is deferred to the caller AFTER
-# subsetting to the focal cell type's cells, reducing peak memory from ~10 GB
-# (200k cells x 6k genes dense) to ~0.5 GB (5-10k focal cells x 6k genes).
-# =============================================================================
+# Returns a (genes x cells) matrix subset to metadata$cell_ID. Sparse-in,
+# sparse-out unless `densify = TRUE`; the caller densifies after sub-setting
+# to a focal cell type to keep peak RAM bounded.
 get_counts_genes_by_cells <- function(expr_mat, metadata, densify = FALSE) {
   metadata_ids <- unique(metadata$cell_ID)
   
@@ -421,7 +382,9 @@ prepare_smide_targets <- function(cell_counts,
 
 
 sanitize_smide_name <- function(x) {
-  gsub("[^A-Za-z0-9]+", "_", as.character(x))
+  s <- gsub("[^A-Za-z0-9]+", "_", as.character(x))
+  s <- gsub("^_+|_+$", "", s)
+  ifelse(nzchar(s), s, "x")
 }
 
 # Diff input targets vs fitted output → print one summary line and persist
@@ -596,14 +559,16 @@ build_smide_predictor_specs <- function(cell_meta,
                                         partner_top_n = 3,
                                         partner_padj_threshold = 0.05,
                                         include_self_partner = FALSE,
+                                        predictor_mode = c("group", "count"),
                                         output_dir = NULL,
                                         run_label = NULL,
                                         neighbor_counts = NULL) {
   sample_contrast <- match.arg(sample_contrast)
   partner_source <- match.arg(partner_source)
-  
+  predictor_mode <- match.arg(predictor_mode)
+
   specs <- list()
-  
+
   if (!is.null(custom_predictor) && custom_predictor %in% names(cell_meta)) {
     predictor_values <- as.character(cell_meta[[custom_predictor]])
     predictor_values[!nzchar(predictor_values)] <- NA_character_
@@ -620,11 +585,12 @@ build_smide_predictor_specs <- function(cell_meta,
         predictor_var = custom_predictor,
         predictor_label = custom_predictor,
         group_levels = levels(cell_meta[[custom_predictor]]),
-        result_mode = result_mode
+        result_mode = result_mode,
+        is_continuous = FALSE
       )
     }
   }
-  
+
   if (length(specs) == 0L && partner_source != "none" && is.null(partner_celltypes)) {
     if (!is.null(output_dir) && !is.null(run_label)) {
       partner_celltypes <- select_smide_partner_celltypes(
@@ -637,9 +603,34 @@ build_smide_predictor_specs <- function(cell_meta,
       )
     }
   }
-  
+
   if (length(specs) == 0L && !is.null(partner_celltypes) && length(partner_celltypes) > 0) {
     for (partner in unique(as.character(partner_celltypes))) {
+      if (predictor_mode == "count") {
+        # WTX-guide-style continuous predictor: per-cell tally of partner-celltype
+        # neighbours within the spatial network. When focal == partner, subtract
+        # 1 so the predictor measures heterotypic neighbours, not homotypic
+        # clustering (matches the guide's `tally - is_immune` recipe).
+        if (is.null(neighbor_counts) ||
+            !partner %in% colnames(neighbor_counts)) next
+        tally <- neighbor_counts[cell_meta$cell_ID, partner, drop = TRUE]
+        if (identical(partner, cell_type)) tally <- pmax(tally - 1L, 0L)
+        tally <- as.numeric(tally)
+        if (!any(is.finite(tally)) ||
+            stats::sd(tally, na.rm = TRUE) == 0) next
+        pred_col <- paste0("n_neighbors__", sanitize_smide_name(partner))
+        predictor_meta <- cell_meta
+        predictor_meta[[pred_col]] <- tally
+        specs[[length(specs) + 1L]] <- list(
+          metadata = predictor_meta,
+          predictor_var = pred_col,
+          predictor_label = paste0("n_neighbors_", partner),
+          group_levels = NULL,
+          result_mode = "emmeans",
+          is_continuous = TRUE
+        )
+        next
+      }
       group_spec <- make_smide_neighbor_group(
         cell_meta = cell_meta,
         neighbor_counts = neighbor_counts,
@@ -656,11 +647,12 @@ build_smide_predictor_specs <- function(cell_meta,
         predictor_var = group_spec$column,
         predictor_label = paste0("neighbor_", partner),
         group_levels = levels(group_spec$values),
-        result_mode = "pairwise"
+        result_mode = "pairwise",
+        is_continuous = FALSE
       )
     }
   }
-  
+
   if (length(specs) == 0L) {
     fallback_meta <- cell_meta
     fallback_meta$spatial_niche <- factor(fallback_meta$spatial_niche, levels = valid_niches)
@@ -674,10 +666,11 @@ build_smide_predictor_specs <- function(cell_meta,
       predictor_var = "spatial_niche",
       predictor_label = "spatial_niche",
       group_levels = valid_niches,
-      result_mode = fallback_mode
+      result_mode = fallback_mode,
+      is_continuous = FALSE
     )
   }
-  
+
   specs
 }
 
@@ -1302,12 +1295,54 @@ guess_significance_column <- function(result_df) {
   invisible(NULL)
 }
 
-# =============================================================================
-# FIX #12c: validate_smide_radius() checks whether the smide_radius parameter
-# is consistent with the spatial coordinate system.  CosMx coordinates are
-# typically in microns (range ~10,000-50,000).  If the coordinate range exceeds
-# 100 and the radius is < 1, it's almost certainly in the wrong unit.
-# =============================================================================
+# WTX-guide diagnostic: per-cell-type eCDF of log2(neighbour mean / focal mean)
+# from smiDE's overlap_ratio_metric(). The active overlap-ratio threshold is
+# drawn as a dashed vertical line so spillover-prone genes (right tail above
+# the line) are visible at a glance. Helps the user decide whether the global
+# threshold is too aggressive / lenient for a given cell type.
+.plot_overlap_ratio_ecdf <- function(overlap_df,
+                                     threshold,
+                                     output_path,
+                                     cell_type_col = "celltype",
+                                     ratio_col = "ratio",
+                                     subtitle = NULL) {
+  tryCatch({
+    if (is.null(overlap_df) || nrow(overlap_df) == 0) return(invisible(NULL))
+    df <- as.data.frame(overlap_df, stringsAsFactors = FALSE)
+    if (!all(c(cell_type_col, ratio_col) %in% names(df))) {
+      return(invisible(NULL))
+    }
+    df$log2_ratio <- log2(pmax(df[[ratio_col]], .Machine$double.eps))
+    df <- df[is.finite(df$log2_ratio), , drop = FALSE]
+    if (nrow(df) == 0) return(invisible(NULL))
+    thr_log2 <- log2(max(threshold, .Machine$double.eps))
+
+    p <- ggplot2::ggplot(df, ggplot2::aes(x = log2_ratio)) +
+      ggplot2::stat_ecdf(geom = "step", linewidth = 0.6, colour = "grey30") +
+      ggplot2::geom_vline(xintercept = thr_log2,
+                          linetype = "dashed", colour = "firebrick") +
+      ggplot2::facet_wrap(stats::as.formula(paste("~", cell_type_col)),
+                          scales = "free_y") +
+      ggplot2::labs(
+        title    = "Overlap-ratio eCDF (smiDE prefilter)",
+        subtitle = subtitle,
+        x = expression(log[2] ~ "(neighbour mean / focal mean)"),
+        y = "Cumulative fraction of genes"
+      ) +
+      presentation_theme(base_size = 11)
+
+    save_presentation_plot(p, output_path,
+                           width = 8, height = 6, dpi = 200)
+  }, error = function(e) {
+    message("  Overlap-ratio eCDF skipped: ", conditionMessage(e))
+  })
+  invisible(NULL)
+}
+
+# Sanity-check the smide_radius parameter against the spatial coordinate
+# system. CosMx coordinates are typically in microns (range ~10,000-50,000);
+# warn loudly if the radius is in the wrong unit so the model isn't silently
+# fitted with no neighbours.
 validate_smide_radius <- function(smide_radius, spatial_locations) {
   if (is.null(spatial_locations) || nrow(spatial_locations) == 0) {
     return(smide_radius)
@@ -1340,10 +1375,8 @@ validate_smide_radius <- function(smide_radius, spatial_locations) {
   smide_radius
 }
 
-# =============================================================================
-# FIX #12b (continued): estimate_dense_matrix_gb() provides a RAM estimate
-# so the pipeline can warn users before allocating large dense matrices.
-# =============================================================================
+# RAM estimate for a dense numeric matrix of given dimensions. Used to warn
+# before allocating the full counts matrix in the smiDE backends.
 estimate_dense_matrix_gb <- function(n_genes, n_cells, bytes_per_element = 8) {
   (as.numeric(n_genes) * as.numeric(n_cells) * bytes_per_element) / (1024^3)
 }
@@ -1372,23 +1405,21 @@ run_smide_sample_backend <- function(expr_mat,
                                      smide_partner_top_n = 3,
                                      smide_partner_padj_threshold = 0.05,
                                      smide_include_self_partner = FALSE,
+                                     smide_predictor_mode = c("group", "count"),
                                      smide_save_raw = TRUE,
                                      smide_adaptive_thresholds = TRUE,
                                      polygon_df = NULL) {
   sample_contrast <- match.arg(sample_contrast)
   smide_partner_source <- match.arg(smide_partner_source)
+  smide_predictor_mode <- match.arg(smide_predictor_mode)
 
   if (!requireNamespace("smiDE", quietly = TRUE)) {
     stop("smiDE is not installed, but backend = 'smiDE' was requested.")
   }
 
   metadata <- align_metadata_with_spatial_locations(metadata, spatial_locations)
-  
-  # -------------------------------------------------------------------------
-  # FIX #12b: Keep the full expression matrix SPARSE at this stage.
-  # get_counts_genes_by_cells() now returns sparse by default (densify=FALSE).
-  # Dense conversion happens per-cell-type AFTER subsetting below.
-  # -------------------------------------------------------------------------
+
+  # Sparse-in: dense conversion is deferred to per-cell-type subsetting below.
   counts_genes_cells <- get_counts_genes_by_cells(expr_mat, metadata, densify = FALSE)
   metadata <- metadata[match(colnames(counts_genes_cells), metadata$cell_ID), , drop = FALSE]
   
@@ -1403,11 +1434,9 @@ run_smide_sample_backend <- function(expr_mat,
     smide_min_detection_fraction <- 0.05
   }
   smide_min_detection_fraction <- min(max(smide_min_detection_fraction, 0), 1)
-  
-  # -------------------------------------------------------------------------
-  # FIX #12d: Changed default from 1 (disabled) to 0.7 to filter CosMx
-  # transcript diffusion artifacts.
-  # -------------------------------------------------------------------------
+
+  # Default 0.7 (rather than 1.0 = disabled) filters CosMx transcript
+  # diffusion artefacts before the model is fit.
   if (is.null(smide_overlap_threshold)) {
     smide_overlap_threshold <- 0.7
     message(
@@ -1416,9 +1445,6 @@ run_smide_sample_backend <- function(expr_mat,
     )
   }
   
-  # -------------------------------------------------------------------------
-  # FIX #12c: Validate smide_radius against spatial coordinate units.
-  # -------------------------------------------------------------------------
   smide_radius <- validate_smide_radius(smide_radius, spatial_locations)
   
   neighbor_counts <- if (is.null(neighbor_counts)) NULL else as_plain_numeric_matrix(neighbor_counts)
@@ -1441,10 +1467,8 @@ run_smide_sample_backend <- function(expr_mat,
   idx <- 1L
   candidate_cell_types <- sort(unique(stats::na.omit(metadata[[annotation_column]])))
   
-  # -------------------------------------------------------------------------
-  # FIX #12a: Warn when smide_annotation_subset is NULL (all-vs-all mode).
-  # For ~200k cells with ~20 cell types, this can take hours to days.
-  # -------------------------------------------------------------------------
+  # NULL = all-vs-all mode iterates every cell type; for ~200k cells with
+  # ~20 cell types this can take hours to days, so warn loudly.
   if (is.null(smide_annotation_subset)) {
     warning(
       "smide_annotation_subset is NULL: smiDE will iterate over ALL ",
@@ -1483,14 +1507,9 @@ run_smide_sample_backend <- function(expr_mat,
   skipped_cell_types <- character(0)
   skipped_records    <- list()
 
-  # -------------------------------------------------------------------------
-  # FIX #12b: For smiDE, we need a dense matrix for pre_de() and
-  # overlap_ratio_metric() which operate on the full dataset.  However, we
-  # only densify the portion of the matrix needed.  For pre_de() we pass the
-  # full sparse matrix and let smiDE handle it; for the cell-type-specific
-  # model fitting we densify only the focal cell's columns.
-  #
-  # Estimate RAM for the full dense matrix and warn if it would be very large.
+  # pre_de() and overlap_ratio_metric() need the full dense matrix because
+  # they iterate over every cell-type's neighbourhood. The per-cell-type
+  # model fit below subsets to focal cells only, so peak RAM is bounded.
   # -------------------------------------------------------------------------
   n_total_genes <- nrow(counts_genes_cells)
   n_total_cells <- ncol(counts_genes_cells)
@@ -1508,7 +1527,17 @@ run_smide_sample_backend <- function(expr_mat,
   # Densify the full matrix ONCE for pre_de() and overlap_ratio_metric(),
   # which require the complete dataset with all cell types as context.
   counts_dense_full <- as.matrix(counts_genes_cells)
-  
+
+  # WTX-guide alignment: depth offset (~ + offset(log(nCount_RNA))) and
+  # per-cell-type total-count scalefactors that normalise the internally-
+  # computed `otherct_expr` covariate so neighbours with very different
+  # library sizes contribute on a comparable scale.
+  cell_total_counts <- colSums(counts_dense_full)
+  metadata$nCount_RNA <- pmax(cell_total_counts[metadata$cell_ID], 1)
+  tc_scalefactors <- tapply(cell_total_counts,
+                            metadata[[annotation_column]], mean)
+  tc_scalefactors <- tc_scalefactors[!is.na(tc_scalefactors)]
+
   for (cell_type in candidate_cell_types) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
     n_cells_total <- nrow(cell_meta)
@@ -1543,12 +1572,9 @@ run_smide_sample_backend <- function(expr_mat,
       next
     }
     
-    # -------------------------------------------------------------------
-    # FIX #12b: Only densify the focal cell type's columns for the model.
-    # The pre_de() and overlap_ratio_metric() calls below still use the
-    # full dense matrix (counts_dense_full) since they need neighbourhood
-    # context from ALL cell types.
-    # -------------------------------------------------------------------
+    # Slice the dense matrix to focal cells only for the per-cell-type fit;
+    # neighbourhood context for pre_de/overlap_ratio_metric still comes from
+    # counts_dense_full so all cell types contribute to the prior.
     cell_ids <- cell_meta$cell_ID
     cell_counts <- counts_dense_full[, cell_ids, drop = FALSE]
     
@@ -1626,8 +1652,17 @@ run_smide_sample_backend <- function(expr_mat,
         file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
         row.names = FALSE
       )
+      ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots"))
+      .plot_overlap_ratio_ecdf(
+        overlap_df, threshold = smide_overlap_threshold,
+        output_path = file.path(
+          ecdf_plots_dir, paste0(file_stub_base, "_overlap_ratio_ecdf.png")
+        ),
+        cell_type_col = annotation_column,
+        subtitle = paste(run_label, "-", cell_type)
+      )
     }
-    
+
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
     if (!is.null(targets) && length(targets) == 0) {
       message("All targets were removed by the overlap threshold for ", run_label, " / ", cell_type)
@@ -1677,6 +1712,7 @@ run_smide_sample_backend <- function(expr_mat,
       partner_top_n = smide_partner_top_n,
       partner_padj_threshold = smide_partner_padj_threshold,
       include_self_partner = smide_include_self_partner,
+      predictor_mode = smide_predictor_mode,
       output_dir = output_dir,
       run_label = run_label,
       neighbor_counts = neighbor_counts
@@ -1688,19 +1724,33 @@ run_smide_sample_backend <- function(expr_mat,
       predictor_label <- spec$predictor_label
       predictor_levels <- spec$group_levels
       result_mode <- spec$result_mode
-      
+      is_continuous_spec <- isTRUE(spec$is_continuous)
+
       predictor_meta <- predictor_meta[!is.na(predictor_meta[[predictor_var]]), , drop = FALSE]
-      predictor_sizes <- table(predictor_meta[[predictor_var]])
-      predictor_sizes <- predictor_sizes[predictor_sizes > 0]
-      if (length(predictor_sizes) < 2 || any(predictor_sizes < effective_min)) {
-        next
+      if (is_continuous_spec) {
+        # Continuous predictor: gate on n finite cells with non-zero variance
+        # rather than per-level group sizes; do NOT factor-coerce.
+        n_finite <- sum(is.finite(predictor_meta[[predictor_var]]))
+        if (n_finite < effective_min ||
+            stats::sd(predictor_meta[[predictor_var]], na.rm = TRUE) == 0) {
+          next
+        }
+        predictor_levels <- NULL
+      } else {
+        predictor_sizes <- table(predictor_meta[[predictor_var]])
+        predictor_sizes <- predictor_sizes[predictor_sizes > 0]
+        if (length(predictor_sizes) < 2 || any(predictor_sizes < effective_min)) {
+          next
+        }
+        predictor_levels <- names(predictor_sizes)
+        predictor_meta[[predictor_var]] <- factor(predictor_meta[[predictor_var]], levels = predictor_levels)
       }
-      predictor_levels <- names(predictor_sizes)
-      predictor_meta[[predictor_var]] <- factor(predictor_meta[[predictor_var]], levels = predictor_levels)
       predictor_counts <- model_inputs$counts[, predictor_meta$cell_ID, drop = FALSE]
-      
-      cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label, "\n")
-      cat("smiDE workload for", cell_type, "/", predictor_label, ":", nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes\n")
+
+      cat("Running smiDE:", run_label, "|", cell_type, "|", predictor_label,
+          if (is_continuous_spec) " (continuous)" else "", "\n")
+      cat("smiDE workload for", cell_type, "/", predictor_label, ":",
+          nrow(predictor_meta), "cells x", model_inputs$n_genes, "genes\n")
 
       file_stub <- paste(file_stub_base, sanitize_smide_name(predictor_label), sep = "_")
       fit_log <- file.path(tables_dir, paste0(file_stub, "_smide_fit.log"))
@@ -1713,7 +1763,10 @@ run_smide_sample_backend <- function(expr_mat,
               res <- smiDE::smi_de(
                 assay_matrix = predictor_counts,
                 metadata = predictor_meta,
-                formula = stats::as.formula(paste("~", predictor_var)),
+                formula = stats::as.formula(paste(
+                  "~ RankNorm(otherct_expr) +", predictor_var,
+                  "+ offset(log(nCount_RNA))"
+                )),
                 pre_de_obj = pre_obj,
                 groupVar = predictor_var,
                 groupVar_levels = predictor_levels,
@@ -1721,7 +1774,10 @@ run_smide_sample_backend <- function(expr_mat,
                 family = smide_family,
                 targets = smide_targets_submitted,
                 neighbor_expr_cell_type_metadata_colname = annotation_column,
-                cellid_colname = "cell_ID"
+                cellid_colname = "cell_ID",
+                neighbor_expr_overlap_agg = "sum",
+                neighbor_expr_totalcount_normalize = TRUE,
+                neighbor_expr_totalcount_scalefactor = tc_scalefactors
               ),
               file = fit_log, append = FALSE, type = "output"
             )
@@ -1742,16 +1798,39 @@ run_smide_sample_backend <- function(expr_mat,
         saveRDS(fit, file.path(tables_dir, paste0(file_stub, "_smide_fit.rds")))
       }
       
+      # WTX-guide alignment: pull every comparison family from one fit so
+      # downstream consumers can pick the most appropriate one without
+      # paying for extra fits. Continuous predictors only support emmeans.
+      result_families <- if (isTRUE(spec$is_continuous)) {
+        "emmeans"
+      } else {
+        c("pairwise", "emmeans", "one_vs_rest", "one_vs_all")
+      }
       res_obj <- tryCatch(
         smiDE::results(
           smide_results = fit,
-          comparisons = result_mode,
+          comparisons = result_families,
           variable = predictor_var,
           targets = "all"
         ),
         error = function(e) {
-          message("Could not extract smiDE results for ", run_label, " / ", cell_type, " / ", predictor_label, ": ", conditionMessage(e))
-          NULL
+          # Older smiDE may reject a vector `comparisons`; fall back to
+          # iterating one family at a time and assembling a list.
+          parts <- lapply(result_families, function(fam) {
+            tryCatch(
+              smiDE::results(smide_results = fit, comparisons = fam,
+                             variable = predictor_var, targets = "all"),
+              error = function(ee) NULL
+            )
+          })
+          names(parts) <- result_families
+          parts <- parts[!vapply(parts, is.null, logical(1))]
+          if (length(parts) == 0L) {
+            message("Could not extract smiDE results for ", run_label, " / ",
+                    cell_type, " / ", predictor_label, ": ", conditionMessage(e))
+            return(NULL)
+          }
+          parts
         }
       )
       
@@ -1946,6 +2025,14 @@ run_smide_merged_backend <- function(expr_mat,
   }
   counts_dense_full <- as.matrix(counts_genes_cells)
 
+  # WTX-guide alignment: library-size offset + per-cell-type scalefactors
+  # for the internally-computed otherct_expr covariate (see sample backend).
+  cell_total_counts <- colSums(counts_dense_full)
+  metadata$nCount_RNA <- pmax(cell_total_counts[metadata$cell_ID], 1)
+  tc_scalefactors <- tapply(cell_total_counts,
+                            metadata[[annotation_column]], mean)
+  tc_scalefactors <- tc_scalefactors[!is.na(tc_scalefactors)]
+
   summary_rows <- list()
   all_results  <- list()
   skipped_cell_types <- character(0)
@@ -2056,6 +2143,15 @@ run_smide_merged_backend <- function(expr_mat,
       utils::write.csv(overlap_df,
                        file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
                        row.names = FALSE)
+      ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots"))
+      .plot_overlap_ratio_ecdf(
+        overlap_df, threshold = smide_overlap_threshold,
+        output_path = file.path(
+          ecdf_plots_dir, paste0(file_stub_base, "_overlap_ratio_ecdf.png")
+        ),
+        cell_type_col = annotation_column,
+        subtitle = paste(run_label, "-", cell_type)
+      )
     }
 
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
@@ -2095,10 +2191,17 @@ run_smide_merged_backend <- function(expr_mat,
     )
     predictor_counts <- model_inputs$counts[, cell_meta_valid$cell_ID, drop = FALSE]
 
-    # Formula: ~ smide_niche_treatment + sample_id
-    # The niche_treatment term tests the niche × treatment interaction.
-    # The sample_id term absorbs sample-level batch effects in the count data.
-    formula_str <- paste("~ smide_niche_treatment +", sample_column)
+    # Formula: ~ RankNorm(otherct_expr) + smide_niche_treatment + sample_id
+    #          + offset(log(nCount_RNA))
+    # - RankNorm(otherct_expr): per-gene neighbour-of-other-celltype covariate
+    #   (WTX-guide segmentation/diffusion control).
+    # - smide_niche_treatment: niche × treatment interaction term being tested.
+    # - sample_id (sample_column): absorbs sample-level batch effects.
+    # - offset(log(nCount_RNA)): library-size offset for the nbinom2 GLM.
+    formula_str <- paste(
+      "~ RankNorm(otherct_expr) + smide_niche_treatment +", sample_column,
+      "+ offset(log(nCount_RNA))"
+    )
     cat("  Formula:", formula_str, "\n")
     cat("  smiDE workload:", nrow(cell_meta_valid), "cells x", model_inputs$n_genes, "genes\n")
 
@@ -2120,7 +2223,10 @@ run_smide_merged_backend <- function(expr_mat,
               family = smide_family,
               targets = smide_targets_submitted,
               neighbor_expr_cell_type_metadata_colname = annotation_column,
-              cellid_colname = "cell_ID"
+              cellid_colname = "cell_ID",
+              neighbor_expr_overlap_agg = "sum",
+              neighbor_expr_totalcount_normalize = TRUE,
+              neighbor_expr_totalcount_scalefactor = tc_scalefactors
             ),
             file = fit_log, append = FALSE, type = "output"
           )
@@ -2139,16 +2245,31 @@ run_smide_merged_backend <- function(expr_mat,
       saveRDS(fit, file.path(tables_dir, paste0(file_stub_base, "_smide_fit.rds")))
     }
 
+    # WTX-guide alignment: pull every comparison family from one fit.
+    result_families <- c("pairwise", "emmeans", "one_vs_rest", "one_vs_all")
     res_obj <- tryCatch(
       smiDE::results(
         smide_results = fit,
-        comparisons = "one_vs_rest",
+        comparisons = result_families,
         variable = "smide_niche_treatment",
         targets = "all"
       ),
       error = function(e) {
-        message("smiDE::results failed for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
-        NULL
+        parts <- lapply(result_families, function(fam) {
+          tryCatch(
+            smiDE::results(smide_results = fit, comparisons = fam,
+                           variable = "smide_niche_treatment", targets = "all"),
+            error = function(ee) NULL
+          )
+        })
+        names(parts) <- result_families
+        parts <- parts[!vapply(parts, is.null, logical(1))]
+        if (length(parts) == 0L) {
+          message("smiDE::results failed for ", run_label, " / ", cell_type,
+                  ": ", conditionMessage(e))
+          return(NULL)
+        }
+        parts
       }
     )
     if (isTRUE(smide_save_raw) && !is.null(res_obj)) {
@@ -2335,7 +2456,7 @@ run_smide_per_comparison_backend <- function(expr_mat,
           length(eligible_strata), " stratum/strata\n", sep = "")
 
       cp_dir <- file.path(output_dir, "12_Spatial_Differential_Expression",
-                          st_label, .smide_safe_name(cp_label))
+                          st_label, sanitize_smide_name(cp_label))
       dir.create(cp_dir, recursive = TRUE, showWarnings = FALSE)
       cp_tables <- ensure_dir(file.path(cp_dir, "tables"))
 
@@ -2352,7 +2473,7 @@ run_smide_per_comparison_backend <- function(expr_mat,
                         , drop = FALSE]
       } else NULL
 
-      iter_label <- paste(run_label, .smide_safe_name(cp_label),
+      iter_label <- paste(run_label, sanitize_smide_name(cp_label),
                           st_label, sep = "_")
 
       iter_result <- tryCatch(
@@ -2428,12 +2549,6 @@ run_smide_per_comparison_backend <- function(expr_mat,
   )
 }
 
-# Filename-safe slugify.
-.smide_safe_name <- function(x) {
-  s <- gsub("[^A-Za-z0-9]+", "_", as.character(x))
-  s <- gsub("^_+|_+$", "", s)
-  if (!nzchar(s)) "x" else s
-}
 
 # Mirror of step 13's pathway match-meta-filter, kept local to avoid
 # cross-script sourcing.
@@ -2638,14 +2753,6 @@ normalise_rows <- function(mat) {
   mat / rs
 }
 
-paired_design_possible <- function(meta_df, treatment_column, patient_column) {
-  if (is.null(patient_column) || !patient_column %in% names(meta_df)) {
-    return(FALSE)
-  }
-  patient_table <- table(meta_df[[patient_column]], meta_df[[treatment_column]])
-  nrow(patient_table) >= 2 && all(rowSums(patient_table > 0) >= 2)
-}
-
 build_neighbourhood_matrix <- function(gobj,
                                        metadata,
                                        annotation_column,
@@ -2741,584 +2848,11 @@ assign_spatial_niches <- function(niche_props, n_niches = 6) {
   paste0("niche_", niche_fit$cluster)
 }
 
-aggregate_pseudobulk <- function(expr_mat, meta_df, group_columns) {
-  keep_cols <- c("cell_ID", group_columns)
-  meta_df <- meta_df[, keep_cols, drop = FALSE]
-  meta_df <- meta_df[meta_df$cell_ID %in% colnames(expr_mat), , drop = FALSE]
-  if (nrow(meta_df) == 0) {
-    return(NULL)
-  }
-  
-  meta_df$group_id <- do.call(
-    paste,
-    c(meta_df[group_columns], sep = "__")
-  )
-  group_factor <- factor(meta_df$group_id, levels = unique(meta_df$group_id))
-  design_mat <- Matrix::sparse.model.matrix(~ 0 + group_factor)
-  colnames(design_mat) <- levels(group_factor)
-  
-  counts <- expr_mat[, meta_df$cell_ID, drop = FALSE] %*% design_mat
-  counts <- as.matrix(counts)
-  
-  pb_meta <- unique(meta_df[, c("group_id", group_columns), drop = FALSE])
-  pb_meta <- pb_meta[match(colnames(counts), pb_meta$group_id), , drop = FALSE]
-  pb_meta$n_cells <- as.integer(table(meta_df$group_id)[pb_meta$group_id])
-  rownames(pb_meta) <- pb_meta$group_id
-  
-  list(counts = counts, meta = pb_meta)
-}
-
-run_pairwise_edgeR <- function(count_mat,
-                               meta_df,
-                               treatment_column,
-                               patient_column = NULL,
-                               comparison_label) {
-  treatment_factor <- factor(meta_df[[treatment_column]])
-  if (nlevels(treatment_factor) != 2) {
-    stop("Exactly two treatment groups are required for a pairwise DE test.")
-  }
-  
-  paired <- paired_design_possible(meta_df, treatment_column, patient_column)
-  if (paired) {
-    meta_df[[patient_column]] <- factor(meta_df[[patient_column]])
-    design <- model.matrix(
-      stats::as.formula(paste("~", patient_column, "+", treatment_column)),
-      data = meta_df
-    )
-  } else {
-    design <- model.matrix(
-      stats::as.formula(paste("~", treatment_column)),
-      data = meta_df
-    )
-  }
-  
-  dge <- edgeR::DGEList(counts = count_mat)
-  keep <- edgeR::filterByExpr(dge, design = design)
-  if (!any(keep)) {
-    return(NULL)
-  }
-  
-  dge <- dge[keep, , keep.lib.sizes = FALSE]
-  dge <- edgeR::calcNormFactors(dge)
-  dge <- edgeR::estimateDisp(dge, design)
-  fit <- edgeR::glmQLFit(dge, design, robust = TRUE)
-  
-  coef_name <- grep(paste0("^", treatment_column), colnames(design), value = TRUE)[1]
-  if (is.na(coef_name) || !nzchar(coef_name)) {
-    stop("Could not identify a treatment coefficient in the design matrix.")
-  }
-  
-  test <- edgeR::glmQLFTest(fit, coef = coef_name)
-  de_tbl <- edgeR::topTags(test, n = Inf)$table
-  de_tbl$gene <- rownames(de_tbl)
-  de_tbl$comparison <- comparison_label
-  de_tbl$paired_design <- paired
-  rownames(de_tbl) <- NULL
-  de_tbl
-}
-
-run_group_edgeR <- function(count_mat,
-                            group_vector,
-                            target_group,
-                            reference_group,
-                            comparison_label) {
-  group_factor <- factor(group_vector, levels = c(reference_group, target_group))
-  if (nlevels(group_factor) != 2 || any(table(group_factor) == 0)) {
-    stop("Exactly two non-empty groups are required for this DE test.")
-  }
-  
-  design <- model.matrix(~ group_factor)
-  dge <- edgeR::DGEList(counts = count_mat)
-  keep <- edgeR::filterByExpr(dge, group = group_factor)
-  if (!any(keep)) {
-    return(NULL)
-  }
-  
-  dge <- dge[keep, , keep.lib.sizes = FALSE]
-  dge <- edgeR::calcNormFactors(dge)
-  dge <- edgeR::estimateDisp(dge, design)
-  fit <- edgeR::glmQLFit(dge, design, robust = TRUE)
-  
-  coef_name <- grep("^group_factor", colnames(design), value = TRUE)[1]
-  test <- edgeR::glmQLFTest(fit, coef = coef_name)
-  de_tbl <- edgeR::topTags(test, n = Inf)$table
-  de_tbl$gene <- rownames(de_tbl)
-  de_tbl$comparison <- comparison_label
-  de_tbl$target_group <- target_group
-  de_tbl$reference_group <- reference_group
-  rownames(de_tbl) <- NULL
-  de_tbl
-}
-
-create_spatial_patches <- function(metadata,
-                                   spatial_locations,
-                                   n_spatial_patches = 8) {
-  xy <- spatial_locations[match(metadata$cell_ID, spatial_locations$cell_ID), c("sdimx", "sdimy"), drop = FALSE]
-  xy <- as.matrix(xy)
-  if (is.null(dim(xy)) || nrow(xy) < 2 || is.null(ncol(xy)) || ncol(xy) < 2 || anyNA(xy)) {
-    metadata$spatial_patch <- "patch_1"
-    return(list(metadata = metadata, replicate_column = "spatial_patch"))
-  }
-  
-  unique_xy <- unique(as.data.frame(round(xy, 3), check.names = FALSE))
-  n_unique_xy <- if (is.null(dim(unique_xy))) 1L else nrow(unique_xy)
-  if (length(n_unique_xy) == 0 || is.na(n_unique_xy) || !is.finite(n_unique_xy)) {
-    n_unique_xy <- 1L
-  }
-  
-  n_centers <- min(as.integer(n_spatial_patches)[1], nrow(xy), n_unique_xy)
-  if (n_centers < 2) {
-    metadata$spatial_patch <- "patch_1"
-    return(list(metadata = metadata, replicate_column = "spatial_patch"))
-  }
-  
-  set.seed(42)
-  km <- tryCatch(
-    stats::kmeans(xy, centers = n_centers, nstart = 25),
-    error = function(e) {
-      warning(
-        "Spatial patch clustering failed (", conditionMessage(e),
-        "). Using a single spatial patch."
-      )
-      NULL
-    }
-  )
-  if (is.null(km)) {
-    metadata$spatial_patch <- "patch_1"
-    return(list(metadata = metadata, replicate_column = "spatial_patch"))
-  }
-  metadata$spatial_patch <- paste0("patch_", km$cluster)
-  list(metadata = metadata, replicate_column = "spatial_patch")
-}
-
-ensure_replicate_units <- function(metadata,
-                                   spatial_locations,
-                                   sample_replicate_column = "fov",
-                                   n_spatial_patches = 8) {
-  replicate_column <- detect_replicate_column(metadata, sample_replicate_column)
-  if (!is.null(replicate_column)) {
-    return(list(metadata = metadata, replicate_column = replicate_column, generated = FALSE))
-  }
-  
-  patched <- create_spatial_patches(
-    metadata = metadata,
-    spatial_locations = spatial_locations,
-    n_spatial_patches = n_spatial_patches
-  )
-  list(
-    metadata = patched$metadata,
-    replicate_column = patched$replicate_column,
-    generated = TRUE
-  )
-}
-
-run_sample_scope_spatial_de <- function(expr_mat,
-                                        metadata,
-                                        run_label,
-                                        annotation_column,
-                                        tables_dir,
-                                        sample_replicate_column = "fov",
-                                        sample_contrast = c("one_vs_rest", "pairwise"),
-                                        min_cells_per_niche = 30,
-                                        min_cells_per_replicate = 5,
-                                        min_replicates_per_group = 2,
-                                        n_spatial_patches = 8,
-                                        spatial_locations = NULL,
-                                        polygon_df = NULL) {
-  sample_contrast <- match.arg(sample_contrast)
-
-  sample_ids <- unique(stats::na.omit(metadata$sample_id))
-  if (length(sample_ids) > 1) {
-    stop("Sample-scope spatial DE expects a single-sample object.")
-  }
-  
-  replicate_info <- ensure_replicate_units(
-    metadata = metadata,
-    spatial_locations = spatial_locations,
-    sample_replicate_column = sample_replicate_column,
-    n_spatial_patches = n_spatial_patches
-  )
-  metadata <- replicate_info$metadata
-  replicate_column <- replicate_info$replicate_column
-  
-  utils::write.csv(
-    metadata,
-    file.path(tables_dir, paste0(run_label, "_cell_metadata_with_niches.csv")),
-    row.names = FALSE
-  )
-  
-  summary_rows <- list()
-  all_results <- list()
-  idx <- 1L
-  
-  for (cell_type in sort(unique(stats::na.omit(metadata[[annotation_column]])))) {
-    cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
-    n_cells_raw <- nrow(cell_meta)
-    if (n_cells_raw < min_cells_per_niche) {
-      message(sprintf(
-        "  \u26a0 edgeR spatial DE skipped for '%s': only %d cells found (requires \u2265%d)",
-        cell_type, n_cells_raw, min_cells_per_niche
-      ))
-      next
-    }
-
-    replicate_counts <- as.data.frame(
-      table(cell_meta$spatial_niche, cell_meta[[replicate_column]]),
-      stringsAsFactors = FALSE
-    )
-    names(replicate_counts) <- c("spatial_niche", replicate_column, "n_cells")
-    keep_groups <- replicate_counts[replicate_counts$n_cells >= min_cells_per_replicate, , drop = FALSE]
-    if (nrow(keep_groups) == 0) {
-      message(sprintf(
-        "  \u26a0 edgeR spatial DE skipped for '%s': no replicate (%s) has \u2265%d cells in any niche (min_cells_per_replicate=%d)",
-        cell_type, replicate_column, min_cells_per_replicate, min_cells_per_replicate
-      ))
-      next
-    }
-
-    keep_keys <- paste(keep_groups$spatial_niche, keep_groups[[replicate_column]], sep = "__")
-    cell_meta$keep_key <- paste(cell_meta$spatial_niche, cell_meta[[replicate_column]], sep = "__")
-    cell_meta <- cell_meta[cell_meta$keep_key %in% keep_keys, , drop = FALSE]
-    if (nrow(cell_meta) < min_cells_per_niche) {
-      message(sprintf(
-        "  \u26a0 edgeR spatial DE skipped for '%s': after replicate filtering only %d cells remain (requires \u2265%d)",
-        cell_type, nrow(cell_meta), min_cells_per_niche
-      ))
-      next
-    }
-
-    niche_sizes <- table(cell_meta$spatial_niche)
-    valid_niches <- names(niche_sizes[niche_sizes >= min_cells_per_niche])
-    cell_meta <- cell_meta[cell_meta$spatial_niche %in% valid_niches, , drop = FALSE]
-    if (length(valid_niches) < 2) {
-      message(sprintf(
-        "  \u26a0 edgeR spatial DE skipped for '%s': only %d niche(s) with \u2265%d cells (requires \u22652)",
-        cell_type, length(valid_niches), min_cells_per_niche
-      ))
-      next
-    }
-    
-    pb <- aggregate_pseudobulk(
-      expr_mat = expr_mat,
-      meta_df = cell_meta,
-      group_columns = c("spatial_niche", replicate_column)
-    )
-    if (is.null(pb)) {
-      next
-    }
-    
-    pb_meta <- pb$meta
-    pb_meta[[replicate_column]] <- as.character(pb_meta[[replicate_column]])
-    pb_meta$spatial_niche <- as.character(pb_meta$spatial_niche)
-    
-    if (sample_contrast == "one_vs_rest") {
-      for (niche in sort(unique(pb_meta$spatial_niche))) {
-        group_vector <- ifelse(pb_meta$spatial_niche == niche, niche, "other_niches")
-        group_sizes <- table(group_vector)
-        if (length(group_sizes) != 2 || any(group_sizes < min_replicates_per_group)) {
-          message(sprintf(
-            "  \u26a0 edgeR one_vs_rest skipped for '%s' / niche '%s': group sizes [%s] do not meet min_replicates_per_group=%d",
-            cell_type, niche,
-            paste(names(group_sizes), group_sizes, sep = "=", collapse = ", "),
-            min_replicates_per_group
-          ))
-          next
-        }
-        
-        comparison_label <- paste0(niche, "_vs_rest")
-        cat("Running sample spatial DE:", run_label, "|", cell_type, "|", comparison_label, "\n")
-        
-        de_tbl <- tryCatch(
-          run_group_edgeR(
-            count_mat = pb$counts,
-            group_vector = group_vector,
-            target_group = niche,
-            reference_group = "other_niches",
-            comparison_label = comparison_label
-          ),
-          error = function(e) {
-            message("Skipping ", run_label, " / ", cell_type, " / ", comparison_label, ": ", conditionMessage(e))
-            NULL
-          }
-        )
-        
-        if (is.null(de_tbl) || nrow(de_tbl) == 0) {
-          next
-        }
-        
-        de_tbl$analysis_scope <- "sample"
-        de_tbl$run_label <- run_label
-        de_tbl$sample_id <- sample_ids[1] %||% run_label
-        de_tbl$annotation <- cell_type
-        de_tbl$spatial_niche <- niche
-        de_tbl$replicate_column <- replicate_column
-        all_results[[idx]] <- de_tbl
-        
-        file_stub <- paste(
-          gsub("[^A-Za-z0-9]+", "_", run_label),
-          "sample",
-          gsub("[^A-Za-z0-9]+", "_", cell_type),
-          gsub("[^A-Za-z0-9]+", "_", comparison_label),
-          sep = "_"
-        )
-        utils::write.csv(
-          de_tbl,
-          file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
-          row.names = FALSE
-        )
-        .save_spatial_de_plots(de_tbl,
-                               dirname(tables_dir),
-                               paste0(file_stub, "_spatial_de"),
-                               expr_mat = expr_mat,
-                               polygon_df = polygon_df)
-        
-        summary_rows[[idx]] <- data.frame(
-          analysis_scope = "sample",
-          run_label = run_label,
-          sample_id = sample_ids[1] %||% run_label,
-          annotation = cell_type,
-          spatial_niche = niche,
-          comparison = comparison_label,
-          replicate_column = replicate_column,
-          n_pseudobulk_profiles = length(group_vector),
-          n_genes_tested = nrow(de_tbl),
-          n_fdr_005 = sum(de_tbl$FDR < 0.05, na.rm = TRUE),
-          stringsAsFactors = FALSE
-        )
-        idx <- idx + 1L
-      }
-    } else {
-      niche_levels <- names(which(table(pb_meta$spatial_niche) >= min_replicates_per_group))
-      if (length(niche_levels) < 2) {
-        message(sprintf(
-          "  \u26a0 edgeR pairwise skipped for '%s': only %d niche(s) with \u2265%d replicates (requires \u22652)",
-          cell_type, length(niche_levels), min_replicates_per_group
-        ))
-        next
-      }
-
-      for (pair in combn(sort(niche_levels), 2, simplify = FALSE)) {
-        keep_idx <- pb_meta$spatial_niche %in% pair
-        pair_meta <- pb_meta[keep_idx, , drop = FALSE]
-        pair_counts <- pb$counts[, keep_idx, drop = FALSE]
-        group_sizes <- table(pair_meta$spatial_niche)
-        if (any(group_sizes < min_replicates_per_group)) {
-          message(sprintf(
-            "  \u26a0 edgeR pairwise skipped for '%s' / pair '%s': group sizes [%s] do not meet min_replicates_per_group=%d",
-            cell_type, paste(pair, collapse = "_vs_"),
-            paste(names(group_sizes), group_sizes, sep = "=", collapse = ", "),
-            min_replicates_per_group
-          ))
-          next
-        }
-        
-        comparison_label <- paste(pair, collapse = "_vs_")
-        cat("Running sample spatial DE:", run_label, "|", cell_type, "|", comparison_label, "\n")
-        
-        de_tbl <- tryCatch(
-          run_group_edgeR(
-            count_mat = pair_counts,
-            group_vector = pair_meta$spatial_niche,
-            target_group = pair[2],
-            reference_group = pair[1],
-            comparison_label = comparison_label
-          ),
-          error = function(e) {
-            message("Skipping ", run_label, " / ", cell_type, " / ", comparison_label, ": ", conditionMessage(e))
-            NULL
-          }
-        )
-        
-        if (is.null(de_tbl) || nrow(de_tbl) == 0) {
-          next
-        }
-        
-        de_tbl$analysis_scope <- "sample"
-        de_tbl$run_label <- run_label
-        de_tbl$sample_id <- sample_ids[1] %||% run_label
-        de_tbl$annotation <- cell_type
-        de_tbl$spatial_niche <- paste(pair, collapse = " / ")
-        de_tbl$replicate_column <- replicate_column
-        all_results[[idx]] <- de_tbl
-        
-        file_stub <- paste(
-          gsub("[^A-Za-z0-9]+", "_", run_label),
-          "sample",
-          gsub("[^A-Za-z0-9]+", "_", cell_type),
-          gsub("[^A-Za-z0-9]+", "_", comparison_label),
-          sep = "_"
-        )
-        utils::write.csv(
-          de_tbl,
-          file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
-          row.names = FALSE
-        )
-        .save_spatial_de_plots(de_tbl,
-                               dirname(tables_dir),
-                               paste0(file_stub, "_spatial_de"),
-                               expr_mat = expr_mat,
-                               polygon_df = polygon_df)
-        
-        summary_rows[[idx]] <- data.frame(
-          analysis_scope = "sample",
-          run_label = run_label,
-          sample_id = sample_ids[1] %||% run_label,
-          annotation = cell_type,
-          spatial_niche = paste(pair, collapse = " / "),
-          comparison = comparison_label,
-          replicate_column = replicate_column,
-          n_pseudobulk_profiles = nrow(pair_meta),
-          n_genes_tested = nrow(de_tbl),
-          n_fdr_005 = sum(de_tbl$FDR < 0.05, na.rm = TRUE),
-          stringsAsFactors = FALSE
-        )
-        idx <- idx + 1L
-      }
-    }
-  }
-  
-  list(
-    metadata = metadata,
-    summary = if (length(summary_rows) > 0) do.call(rbind, summary_rows) else data.frame(),
-    results = if (length(all_results) > 0) do.call(rbind, all_results) else data.frame()
-  )
-}
-
-run_merged_scope_spatial_de <- function(expr_mat,
-                                        metadata,
-                                        run_label,
-                                        annotation_column,
-                                        sample_column,
-                                        treatment_column,
-                                        patient_column,
-                                        tables_dir,
-                                        min_cells_per_niche = 30,
-                                        min_cells_per_sample = 10,
-                                        min_samples_per_group = 2,
-                                        polygon_df = NULL) {
-  utils::write.csv(
-    metadata,
-    file.path(tables_dir, paste0(run_label, "_cell_metadata_with_niches.csv")),
-    row.names = FALSE
-  )
-
-  summary_rows <- list()
-  all_results <- list()
-  idx <- 1L
-  
-  for (cell_type in sort(unique(stats::na.omit(metadata[[annotation_column]])))) {
-    cell_type_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
-    for (niche in sort(unique(stats::na.omit(cell_type_meta$spatial_niche)))) {
-      niche_meta <- cell_type_meta[cell_type_meta$spatial_niche == niche, , drop = FALSE]
-      if (nrow(niche_meta) < min_cells_per_niche) {
-        next
-      }
-      
-      sample_counts <- as.data.frame(table(niche_meta[[sample_column]]), stringsAsFactors = FALSE)
-      names(sample_counts) <- c(sample_column, "n_cells")
-      keep_samples <- sample_counts[sample_counts$n_cells >= min_cells_per_sample, sample_column]
-      niche_meta <- niche_meta[niche_meta[[sample_column]] %in% keep_samples, , drop = FALSE]
-      if (nrow(niche_meta) < min_cells_per_niche) {
-        next
-      }
-      
-      pb <- aggregate_pseudobulk(expr_mat, niche_meta, group_columns = sample_column)
-      if (is.null(pb)) {
-        next
-      }
-      
-      pb_meta <- unique(niche_meta[, c(sample_column, treatment_column, patient_column), drop = FALSE])
-      pb_meta <- pb_meta[match(colnames(pb$counts), pb_meta[[sample_column]]), , drop = FALSE]
-      
-      treatment_levels <- unique(stats::na.omit(pb_meta[[treatment_column]]))
-      if (length(treatment_levels) < 2) {
-        next
-      }
-      
-      for (pair in combn(sort(treatment_levels), 2, simplify = FALSE)) {
-        keep_idx <- pb_meta[[treatment_column]] %in% pair
-        pair_meta <- pb_meta[keep_idx, , drop = FALSE]
-        pair_counts <- pb$counts[, keep_idx, drop = FALSE]
-        
-        group_sizes <- table(pair_meta[[treatment_column]])
-        if (length(group_sizes) != 2 || any(group_sizes < min_samples_per_group)) {
-          next
-        }
-        
-        comparison_label <- paste(pair, collapse = "_vs_")
-        cat("Running merged spatial DE:", run_label, "|", cell_type, "|", niche, "|", comparison_label, "\n")
-        
-        de_tbl <- tryCatch(
-          run_pairwise_edgeR(
-            count_mat = pair_counts,
-            meta_df = pair_meta,
-            treatment_column = treatment_column,
-            patient_column = patient_column,
-            comparison_label = comparison_label
-          ),
-          error = function(e) {
-            message("Skipping ", run_label, " / ", cell_type, " / ", niche, " / ", comparison_label, ": ", conditionMessage(e))
-            NULL
-          }
-        )
-        
-        if (is.null(de_tbl) || nrow(de_tbl) == 0) {
-          next
-        }
-        
-        de_tbl$analysis_scope <- "merged"
-        de_tbl$run_label <- run_label
-        de_tbl$annotation <- cell_type
-        de_tbl$spatial_niche <- niche
-        all_results[[idx]] <- de_tbl
-        
-        file_stub <- paste(
-          gsub("[^A-Za-z0-9]+", "_", run_label),
-          "merged",
-          gsub("[^A-Za-z0-9]+", "_", cell_type),
-          niche,
-          gsub("[^A-Za-z0-9]+", "_", comparison_label),
-          sep = "_"
-        )
-        utils::write.csv(
-          de_tbl,
-          file.path(tables_dir, paste0(file_stub, "_spatial_de.csv")),
-          row.names = FALSE
-        )
-        .save_spatial_de_plots(de_tbl,
-                               dirname(tables_dir),
-                               paste0(file_stub, "_spatial_de"),
-                               expr_mat = expr_mat,
-                               polygon_df = polygon_df)
-        
-        summary_rows[[idx]] <- data.frame(
-          analysis_scope = "merged",
-          run_label = run_label,
-          annotation = cell_type,
-          spatial_niche = niche,
-          comparison = comparison_label,
-          n_samples = nrow(pair_meta),
-          n_genes_tested = nrow(de_tbl),
-          n_fdr_005 = sum(de_tbl$FDR < 0.05, na.rm = TRUE),
-          stringsAsFactors = FALSE
-        )
-        idx <- idx + 1L
-      }
-    }
-  }
-  
-  list(
-    metadata = metadata,
-    summary = if (length(summary_rows) > 0) do.call(rbind, summary_rows) else data.frame(),
-    results = if (length(all_results) > 0) do.call(rbind, all_results) else data.frame()
-  )
-}
 
 run_spatial_differential_expression <- function(gobj,
                                                 run_label = "spatial_de",
                                                 output_dir,
                                                 analysis_scope = c("auto", "sample", "merged"),
-                                                backend = c("smiDE", "edgeR"),
                                                 annotation_column = NULL,
                                                 sample_column = "sample_id",
                                                 treatment_column = "treatment",
@@ -3330,9 +2864,6 @@ run_spatial_differential_expression <- function(gobj,
                                                 min_samples_per_group = 2,
                                                 sample_replicate_column = "fov",
                                                 sample_contrast = c("one_vs_rest", "pairwise"),
-                                                min_cells_per_replicate = 5,
-                                                min_replicates_per_group = 2,
-                                                n_spatial_patches = 8,
                                                 smide_family = "nbinom2",
                                                 smide_radius = 0.05,
                                                 smide_ncores = 1,
@@ -3345,9 +2876,9 @@ run_spatial_differential_expression <- function(gobj,
                                                 smide_partner_top_n = 3,
                                                 smide_partner_padj_threshold = 0.05,
                                                 smide_include_self_partner = FALSE,
+                                                smide_predictor_mode = c("group", "count"),
                                                 smide_save_raw = TRUE,
                                                 smide_adaptive_thresholds = TRUE,
-                                                smide_edger_fallback = TRUE,
                                                 # Per-comparison + multi-stratifier extension
                                                 # (see run_smide_per_comparison_backend()):
                                                 comparisons = NULL,
@@ -3356,7 +2887,6 @@ run_spatial_differential_expression <- function(gobj,
                                                 smide_max_strata_per_comparison = 30,
                                                 save_object = FALSE) {
   analysis_scope <- match.arg(analysis_scope)
-  backend <- match.arg(backend)
   sample_contrast <- match.arg(sample_contrast)
   
   cat("\n========================================\n")
@@ -3526,217 +3056,93 @@ run_spatial_differential_expression <- function(gobj,
   expr_mat <- .giotto_get_expression(gobj, values = "raw", output = "matrix")
   
   scope_out <- if (analysis_scope == "sample") {
-    if (backend == "smiDE") {
-      run_smide_sample_backend(
+    run_smide_sample_backend(
+      expr_mat = expr_mat,
+      metadata = metadata,
+      run_label = run_label,
+      annotation_column = annotation_column,
+      tables_dir = tables_dir,
+      sample_replicate_column = sample_replicate_column,
+      sample_contrast = sample_contrast,
+      min_cells_per_niche = min_cells_per_niche,
+      spatial_locations = spatial_locations,
+      smide_family = smide_family,
+      smide_radius = smide_radius,
+      output_dir = output_dir,
+      smide_ncores = smide_ncores,
+      smide_overlap_threshold = smide_overlap_threshold,
+      smide_annotation_subset = smide_annotation_subset,
+      smide_min_detection_fraction = smide_min_detection_fraction,
+      smide_custom_predictor = smide_custom_predictor,
+      smide_partner_celltypes = smide_partner_celltypes,
+      smide_partner_source = smide_partner_source,
+      smide_partner_top_n = smide_partner_top_n,
+      smide_partner_padj_threshold = smide_partner_padj_threshold,
+      smide_include_self_partner = smide_include_self_partner,
+      smide_predictor_mode = smide_predictor_mode,
+      smide_save_raw = smide_save_raw,
+      smide_adaptive_thresholds = smide_adaptive_thresholds,
+      spatial_network_name = spatial_network_name,
+      neighbor_counts = niche_counts,
+      polygon_df = polygon_df
+    )
+  } else {
+    use_per_comparison <- !is.null(comparisons) && length(comparisons) > 0L &&
+                          !is.null(stratifier_columns) &&
+                          length(stratifier_columns) > 0L
+    if (use_per_comparison) {
+      cat("Using per-comparison + multi-stratifier smiDE wrapper:\n")
+      cat("  Stratifiers : ", paste(names(stratifier_columns),
+                                     collapse = ", "), "\n", sep = "")
+      cat("  Comparisons : ",
+          paste(vapply(comparisons, function(cp) cp$label %||% "?",
+                       character(1)), collapse = ", "), "\n", sep = "")
+      run_smide_per_comparison_backend(
         expr_mat = expr_mat,
         metadata = metadata,
         run_label = run_label,
-        annotation_column = annotation_column,
+        output_dir = output_dir,
+        stratifier_columns = stratifier_columns,
+        comparisons = comparisons,
         tables_dir = tables_dir,
-        sample_replicate_column = sample_replicate_column,
-        sample_contrast = sample_contrast,
+        sample_column = sample_column,
         min_cells_per_niche = min_cells_per_niche,
         spatial_locations = spatial_locations,
+        neighbor_counts = niche_counts,
         smide_family = smide_family,
         smide_radius = smide_radius,
+        smide_ncores = smide_ncores,
+        smide_overlap_threshold = smide_overlap_threshold,
+        smide_min_detection_fraction = smide_min_detection_fraction,
+        smide_save_raw = smide_save_raw,
+        smide_adaptive_thresholds = smide_adaptive_thresholds,
+        smide_min_cells_per_stratum = smide_min_cells_per_stratum,
+        smide_max_strata_per_comparison = smide_max_strata_per_comparison,
+        polygon_df = polygon_df
+      )
+    } else {
+      run_smide_merged_backend(
+        expr_mat = expr_mat,
+        metadata = metadata,
+        run_label = run_label,
         output_dir = output_dir,
+        annotation_column = annotation_column,
+        tables_dir = tables_dir,
+        treatment_column = treatment_column,
+        sample_column = sample_column,
+        min_cells_per_niche = min_cells_per_niche,
+        spatial_locations = spatial_locations,
+        neighbor_counts = niche_counts,
+        smide_family = smide_family,
+        smide_radius = smide_radius,
         smide_ncores = smide_ncores,
         smide_overlap_threshold = smide_overlap_threshold,
         smide_annotation_subset = smide_annotation_subset,
         smide_min_detection_fraction = smide_min_detection_fraction,
-        smide_custom_predictor = smide_custom_predictor,
-        smide_partner_celltypes = smide_partner_celltypes,
-        smide_partner_source = smide_partner_source,
-        smide_partner_top_n = smide_partner_top_n,
-        smide_partner_padj_threshold = smide_partner_padj_threshold,
-        smide_include_self_partner = smide_include_self_partner,
         smide_save_raw = smide_save_raw,
         smide_adaptive_thresholds = smide_adaptive_thresholds,
-        spatial_network_name = spatial_network_name,
-        neighbor_counts = niche_counts,
         polygon_df = polygon_df
       )
-    } else {
-      run_sample_scope_spatial_de(
-        expr_mat = expr_mat,
-        metadata = metadata,
-        run_label = run_label,
-        annotation_column = annotation_column,
-        tables_dir = tables_dir,
-        sample_replicate_column = sample_replicate_column,
-        sample_contrast = sample_contrast,
-        min_cells_per_niche = min_cells_per_niche,
-        min_cells_per_replicate = min_cells_per_replicate,
-        min_replicates_per_group = min_replicates_per_group,
-        n_spatial_patches = n_spatial_patches,
-        spatial_locations = spatial_locations,
-        polygon_df = polygon_df
-      )
-    }
-  } else {
-    if (backend == "smiDE") {
-      use_per_comparison <- !is.null(comparisons) && length(comparisons) > 0L &&
-                            !is.null(stratifier_columns) &&
-                            length(stratifier_columns) > 0L
-      if (use_per_comparison) {
-        cat("Using per-comparison + multi-stratifier smiDE wrapper:\n")
-        cat("  Stratifiers : ", paste(names(stratifier_columns),
-                                       collapse = ", "), "\n", sep = "")
-        cat("  Comparisons : ",
-            paste(vapply(comparisons, function(cp) cp$label %||% "?",
-                         character(1)), collapse = ", "), "\n", sep = "")
-        run_smide_per_comparison_backend(
-          expr_mat = expr_mat,
-          metadata = metadata,
-          run_label = run_label,
-          output_dir = output_dir,
-          stratifier_columns = stratifier_columns,
-          comparisons = comparisons,
-          tables_dir = tables_dir,
-          sample_column = sample_column,
-          min_cells_per_niche = min_cells_per_niche,
-          spatial_locations = spatial_locations,
-          neighbor_counts = niche_counts,
-          smide_family = smide_family,
-          smide_radius = smide_radius,
-          smide_ncores = smide_ncores,
-          smide_overlap_threshold = smide_overlap_threshold,
-          smide_min_detection_fraction = smide_min_detection_fraction,
-          smide_save_raw = smide_save_raw,
-          smide_adaptive_thresholds = smide_adaptive_thresholds,
-          smide_min_cells_per_stratum = smide_min_cells_per_stratum,
-          smide_max_strata_per_comparison = smide_max_strata_per_comparison,
-          polygon_df = polygon_df
-        )
-      } else {
-        run_smide_merged_backend(
-          expr_mat = expr_mat,
-          metadata = metadata,
-          run_label = run_label,
-          output_dir = output_dir,
-          annotation_column = annotation_column,
-          tables_dir = tables_dir,
-          treatment_column = treatment_column,
-          sample_column = sample_column,
-          min_cells_per_niche = min_cells_per_niche,
-          spatial_locations = spatial_locations,
-          neighbor_counts = niche_counts,
-          smide_family = smide_family,
-          smide_radius = smide_radius,
-          smide_ncores = smide_ncores,
-          smide_overlap_threshold = smide_overlap_threshold,
-          smide_annotation_subset = smide_annotation_subset,
-          smide_min_detection_fraction = smide_min_detection_fraction,
-          smide_save_raw = smide_save_raw,
-          smide_adaptive_thresholds = smide_adaptive_thresholds,
-          polygon_df = polygon_df
-        )
-      }
-    } else {
-      run_merged_scope_spatial_de(
-        expr_mat = expr_mat,
-        metadata = metadata,
-        run_label = run_label,
-        annotation_column = annotation_column,
-        sample_column = sample_column,
-        treatment_column = treatment_column,
-        patient_column = patient_column,
-        tables_dir = tables_dir,
-        min_cells_per_niche = min_cells_per_niche,
-        min_cells_per_sample = min_cells_per_sample,
-        min_samples_per_group = min_samples_per_group,
-        polygon_df = polygon_df
-      )
-    }
-  }
-
-  if (analysis_scope == "sample" && backend == "smiDE" && isTRUE(smide_edger_fallback)) {
-    skipped <- scope_out$skipped_cell_types
-    if (length(skipped) > 0) {
-      cat("  edgeR fallback for", length(skipped),
-          "cell type(s) skipped by smiDE:", paste(skipped, collapse = ", "), "\n")
-      meta_fallback <- metadata[metadata[[annotation_column]] %in% skipped, , drop = FALSE]
-
-      # Compute per-type cell counts; scale niches to the smallest group
-      n_cells_per_type <- vapply(skipped, function(ct) {
-        sum(meta_fallback[[annotation_column]] == ct, na.rm = TRUE)
-      }, integer(1))
-      min_type_count <- min(n_cells_per_type)
-
-      # Re-assign niches with fewer groups if cell count is too small for
-      # the global n_niches - this prevents the 6-niche assignment leaving
-      # only 4 cells/niche on average, which the replicate filter then drops
-      n_niches_fallback <- max(2L, min(n_niches, as.integer(floor(min_type_count / 10L))))
-      if (n_niches_fallback < n_niches) {
-        cat(sprintf(
-          "  [fallback] Re-assigning niches: %d \u2192 %d (smallest type has %d cells)\n",
-          n_niches, n_niches_fallback, min_type_count
-        ))
-        fb_ids <- meta_fallback$cell_ID
-        fb_niche_props <- normalise_rows(niche_counts[
-          match(fb_ids, rownames(niche_counts)), , drop = FALSE
-        ])
-        meta_fallback$spatial_niche <- assign_spatial_niches(
-          fb_niche_props, n_niches = n_niches_fallback
-        )
-      }
-
-      # k-means on neighborhood composition can produce unbalanced groups when
-      # cells are spatially concentrated (e.g. all B-cells cluster in one niche).
-      # If the smaller niche has < 5 cells, fall back to a coordinate-based
-      # binary split (median sdimx), which guarantees a near-equal division.
-      fallback_floor <- 5L
-      niche_tab <- table(meta_fallback$spatial_niche)
-      if (min(niche_tab) < fallback_floor && !is.null(spatial_locations)) {
-        fb_ids <- meta_fallback$cell_ID
-        loc_idx <- match(fb_ids, spatial_locations$cell_ID)
-        fb_x <- spatial_locations$sdimx[loc_idx]
-        if (!all(is.na(fb_x))) {
-          med_x <- stats::median(fb_x, na.rm = TRUE)
-          meta_fallback$spatial_niche <- ifelse(fb_x >= med_x, "geo_niche_A", "geo_niche_B")
-          cat(sprintf(
-            "  [fallback] k-means unbalanced (%s); using coordinate split (median sdimx=%.1f)\n",
-            paste(names(niche_tab), niche_tab, sep = "=", collapse = ", "), med_x
-          ))
-        }
-      }
-
-      fallback_min <- adaptive_min_cells_per_niche(
-        n_cells   = min_type_count,
-        base_min  = min_cells_per_niche,
-        n_niches  = n_niches_fallback,
-        floor_min = fallback_floor
-      )
-
-      # With few cells spread across many FOVs, the replicate filter strips
-      # nearly everything even after niche reduction. In the fallback (last
-      # resort) always use 1 so no cell is dropped by this filter.
-      fallback_rep_min <- 1L
-      cat(sprintf(
-        "  [fallback] min_cells_per_replicate set to 1 (was %d; fallback mode)\n",
-        min_cells_per_replicate
-      ))
-
-      fallback_out <- run_sample_scope_spatial_de(
-        expr_mat                 = expr_mat,
-        metadata                 = meta_fallback,
-        run_label                = paste0(run_label, "_edgeR_fallback"),
-        annotation_column        = annotation_column,
-        tables_dir               = tables_dir,
-        sample_replicate_column  = sample_replicate_column,
-        sample_contrast          = sample_contrast,
-        min_cells_per_niche      = fallback_min,
-        min_cells_per_replicate  = fallback_rep_min,
-        min_replicates_per_group = min_replicates_per_group,
-        n_spatial_patches        = n_spatial_patches,
-        spatial_locations        = spatial_locations,
-        polygon_df               = polygon_df
-      )
-      if (nrow(fallback_out$results) > 0) {
-        fallback_out$results$backend <- "edgeR_fallback"
-        scope_out$results <- rbind(scope_out$results, fallback_out$results)
-        scope_out$summary <- rbind(scope_out$summary, fallback_out$summary)
-      }
     }
   }
 
