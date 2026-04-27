@@ -68,7 +68,7 @@ quality_control <- function(gobj,
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
 
   # Drop SystemControl probes before any stats or filtering. These are QC
-  # probes, not real genes — keeping them pollutes downstream InSituType gene
+  # probes, not real genes - keeping them pollutes downstream InSituType gene
   # lists, dim reduction, and feature plots. Negative/FalseCode probes are
   # retained: InSituType uses them for per-cell background estimation.
   all_feat_ids_pre_ctrl <- fDataDT(gobj)$feat_ID
@@ -169,8 +169,8 @@ quality_control <- function(gobj,
     geom_vline(xintercept = cell_min_genes,  color = "black", linetype = "dotted", linewidth = 0.9) +
     geom_vline(xintercept = gene_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
     labs(
-      title    = "Detected Genes Per Cell",
-      subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
+      title    = "Detected genes per cell",
+      subtitle = NULL,
       x        = "Detected genes",
       y        = "Number of cells"
     ) +
@@ -186,9 +186,9 @@ quality_control <- function(gobj,
     geom_vline(xintercept = count_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
     scale_x_log10() +
     labs(
-      title    = "Total Counts Per Cell",
-      subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
-      x        = log10_axis_label("Total Counts Per Cell"),
+      title    = "Total counts per cell",
+      subtitle = NULL,
+      x        = log10_axis_label("Total counts per cell"),
       y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
@@ -201,8 +201,8 @@ quality_control <- function(gobj,
       geom_vline(xintercept = max_mito_pct,    color = "black", linetype = "dotted", linewidth = 0.9) +
       geom_vline(xintercept = mito_median_pre, color = "red",   linetype = "dotted", linewidth = 0.9) +
       labs(
-        title    = "Mitochondrial Fraction",
-        subtitle = "Before filtering. Black dotted = threshold, red dotted = median.",
+        title    = "Mitochondrial fraction",
+        subtitle = NULL,
         x        = "Mitochondrial reads (%)",
         y        = "Number of cells"
       ) +
@@ -210,13 +210,13 @@ quality_control <- function(gobj,
 
     combined <- (p1 | p2 | p3) +
       plot_annotation(
-        title = sample_plot_title(sample_id, "Quality Control Metrics Before Filtering"),
+        title = sample_plot_title(sample_id, "Quality control metrics before filtering"),
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
   } else {
     combined <- (p1 | p2) +
       plot_annotation(
-        title = sample_plot_title(sample_id, "Quality Control Metrics Before Filtering"),
+        title = sample_plot_title(sample_id, "Quality control metrics before filtering"),
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
   }
@@ -231,8 +231,58 @@ quality_control <- function(gobj,
   )
   
   cat("✓ Pre-filtering plots saved\n\n")
-  
-  # Spatial QC plots — polygon rendering (cells drawn as real polygons, not
+
+  # Per-FOV diagnostic heat strip: median genes/cell + cell count per FOV.
+  # Quick "is one FOV bad?" view before filtering.
+  if ("fov" %in% names(metadata)) {
+    fov_summary <- metadata %>%
+      dplyr::filter(!is.na(fov)) %>%
+      dplyr::group_by(fov) %>%
+      dplyr::summarise(
+        n_cells       = dplyr::n(),
+        median_genes  = stats::median(nr_feats, na.rm = TRUE),
+        median_counts = stats::median(total_expr, na.rm = TRUE),
+        .groups       = "drop"
+      ) %>%
+      tidyr::pivot_longer(
+        cols      = c("n_cells", "median_genes", "median_counts"),
+        names_to  = "metric",
+        values_to = "value"
+      ) %>%
+      dplyr::mutate(
+        metric = dplyr::recode(metric,
+                               n_cells       = "Cells per FOV",
+                               median_genes  = "Median genes per cell",
+                               median_counts = "Median counts per cell"),
+        # Per-metric z-score so all three rows share a 0-centred fill scale.
+        value_z = (value - stats::ave(value, metric, FUN = function(v) mean(v, na.rm = TRUE))) /
+                  pmax(stats::ave(value, metric, FUN = function(v) stats::sd(v, na.rm = TRUE)), 1e-6)
+      )
+
+    p_fov <- ggplot(fov_summary, aes(x = factor(fov), y = metric, fill = value_z)) +
+      geom_tile(colour = "white", linewidth = 0.2) +
+      geom_text(aes(label = round(value, 1)), size = 2.6, colour = "grey15") +
+      scale_fill_gradient2(low = "#2166AC", mid = "white", high = "#B2182B",
+                           midpoint = 0, name = "Z-score") +
+      labs(
+        title    = sample_plot_title(sample_id, "QC metrics per FOV"),
+        subtitle = NULL,
+        x        = "FOV",
+        y        = NULL
+      ) +
+      presentation_theme(base_size = 11, x_angle = 45)
+
+    save_presentation_plot(
+      plot     = p_fov,
+      filename = file.path(results_folder, paste0(sample_id, "_qc_per_fov_strip.png")),
+      width    = max(10, 0.25 * length(unique(fov_summary$fov)) + 4),
+      height   = 6,
+      dpi      = 300
+    )
+    cat("  Wrote per-FOV QC strip\n")
+  }
+
+  # Spatial QC plots - polygon rendering (cells drawn as real polygons, not
   # points). Each metric keeps its own PNG, and all metrics are additionally
   # combined into one enlarged side-by-side figure. For composite samples,
   # per-sub-biopsy top-bottom stacked variants are written into a subfolder.
@@ -240,12 +290,12 @@ quality_control <- function(gobj,
 
   has_mito <- "mito_pct" %in% names(metadata)
   spatial_metrics <- list(
-    list(column = "nr_feats",   label = "Detected Genes Per Cell",    slug = "genes_per_cell"),
-    list(column = "total_expr", label = "Total Counts Per Cell",      slug = "total_counts")
+    list(column = "nr_feats",   label = "Detected genes per cell",    slug = "genes_per_cell"),
+    list(column = "total_expr", label = "Total counts per cell",      slug = "total_counts")
   )
   if (has_mito) {
     spatial_metrics[[length(spatial_metrics) + 1]] <-
-      list(column = "mito_pct", label = "Mitochondrial Fraction (%)", slug = "mito_pct")
+      list(column = "mito_pct", label = "Mitochondrial fraction (%)", slug = "mito_pct")
   }
 
   # Render one polygon panel per metric (per-sample context: linewidth stays
@@ -290,9 +340,9 @@ quality_control <- function(gobj,
       save_presentation_plot(
         plot     = panels[[i]],
         filename = file.path(out_dir, paste0(file_prefix, "_spatial_", m$slug, ".png")),
-        width    = 12,
-        height   = 10,
-        dpi      = 300,
+        width    = 14,
+        height   = 11,
+        dpi      = 600,
         bg       = "white"
       )
     }
@@ -309,8 +359,8 @@ quality_control <- function(gobj,
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
     }
-    combined_width  <- if (stack_direction == "side") 12 * sum(ok) else 14
-    combined_height <- if (stack_direction == "side") 10          else 10 * sum(ok)
+    combined_width  <- if (stack_direction == "side") 14 * sum(ok) else 16
+    combined_height <- if (stack_direction == "side") 11          else 12 * sum(ok)
     combined_name   <- if (stack_direction == "side") {
       paste0(file_prefix, "_spatial_qc_combined.png")
     } else {
@@ -321,7 +371,7 @@ quality_control <- function(gobj,
       filename = file.path(out_dir, combined_name),
       width    = combined_width,
       height   = combined_height,
-      dpi      = 300,
+      dpi      = 600,
       bg       = "white"
     )
     invisible(TRUE)
@@ -334,7 +384,7 @@ quality_control <- function(gobj,
       out_dir         = results_folder,
       file_prefix     = sample_id,
       stack_direction = "side",
-      title_text      = sample_plot_title(sample_id, "Spatial Quality Control")
+      title_text      = sample_plot_title(sample_id, "Spatial quality control")
     )
 
     # Composite samples: also emit per-sub-biopsy top-bottom stacked variants.
@@ -380,7 +430,7 @@ quality_control <- function(gobj,
             out_dir         = sub_dir,
             file_prefix     = sub_id,
             stack_direction = "stack",
-            title_text      = sample_plot_title(sub_id, "Spatial Quality Control")
+            title_text      = sample_plot_title(sub_id, "Spatial quality control")
           )
         }
       }
@@ -470,8 +520,8 @@ quality_control <- function(gobj,
     geom_histogram(bins = 50, fill = "steelblue", color = "white") +
     geom_vline(xintercept = gene_median_post, color = "red", linetype = "dotted", linewidth = 0.9) +
     labs(
-      title    = "Detected Genes Per Cell",
-      subtitle = "After filtering. Red dotted = median.",
+      title    = "Detected genes per cell",
+      subtitle = NULL,
       x        = "Detected genes",
       y        = "Number of cells"
     ) +
@@ -482,16 +532,16 @@ quality_control <- function(gobj,
     geom_vline(xintercept = count_median_post, color = "red", linetype = "dotted", linewidth = 0.9) +
     scale_x_log10() +
     labs(
-      title    = "Total Counts Per Cell",
-      subtitle = "After filtering. Red dotted = median.",
-      x        = log10_axis_label("Total Counts Per Cell"),
+      title    = "Total counts per cell",
+      subtitle = NULL,
+      x        = log10_axis_label("Total counts per cell"),
       y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
-  
+
   combined_post <- (p1_post | p2_post) +
     plot_annotation(
-      title = sample_plot_title(sample_id, "Quality Control Metrics After Filtering"),
+      title = sample_plot_title(sample_id, "Quality control metrics after filtering"),
       theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
     )
   
@@ -503,7 +553,52 @@ quality_control <- function(gobj,
     dpi = 300,
     bg = "white"
   )
-  
+
+  # Before-vs-after density overlay: shows how filtering reshapes the
+  # distribution. Both metrics on log10 scale to pull out the long tail.
+  density_df <- dplyr::bind_rows(
+    metadata      %>% dplyr::transmute(stage = "Before", nr_feats, total_expr_plot),
+    metadata_post %>% dplyr::transmute(stage = "After",  nr_feats, total_expr_plot)
+  ) %>%
+    dplyr::mutate(stage = factor(stage, levels = c("Before", "After")))
+
+  p_dens_genes <- ggplot(density_df, aes(x = nr_feats, fill = stage, colour = stage)) +
+    geom_density(alpha = 0.35, linewidth = 0.7) +
+    scale_fill_manual(values = c(Before = "#777777", After = "#2166AC"),
+                      name = "Filter stage") +
+    scale_colour_manual(values = c(Before = "#444444", After = "#1A4F8A"),
+                        guide = "none") +
+    labs(title = "Detected genes per cell", subtitle = NULL,
+         x = "Detected genes", y = "Density") +
+    presentation_theme(base_size = 11)
+
+  p_dens_counts <- ggplot(density_df, aes(x = total_expr_plot, fill = stage, colour = stage)) +
+    geom_density(alpha = 0.35, linewidth = 0.7) +
+    scale_x_log10() +
+    scale_fill_manual(values = c(Before = "#777777", After = "#2166AC"),
+                      name = "Filter stage") +
+    scale_colour_manual(values = c(Before = "#444444", After = "#1A4F8A"),
+                        guide = "none") +
+    labs(title = "Total counts per cell", subtitle = NULL,
+         x = log10_axis_label("Total counts per cell"), y = "Density") +
+    presentation_theme(base_size = 11)
+
+  density_combined <- (p_dens_genes | p_dens_counts) +
+    plot_annotation(
+      title = sample_plot_title(sample_id, "QC effect on metric distributions"),
+      theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 16))
+    ) +
+    plot_layout(guides = "collect")
+
+  save_presentation_plot(
+    plot = density_combined,
+    filename = file.path(results_folder, paste0(sample_id, "_qc_before_after_density.png")),
+    width = 14,
+    height = 5,
+    dpi = 300,
+    bg = "white"
+  )
+
   cat("✓ Post-filtering plots saved\n\n")
   
   # Save QC summary

@@ -192,17 +192,21 @@ create_clustering_plots <- function(umap_df,
                                     alpha = 0.8,
                                     title_suffix = "") {
   
+  # Subtitles on the individual panels just say the projection type - the
+  # main panel title (passed via title_suffix on the combined plot) already
+  # carries the "Leiden" framing, so we don't repeat it here.
   cat("Creating UMAP plot...\n")
   custom_umap <- ggplot(umap_df, aes(x = UMAP_1, y = UMAP_2, color = cluster)) +
     geom_point(size = point_size_umap, alpha = alpha, stroke = 0) +
     scale_color_manual(
       values = clus_colors,
-      name = "Cluster"
+      name = "Leiden cluster"
     ) +
     labs(
-      title = paste0("UMAP Projection", title_suffix),
-      x = "UMAP Dimension 1",
-      y = "UMAP Dimension 2"
+      title    = paste0("UMAP projection", title_suffix),
+      subtitle = "UMAP",
+      x        = "UMAP dimension 1",
+      y        = "UMAP dimension 2"
     ) +
     presentation_theme(base_size = 12, legend_position = "right") +
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
@@ -213,12 +217,13 @@ create_clustering_plots <- function(umap_df,
     geom_point(size = point_size_tsne, alpha = alpha, stroke = 0) +
     scale_color_manual(
       values = clus_colors,
-      name = "Cluster"
+      name = "Leiden cluster"
     ) +
     labs(
-      title = paste0("t-SNE Projection", title_suffix),
-      x = "t-SNE Dimension 1",
-      y = "t-SNE Dimension 2"
+      title    = paste0("t-SNE projection", title_suffix),
+      subtitle = "t-SNE",
+      x        = "t-SNE dimension 1",
+      y        = "t-SNE dimension 2"
     ) +
     presentation_theme(base_size = 12, legend_position = "right") +
     guides(color = guide_legend(override.aes = list(size = 3, alpha = 1))) +
@@ -228,11 +233,16 @@ create_clustering_plots <- function(umap_df,
   # rule, spatial cell plots must render actual cell polygons (not points).
   # 05_Clustering.R invokes plot_cells_polygon() directly after the dim-reduction
   # panels are produced. The combined figure therefore shows UMAP | t-SNE only.
+  # On the combined plot we strip the per-panel title (the patchwork-level
+  # title already says "Leiden clusters") and keep just the projection-type
+  # subtitle so each subplot is clearly labelled.
   cat("Creating combined plot (UMAP | t-SNE)...\n")
-  combined_plot <- (custom_umap + custom_tsne) +
+  combined_umap <- custom_umap + labs(title = NULL)
+  combined_tsne <- custom_tsne + labs(title = NULL)
+  combined_plot <- (combined_umap + combined_tsne) +
     plot_layout(guides = "collect") +
     plot_annotation(
-      title = paste0("Clustering Results", title_suffix),
+      title = paste0("Clustering results", title_suffix),
       theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
     )
 

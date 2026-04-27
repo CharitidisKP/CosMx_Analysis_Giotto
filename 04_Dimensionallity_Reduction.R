@@ -306,6 +306,9 @@ dimensionality_reduction <- function(gobj,
   
   # Scree plot - capture the ggplot so we can attach a title that matches the
   # rest of the pipeline's presentation style, then save via the shared helper.
+  # Giotto's screePlot returns a ggplot but applies its own theme at the end,
+  # which silently overwrites the title set by + ggtitle(). Re-apply both the
+  # title AND presentation_theme() AFTER capturing the object.
   tryCatch({
     scree_p <- screePlot(
       gobject     = gobj,
@@ -314,9 +317,14 @@ dimensionality_reduction <- function(gobj,
       return_plot = TRUE,
       show_plot   = FALSE
     )
-    scree_p <- scree_p + labs(
-      title = sample_plot_title(sample_id, "PCA Scree Plot")
-    )
+    scree_p <- scree_p +
+      labs(
+        title    = sample_plot_title(sample_id, "PCA scree plot"),
+        subtitle = NULL,
+        x        = "Principal component",
+        y        = "Variance explained"
+      ) +
+      presentation_theme(base_size = 12)
     save_presentation_plot(
       plot     = scree_p,
       filename = file.path(results_folder, paste0(sample_id, "_scree_plot.png")),

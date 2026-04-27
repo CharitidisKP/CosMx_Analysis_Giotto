@@ -287,3 +287,319 @@ clean_plot_text <- function(x) {
   out[not_na] <- trimws(out[not_na])
   out
 }
+
+
+## ---- Sentence-case label utilities ----------------------------------------
+
+# Tokens preserved verbatim (treated as abbreviations / proper nouns).
+.DISPLAY_PRESERVE_TOKENS <- c(
+  "UMAP", "PCA", "tSNE", "t-SNE", "FOV", "FOVs", "L-R", "LR",
+  "QC", "RNA", "DNA", "HCA", "CART", "CCI", "DE", "GSEA", "ORA",
+  "T0", "T12", "S1", "S2", "BCR", "TCR", "MHC", "ID", "IDs", "FDR",
+  "log2FC", "log2", "CD4", "CD8", "B", "T", "NK", "GO", "KEGG",
+  "MSigDB", "GO:BP", "PROGENy", "II", "III", "IV"
+)
+
+#' Sentence-case a string while preserving abbreviations.
+#'
+#' First word capitalised, all other words lowercased, except all-caps tokens
+#' (>=2 chars, all-letters) and tokens in .DISPLAY_PRESERVE_TOKENS, which
+#' are kept verbatim. Words after a period are also capitalised. Single-letter
+#' tokens like "B" or "T" are preserved as-is when they're flanked by
+#' another label-token ("B cell", "T cell").
+#'
+#' @param text character vector (length >=1); NA-safe
+#' @return character vector, same length
+.title_case_sentence <- function(text) {
+  if (is.null(text) || length(text) == 0) return(text)
+  out <- as.character(text)
+  out[is.na(text)] <- NA_character_
+
+  cap_word <- function(w) {
+    if (!nzchar(w)) return(w)
+    paste0(toupper(substring(w, 1, 1)), tolower(substring(w, 2)))
+  }
+
+  process_one <- function(s) {
+    if (is.na(s) || !nzchar(s)) return(s)
+
+    # Split on whitespace into tokens, preserve original spacing on rejoin.
+    tokens <- strsplit(s, "(?<=\\s)|(?=\\s)", perl = TRUE)[[1]]
+    word_idx <- which(!grepl("^\\s+$", tokens))
+    if (length(word_idx) == 0) return(s)
+
+    # Track whether the previous non-space token ended with a period
+    # (or this is the very first word) so we capitalise sentence starts.
+    cap_next <- TRUE
+    for (i in word_idx) {
+      tok <- tokens[i]
+
+      # Preserve verbatim if it matches a known token (case-sensitive) OR
+      # the alphabetic part is all uppercase (>=2 chars): e.g. "(UMAP)".
+      alpha <- gsub("[^A-Za-z]", "", tok)
+      preserve <- tok %in% .DISPLAY_PRESERVE_TOKENS ||
+                  alpha %in% .DISPLAY_PRESERVE_TOKENS ||
+                  (nchar(alpha) >= 2 && alpha == toupper(alpha) &&
+                   alpha != tolower(alpha))
+
+      if (!preserve) {
+        if (cap_next) {
+          tokens[i] <- cap_word(tok)
+        } else {
+          tokens[i] <- tolower(tok)
+        }
+      }
+
+      # Sentence-end detection: token ends with `.`, `?`, or `!` (not part
+      # of an abbreviation we just preserved).
+      cap_next <- !preserve && grepl("[.!?]\\s*$", tok)
+      # Always reset to TRUE for the very first word after a sentence end.
+    }
+    paste(tokens, collapse = "")
+  }
+
+  vapply(out, process_one, character(1), USE.NAMES = FALSE)
+}
+
+#' Display label: clean punctuation + sentence case.
+#'
+#' Standard transform applied to every user-facing legend title, axis title,
+#' and plot title authored by pipeline code. Combines clean_plot_text() with
+#' .title_case_sentence() so the same input ("leiden_clust") becomes the
+#' same output ("Leiden cluster") regardless of where it originated.
+#'
+#' @param text input string or vector
+#' @return character vector, same length as input
+.display_label <- function(text) {
+  .title_case_sentence(clean_plot_text(text))
+}
+
+
+## ---- Per-FOV plot looper --------------------------------------------------
+
+#' Emit one PNG per FOV that contains at least one focus-celltype cell.
+#'
+#' Generic looper used by scripts 07/08/09/10/11. Iterates the FOVs that
+#' contain >=1 cell matching target_celltype_regex (or every FOV if regex is
+#' NULL), filters poly_df to that FOV, calls plot_fn(poly_df_fov, fov_id) to
+#' build a ggplot, then saves to <out_dir>/<fname_base>_FOV_<fov>.png. Both
+#' filename and figure title carry sample_id + FOV.
+#'
+#' Skips FOVs with too few cells (default <10) to avoid noisy near-empty plots.
+#'
+#' @param poly_df    polygon vertex frame from .extract_polygon_df(), must have
+#'                   columns x, y, cell_ID, geom, part (or equivalent group)
+#'                   AND a "fov" column (joined upstream from cell metadata)
+#' @param meta       cell metadata data.frame (must include cell_ID, fov, and
+#'                   the celltype column referenced by target_celltype_regex)
+#' @param celltype_col name of the celltype column in meta (e.g. "celltype")
+#' @param target_celltype_regex regex; if NULL, every FOV is included
+#' @param plot_fn    function(poly_df_fov, fov_id) -> ggplot
+#' @param out_dir    directory; will be created
+#' @param fname_base filename prefix; FOV id is appended as "_FOV_<n>.png"
+#' @param sample_id  used in the filename prefix and the figure title
+#' @param title_prefix human-readable title prefix (e.g. "Annotation"); the
+#'                   sample id and FOV id are appended automatically
+#' @param min_cells  skip FOVs with fewer than this many target cells (default 5)
+#' @param width,height,dpi forwarded to save_presentation_plot
+#' @return character vector of the file paths written (invisibly)
+.emit_per_fov_plots <- function(poly_df, meta, celltype_col,
+                                target_celltype_regex,
+                                plot_fn, out_dir, fname_base, sample_id,
+                                title_prefix = NULL,
+                                min_cells = 5,
+                                width = 10, height = 10, dpi = 600) {
+
+  if (is.null(poly_df) || !nrow(poly_df) || !"fov" %in% names(poly_df)) {
+    return(invisible(character(0)))
+  }
+  if (is.null(meta) || !"fov" %in% names(meta)) {
+    return(invisible(character(0)))
+  }
+
+  is_target <- if (is.null(target_celltype_regex) ||
+                   !nzchar(target_celltype_regex) ||
+                   !celltype_col %in% names(meta)) {
+    rep(TRUE, nrow(meta))
+  } else {
+    grepl(target_celltype_regex, as.character(meta[[celltype_col]]),
+          ignore.case = TRUE, perl = TRUE)
+  }
+
+  meta_target <- meta[is_target & !is.na(meta$fov), , drop = FALSE]
+  if (!nrow(meta_target)) return(invisible(character(0)))
+
+  fov_counts <- table(meta_target$fov)
+  fovs <- names(fov_counts)[fov_counts >= min_cells]
+  if (!length(fovs)) return(invisible(character(0)))
+
+  ensure_dir(out_dir)
+  written <- character(0)
+
+  for (fv in fovs) {
+    df_fv <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
+    if (!nrow(df_fv)) next
+
+    p <- tryCatch(plot_fn(df_fv, fv),
+                  error = function(e) {
+                    message("  [per-FOV] FOV ", fv, " plot failed: ",
+                            conditionMessage(e))
+                    NULL
+                  })
+    if (is.null(p)) next
+
+    title_text <- paste0(
+      sample_id, " - ",
+      if (!is.null(title_prefix) && nzchar(title_prefix))
+        paste0(title_prefix, " - ") else "",
+      "FOV ", fv
+    )
+    p <- p + ggplot2::labs(title = title_text)
+
+    fname <- file.path(out_dir,
+                       paste0(fname_base, "_FOV_", fv, ".png"))
+    save_presentation_plot(p, fname,
+                           width = width, height = height, dpi = dpi)
+    written <- c(written, fname)
+  }
+
+  invisible(written)
+}
+
+
+## ---- Shared proximity heatmap (ComplexHeatmap-based) -----------------------
+
+#' Render a celltype-by-celltype proximity heatmap using ComplexHeatmap.
+#'
+#' Shared by 09_Spatial_Network and 11_B_Cell_Analysis so both heatmaps look
+#' identical in style. 09 passes the full enrichment matrix; 11 passes the
+#' same matrix but flags the focus celltype to be reordered/highlighted.
+#'
+#' Falls back to pheatmap if ComplexHeatmap is unavailable.
+#'
+#' @param mat            square numeric matrix (celltype x celltype enrichment Z)
+#' @param title          plot title string
+#' @param subtitle       optional subtitle (NULL = none)
+#' @param focus_label    if non-NULL, this row/col is moved to position 1 and
+#'                       highlighted with a red border annotation
+#' @param filename       output PNG path
+#' @param width,height,dpi save dimensions
+#' @param colour_breaks  numeric vector of break points (default symmetric)
+.plot_proximity_heatmap_complex <- function(mat,
+                                            title,
+                                            subtitle = NULL,
+                                            focus_label = NULL,
+                                            filename,
+                                            width = 12,
+                                            height = 10,
+                                            dpi = 300,
+                                            colour_breaks = NULL) {
+
+  if (is.null(mat) || !nrow(mat) || !ncol(mat)) return(invisible(NULL))
+
+  # Reorder to put focus row/col first if requested.
+  if (!is.null(focus_label) && nzchar(focus_label)) {
+    matched <- which(rownames(mat) == focus_label)
+    if (length(matched) == 1L) {
+      ord <- c(matched, setdiff(seq_len(nrow(mat)), matched))
+      mat <- mat[ord, ord, drop = FALSE]
+    }
+  }
+
+  display_rownames <- .display_label(rownames(mat))
+  display_colnames <- .display_label(colnames(mat))
+
+  use_complex <- requireNamespace("ComplexHeatmap", quietly = TRUE) &&
+                 requireNamespace("circlize", quietly = TRUE)
+
+  if (use_complex) {
+    if (is.null(colour_breaks)) {
+      mx <- max(abs(mat), na.rm = TRUE)
+      mx <- if (!is.finite(mx) || mx == 0) 1 else mx
+      colour_breaks <- c(-mx, 0, mx)
+    }
+    col_fn <- circlize::colorRamp2(colour_breaks,
+                                   c("#2166AC", "white", "#B2182B"))
+
+    # Build optional row/col annotation that highlights the focus celltype.
+    top_anno <- NULL
+    left_anno <- NULL
+    if (!is.null(focus_label) && nzchar(focus_label) &&
+        focus_label %in% rownames(mat)) {
+      hl <- rep("other", nrow(mat))
+      hl[1] <- "focus"
+      top_anno <- ComplexHeatmap::HeatmapAnnotation(
+        focus = hl,
+        col = list(focus = c(focus = "#B2182B", other = "grey90")),
+        show_legend = FALSE,
+        annotation_name_gp = grid::gpar(fontsize = 0)
+      )
+      left_anno <- ComplexHeatmap::rowAnnotation(
+        focus = hl,
+        col = list(focus = c(focus = "#B2182B", other = "grey90")),
+        show_legend = FALSE,
+        annotation_name_gp = grid::gpar(fontsize = 0)
+      )
+    }
+
+    rownames(mat) <- display_rownames
+    colnames(mat) <- display_colnames
+
+    ht <- ComplexHeatmap::Heatmap(
+      mat,
+      name = "Enrichment",
+      col = col_fn,
+      cluster_rows = is.null(focus_label),
+      cluster_columns = is.null(focus_label),
+      rect_gp = grid::gpar(col = "white", lwd = 0.5),
+      row_names_side = "left",
+      column_names_side = "bottom",
+      column_names_rot = 45,
+      row_names_gp = grid::gpar(fontsize = 10),
+      column_names_gp = grid::gpar(fontsize = 10),
+      column_title = title,
+      column_title_gp = grid::gpar(fontsize = 14, fontface = "bold"),
+      row_title = if (!is.null(subtitle)) subtitle else NULL,
+      row_title_gp = grid::gpar(fontsize = 11, col = "grey20"),
+      heatmap_legend_param = list(
+        title = "Enrichment",
+        legend_direction = "vertical"
+      ),
+      top_annotation = top_anno,
+      left_annotation = left_anno
+    )
+
+    grDevices::png(filename = filename, width = width, height = height,
+                   units = "in", res = dpi, type = "cairo", bg = "white")
+    on.exit(grDevices::dev.off(), add = TRUE)
+    ComplexHeatmap::draw(
+      ht,
+      padding = grid::unit(c(20, 30, 20, 30), "mm"),
+      heatmap_legend_side = "right"
+    )
+    return(invisible(filename))
+  }
+
+  # ---- pheatmap fallback ---------------------------------------------------
+  if (!requireNamespace("pheatmap", quietly = TRUE)) {
+    message("  [proximity-heatmap] neither ComplexHeatmap nor pheatmap available; skipping")
+    return(invisible(NULL))
+  }
+  rownames(mat) <- display_rownames
+  colnames(mat) <- display_colnames
+  grDevices::png(filename = filename, width = width, height = height,
+                 units = "in", res = dpi, type = "cairo", bg = "white")
+  on.exit(grDevices::dev.off(), add = TRUE)
+  pheatmap::pheatmap(
+    mat,
+    main = title,
+    cellwidth = 18,
+    cellheight = 18,
+    fontsize_row = 10,
+    fontsize_col = 10,
+    cluster_rows = is.null(focus_label),
+    cluster_cols = is.null(focus_label),
+    color = grDevices::colorRampPalette(c("#2166AC", "white", "#B2182B"))(100)
+  )
+  invisible(filename)
+}

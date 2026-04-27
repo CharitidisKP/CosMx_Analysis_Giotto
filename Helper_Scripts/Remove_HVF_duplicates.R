@@ -108,12 +108,12 @@ remove_hvf_duplicates <- function(gobj, hvgs, output_dir = NULL, verbose = TRUE)
 
       poly_obj <- gobj_sub@spatial_info$cell
       # Guard against Giotto versions that renamed or dropped the
-      # unique_ID_cache slot — fall back to spatVector IDs if needed.
+      # unique_ID_cache slot - fall back to spatVector IDs if needed.
       all_poly_ids <- tryCatch(
         poly_obj@unique_ID_cache,
         error = function(e) {
           if (verbose) cat("  @unique_ID_cache unavailable (",
-                           conditionMessage(e), ") — using spatVector IDs\n")
+                           conditionMessage(e), ") - using spatVector IDs\n")
           tryCatch(
             as.character(terra::values(poly_obj@spatVector)$poly_ID),
             error = function(e2) character(0)

@@ -19,7 +19,7 @@
 #' Marker Gene Analysis
 #'
 #' Per-cluster marker discovery (one-vs-all) using scran. This is NOT
-#' cross-sample differential expression — see script 12 for that.
+#' cross-sample differential expression - see script 12 for that.
 #'
 #' @param gobj Giotto object or path
 #' @param sample_id Sample identifier
@@ -32,7 +32,7 @@
 # Replaces Giotto::plotMetaDataHeatmap() with a diverging blue/white/red z-score
 # tile heatmap. Genes are row-z-scored across clusters and clipped to [-2, 2]
 # so outlier clusters do not dominate the colour scale. Gene order on the y-axis
-# is preserved from the input vector (so callers control grouping — main markers
+# is preserved from the input vector (so callers control grouping - main markers
 # before subtype markers for the B-cell variant). Panel-absent genes drop
 # silently via an intersect with the expression matrix.
 .cluster_marker_heatmap <- function(gobj, sample_id, genes, cluster_column,
@@ -387,6 +387,37 @@ marker_analysis <- function(gobj,
         dpi      = 300
       )
       cat("  \u2713 Dotplot saved\n")
+
+      # B-cell-only dotplot variant. Reuses the per-cluster mean/pct rows
+      # already computed above; just re-filters to b_all genes that are on
+      # the panel (no second per-cluster scan required).
+      bdp_genes <- intersect(b_all, rownames(expr))
+      if (length(bdp_genes) > 0) {
+        bdot_df <- dot_df[as.character(dot_df$gene) %in% bdp_genes, , drop = FALSE]
+        bdot_df$gene <- factor(as.character(bdot_df$gene), levels = bdp_genes)
+        p_bdot <- ggplot2::ggplot(bdot_df,
+            ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
+          ggplot2::geom_point() +
+          ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
+                                         name = "Mean expression") +
+          ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
+          ggplot2::scale_y_discrete(limits = rev(bdp_genes)) +
+          ggplot2::labs(
+            title    = sample_plot_title(sample_id, "B-cell marker dotplot"),
+            subtitle = NULL,
+            x = "Leiden cluster", y = "Gene"
+          ) +
+          presentation_theme(base_size = 11)
+        save_presentation_plot(
+          plot     = p_bdot,
+          filename = file.path(results_folder,
+                               paste0(sample_id, "_bcell_dotplot.png")),
+          width    = max(6, 0.35 * length(cluster_levels) + 2),
+          height   = max(6, 0.30 * length(bdp_genes) + 3),
+          dpi      = 300
+        )
+        cat("  \u2713 B-cell dotplot saved\n")
+      }
     }
   }, error = function(e) {
     cat("\u26A0 Dotplot failed:", conditionMessage(e), "\n")

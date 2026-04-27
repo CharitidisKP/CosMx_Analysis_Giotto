@@ -83,7 +83,7 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
     )
 }
 
-# Composite sub-sample discovery — thin wrapper over the shared helper in
+# Composite sub-sample discovery - thin wrapper over the shared helper in
 # Helper_Scripts/Helper_Functions.R. Keeps the internal dot-prefixed name so
 # existing call sites in this file are unchanged.
 .discover_composite_subsamples <- function(sample_row, sample_sheet_path) {
@@ -317,7 +317,7 @@ create_visualizations <- function(gobj,
           fill_col       = ct_col,
           fill_as_factor = TRUE,
           colour_map     = cmap_ct,
-          legend_title   = "Cell Type",
+          legend_title   = "Cell type",
           title_txt      = plot_title_for_sample(title_row, title_subtitle,
                                                  sample_id_fallback = sample_label)
         )
@@ -329,6 +329,66 @@ create_visualizations <- function(gobj,
             width = 14, height = 10, dpi = 300
           )
           cat("  ✓ Spatial", ct_col, "(polygon)\n")
+
+          # Faceted variant - one panel per cell type, useful for spotting
+          # rare populations that get drowned in the "all on one" view.
+          # Built from the polygon data table so we can use facet_wrap;
+          # spatInSituPlotPoints doesn't expose facets.
+          tryCatch({
+            poly_df_v <- .extract_polygon_df(gobj_local)
+            if (!is.null(poly_df_v) && nrow(poly_df_v) > 0) {
+              meta_v <- as.data.frame(pDataDT(gobj_local))[, c("cell_ID", ct_col)]
+              df_v <- merge(poly_df_v, meta_v, by = "cell_ID", all.x = TRUE)
+              df_v$CellType_label <- factor(
+                pretty_plot_label(as.character(df_v[[ct_col]])),
+                levels = pretty_plot_label(names(cmap_ct))
+              )
+              wrapped_cmap_v <- stats::setNames(unname(cmap_ct),
+                                                pretty_plot_label(names(cmap_ct)))
+              n_ct <- length(unique(stats::na.omit(df_v$CellType_label)))
+              ncol_facet <- max(2L, ceiling(sqrt(n_ct)))
+              p_facet <- ggplot2::ggplot(
+                df_v,
+                ggplot2::aes(x = x, y = y,
+                             group = paste(cell_ID, geom, part, sep = "_"),
+                             fill  = CellType_label)) +
+                ggplot2::geom_polygon(colour = "grey20",
+                                      linewidth = 0.10, alpha = 0.85) +
+                ggplot2::scale_fill_manual(values = wrapped_cmap_v,
+                                           na.value = "grey90",
+                                           guide = "none") +
+                ggplot2::facet_wrap(~ CellType_label, ncol = ncol_facet) +
+                ggplot2::coord_equal() +
+                ggplot2::labs(
+                  title    = plot_title_for_sample(
+                    title_row, paste(title_subtitle, "(faceted)"),
+                    sample_id_fallback = sample_label),
+                  subtitle = NULL, x = NULL, y = NULL
+                ) +
+                presentation_theme(base_size = 10) +
+                ggplot2::theme(
+                  axis.title   = ggplot2::element_blank(),
+                  axis.text    = ggplot2::element_blank(),
+                  axis.ticks   = ggplot2::element_blank(),
+                  panel.grid   = ggplot2::element_blank(),
+                  panel.border = ggplot2::element_blank(),
+                  strip.text   = ggplot2::element_text(face = "bold")
+                )
+              save_presentation_plot(
+                plot     = p_facet,
+                filename = file.path(spatial_dir,
+                                     paste0(sample_label, "_spatial_",
+                                            ct_col, "_faceted.png")),
+                width = max(14, 4 * ncol_facet),
+                height = max(10, 4 * ceiling(n_ct / ncol_facet)),
+                dpi = 300
+              )
+              cat("  ✓ Spatial", ct_col, "(faceted)\n")
+            }
+          }, error = function(e) {
+            cat("  ⚠ Spatial", ct_col, "(faceted) failed: ",
+                conditionMessage(e), "\n", sep = "")
+          })
         } else {
           cat("  ⚠ Spatial", ct_col, ": polygon renderer unavailable\n")
         }
@@ -369,7 +429,7 @@ create_visualizations <- function(gobj,
                 plot     = p,
                 filename = file.path(feature_dir,
                                      paste0(sample_label, "_spatial_", gene, ".png")),
-                width = 12, height = 10, dpi = 300
+                width = 14, height = 11, dpi = 600
               )
               cat("  ✓", gene, "\n")
             } else {
@@ -418,7 +478,7 @@ create_visualizations <- function(gobj,
   # sheet, emit the same plots filtered by FOV range into per-biopsy subfolders.
   sub_rows <- .discover_composite_subsamples(sample_row, sample_sheet_path)
   if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
-    cat("Composite sample detected — rendering", nrow(sub_rows),
+    cat("Composite sample detected - rendering", nrow(sub_rows),
         "per-sub-biopsy subfolder(s)...\n")
     meta_all <- as.data.frame(pDataDT(plot_gobj))
     if (!"fov" %in% names(meta_all)) {
@@ -490,19 +550,23 @@ create_visualizations <- function(gobj,
           dplyr::mutate(prop = n / sum(n))
         
         ct_display <- pretty_plot_label(gsub("celltype_", "", ct_col), width = 24)
-        composition$celltype_label <- pretty_plot_label(composition[[ct_col]], width = 24)
-        
+        composition$celltype_label <- pretty_plot_label(composition[[ct_col]], width = 14)
+
+        # Vertical x labels (90 degrees) so wrapped multi-word cluster ids never
+        # clip; bottom margin gives the legend room. presentation_theme's
+        # x_angle hjust/vjust honor the angle at 90 too.
         p <- ggplot(composition, aes(x = !!rlang::sym(cluster_column), y = prop, fill = celltype_label)) +
           geom_bar(stat = "identity", position = "fill") +
           labs(
-            title = sample_plot_title(sample_id, "Cluster Composition by Annotation"),
+            title    = sample_plot_title(sample_id, "Cluster composition by annotation"),
             subtitle = ct_display,
-            x = "Cluster",
-            y = "Cell Type Proportion",
-            fill = "Cell Type"
+            x        = "Leiden cluster",
+            y        = "Cell type proportion",
+            fill     = "Cell type"
           ) +
-          presentation_theme(base_size = 12, x_angle = 45)
-        
+          presentation_theme(base_size = 12, x_angle = 90) +
+          theme(plot.margin = margin(5, 5, 30, 5))
+
         save_presentation_plot(
           plot = p,
           filename = file.path(summary_folder, paste0(sample_id, "_composition_", ct_col, ".png")),

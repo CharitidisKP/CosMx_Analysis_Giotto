@@ -333,23 +333,34 @@ perform_clustering <- function(gobj,
 
     .save_cluster_polygon <- function(gobject_local, out_dir, file_prefix, context = "sample") {
       dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+      # Pass NA stroke colour (probed by plot_cells_polygon) to remove the
+      # grey outline. Override the panel border that presentation_theme
+      # otherwise paints around the spatial canvas.
       p <- plot_cells_polygon(
-        gobject        = gobject_local,
-        fill_column    = "leiden_clust",
-        fill_as_factor = TRUE,
-        context        = context,
-        polygon_alpha  = 0.85,
-        palette        = clus_colour_map,
-        save_plot      = FALSE,
-        return_plot    = TRUE,
-        show_plot      = FALSE
-      ) + labs(
-        title = sample_plot_title(file_prefix, "Leiden Clusters - Spatial (polygon)")
-      )
+        gobject            = gobject_local,
+        fill_column        = "leiden_clust",
+        fill_as_factor     = TRUE,
+        context            = context,
+        polygon_alpha      = 0.9,
+        polygon_line_color = NA,
+        polygon_line_size  = 0,
+        palette            = clus_colour_map,
+        save_plot          = FALSE,
+        return_plot        = TRUE,
+        show_plot          = FALSE
+      ) +
+        labs(
+          title    = sample_plot_title(file_prefix, "Leiden clusters"),
+          subtitle = NULL,
+          fill     = "Leiden cluster"
+        ) +
+        guides(fill = guide_legend(title = "Leiden cluster",
+                                   override.aes = list(colour = NA))) +
+        theme(panel.border = element_blank())
       save_presentation_plot(
         plot     = p,
         filename = file.path(out_dir, paste0(file_prefix, "_custom_clusters_spatial_polygon.png")),
-        width    = 14, height = 10, dpi = 300, bg = "white"
+        width    = 14, height = 11, dpi = 600, bg = "white"
       )
     }
 
@@ -428,7 +439,7 @@ perform_clustering <- function(gobj,
       ) +
       ggplot2::labs(
         title = sample_plot_title(sample_id, "Cells per Leiden cluster"),
-        x = "Cluster", y = "Number of cells"
+        x = "Leiden cluster", y = "Number of cells"
       ) +
       presentation_theme(base_size = 12)
     save_presentation_plot(
@@ -492,10 +503,10 @@ perform_clustering <- function(gobj,
               guide = "none"
             ) +
             ggplot2::labs(
-              title    = sample_plot_title(sample_id, "Mean silhouette per cluster"),
+              title    = sample_plot_title(sample_id, "Mean silhouette per Leiden cluster"),
               subtitle = sprintf("PCA space (first %d PCs); subsampled to %d cells",
                                  ncol(pca_sub), nrow(pca_sub)),
-              x = "Cluster", y = "Mean silhouette width"
+              x = "Leiden cluster", y = "Mean silhouette width"
             ) +
             presentation_theme(base_size = 12)
           save_presentation_plot(

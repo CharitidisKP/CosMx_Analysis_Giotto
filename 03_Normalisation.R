@@ -158,7 +158,7 @@ normalize_expression <- function(gobj,
 
   # Always compute median library size so we can (a) use it as a dynamic
   # default when no value is provided and (b) sanity-check any explicit
-  # value from config — a fixed 6000 does not fit mixed panel sizes
+  # value from config - a fixed 6000 does not fit mixed panel sizes
   # (1K vs 6K) and silently mis-scales normalized expression.
   raw_mat <- getExpression(gobj, values = "raw", output = "matrix")
   lib_sizes <- Matrix::colSums(raw_mat)

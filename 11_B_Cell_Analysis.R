@@ -351,7 +351,7 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
   # Two separate lookups are used (instead of two merge() calls) because
   # back-to-back merge() on the same coordinate columns (x, y) causes R to
   # append .x/.y suffixes on the second pass, leaving no plain "x"/"y" columns
-  # for ggplot to find — the original source of the "object 'x' not found" crash.
+  # for ggplot to find - the original source of the "object 'x' not found" crash.
   edge_df <- data.frame(
     source = plot_df$source,
     target = plot_df$target,
@@ -467,10 +467,10 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
   )
 }
 
-# Polygon coordinate extractor — returns a data.frame with columns
+# Polygon coordinate extractor - returns a data.frame with columns
 # geom, part, x, y, hole, cell_ID (one row per polygon vertex), or NULL
 # when no polygon data are available on the Giotto object.
-# NOTE: a sibling copy lives in 07_Annotation.R — keep the two in sync.
+# NOTE: a sibling copy lives in 07_Annotation.R - keep the two in sync.
 .extract_polygon_df <- function(gobj) {
   poly_sv <- tryCatch({
     p <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell",
@@ -539,8 +539,8 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 
 # Resolve a focus label (e.g. "BCell", "TCell", "Plasma") into variants
 # used across this script's console messages and output filenames. Returns:
-#   $snake   — lowercase, filename-safe token ("bcell", "tcell", "plasma")
-#   $display — human-facing tag with a dash at CamelCase boundaries
+#   $snake   - lowercase, filename-safe token ("bcell", "tcell", "plasma")
+#   $display - human-facing tag with a dash at CamelCase boundaries
 #              ("BCell" -> "B-cell", "PlasmaCell" -> "Plasma-cell",
 #               "Plasma" -> "Plasma"). Falls back to the input unchanged
 #               when no CamelCase split exists.
@@ -855,7 +855,7 @@ plot_bcell_neighbourhoods <- function(gobj,
     }
   }
 
-  # Neighbourhood-composition stacked bar — one figure over all clusters
+  # Neighbourhood-composition stacked bar - one figure over all clusters
   if (length(composition_rows)) {
     tryCatch({
       comp_df <- do.call(rbind, composition_rows)
@@ -873,14 +873,13 @@ plot_bcell_neighbourhoods <- function(gobj,
         ggplot2::scale_y_continuous(labels = scales::percent_format()) +
         ggplot2::labs(
           title    = paste0(sample_id, " - neighbourhood composition"),
-          subtitle = paste0("Non-", tag$display, " neighbour cell-type fractions per ",
-                            tag$display, " cluster"),
-          x = NULL, y = paste0("Fraction of non-", tag$display, " neighbours"),
+          subtitle = "Neighbour cell-type fractions per cluster",
+          x = NULL, y = "Fraction of neighbours",
           fill = "Cell type"
         ) +
-        presentation_theme(base_size = 11) +
-        ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45,
-                                                            hjust = 1))
+        ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1)) +
+        presentation_theme(base_size = 11, x_angle = 90) +
+        ggplot2::theme(plot.margin = ggplot2::margin(5, 5, 30, 5))
       save_presentation_plot(
         plot     = p_comp,
         filename = file.path(results_dir,
@@ -1001,13 +1000,15 @@ plot_bcell_niches <- function(gobj,
                             .pretty(annotation_column), " annotation")
 
   make_niche_plot <- function(df_poly, title_suffix = "", per_fov = FALSE) {
-    bg_lw    <- if (per_fov) PER_FOV_LINEWIDTH else 0.08
-    focus_lw <- if (per_fov) 0.60 else 0.15
+    # Faintest practical stroke (per cerebrum bug-067 + dpi 600 rule). Per-FOV
+    # uses the shared PER_FOV_LINEWIDTH constant.
+    bg_lw    <- if (per_fov) PER_FOV_LINEWIDTH else 0.10
+    focus_lw <- if (per_fov) 0.50 else 0.15
     ggplot2::ggplot() +
       ggplot2::geom_polygon(
         data = df_poly,
         mapping = ggplot2::aes(x = x, y = y, group = poly_group, fill = niche),
-        colour = "grey30", linewidth = bg_lw
+        colour = NA, linewidth = bg_lw
       ) +
       ggplot2::geom_polygon(
         data = df_poly[df_poly$is_bcell, , drop = FALSE],
@@ -1024,10 +1025,11 @@ plot_bcell_niches <- function(gobj,
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
       ggplot2::theme(
-        axis.title = ggplot2::element_blank(),
-        axis.text  = ggplot2::element_blank(),
-        axis.ticks = ggplot2::element_blank(),
-        panel.grid = ggplot2::element_blank()
+        axis.title   = ggplot2::element_blank(),
+        axis.text    = ggplot2::element_blank(),
+        axis.ticks   = ggplot2::element_blank(),
+        panel.grid   = ggplot2::element_blank(),
+        panel.border = ggplot2::element_blank()
       )
   }
 
@@ -1037,14 +1039,31 @@ plot_bcell_niches <- function(gobj,
   cap <- stats::quantile(cells$distance_to_bcell_um, 0.9, na.rm = TRUE)
   cells$distance_capped <- pmin(cells$distance_to_bcell_um, cap)
 
-  make_distance_plot <- function(df_cells, title_suffix = "") {
-    ggplot2::ggplot(
-        df_cells,
-        ggplot2::aes(x = sdimx, y = sdimy, colour = distance_capped)) +
-      ggplot2::geom_point(size = 0.25, alpha = 0.7) +
-      viridis::scale_color_viridis(
-        name = paste0("Distance to\nnearest ", tag$display, "\n(\u00b5m, capped at\n",
-                      round(cap), ")")
+  # Project cell-level distance onto polygon vertices so the spatial map
+  # uses real cell shapes (per pipeline rule: spatial cell plots = polygons,
+  # not geom_point). Cells with no polygon record fall back to grey.
+  poly_df$distance_capped <-
+    cells$distance_capped[match(poly_df$cell_ID, cells$cell_ID)]
+
+  make_distance_plot <- function(df_poly, title_suffix = "", per_fov = FALSE) {
+    bg_lw    <- if (per_fov) PER_FOV_LINEWIDTH else 0.10
+    focus_lw <- if (per_fov) 0.50 else 0.15
+    ggplot2::ggplot() +
+      ggplot2::geom_polygon(
+        data = df_poly,
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group,
+                               fill = distance_capped),
+        colour = NA, linewidth = bg_lw
+      ) +
+      ggplot2::geom_polygon(
+        data = df_poly[df_poly$is_bcell, , drop = FALSE],
+        mapping = ggplot2::aes(x = x, y = y, group = poly_group),
+        fill = NA, colour = highlight_colour, linewidth = focus_lw
+      ) +
+      viridis::scale_fill_viridis(
+        name = paste0("Distance to nearest ", tag$display,
+                      "\n(\u00b5m, capped at ", round(cap), ")"),
+        na.value = "grey90"
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
@@ -1057,10 +1076,11 @@ plot_bcell_niches <- function(gobj,
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
       ggplot2::theme(
-        axis.title = ggplot2::element_blank(),
-        axis.text  = ggplot2::element_blank(),
-        axis.ticks = ggplot2::element_blank(),
-        panel.grid = ggplot2::element_blank()
+        axis.title   = ggplot2::element_blank(),
+        axis.text    = ggplot2::element_blank(),
+        axis.ticks   = ggplot2::element_blank(),
+        panel.grid   = ggplot2::element_blank(),
+        panel.border = ggplot2::element_blank()
       )
   }
 
@@ -1068,24 +1088,24 @@ plot_bcell_niches <- function(gobj,
     make_niche_plot(poly_df),
     filename = file.path(niche_dir,
                           paste0(sample_id, "_niches_annotated.png")),
-    width = 14, height = 10, dpi = 600
+    width = 14, height = 11, dpi = 600
   )
   save_presentation_plot(
-    make_distance_plot(cells),
+    make_distance_plot(poly_df),
     filename = file.path(niche_dir,
                           paste0(sample_id, "_distance_to_", tag$snake, "s.png")),
-    width = 14, height = 10, dpi = 600
+    width = 14, height = 11, dpi = 600
   )
 
-  # Per-FOV niche + distance plots (only FOVs that contain B cells)
+  # Per-FOV niche + distance plots (only FOVs that contain B cells).
+  # Both plots are polygon-based now, so they share df_fv_poly.
   n_fov_written <- 0L
   if ("fov" %in% names(cells)) {
     per_fov_dir <- ensure_dir(file.path(niche_dir, "per_fov"))
     fov_with_bcells <- sort(unique(cells$fov[cells$is_bcell & !is.na(cells$fov)]))
     for (fv in fov_with_bcells) {
       df_fv_poly <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
-      df_fv_cells <- cells[!is.na(cells$fov) & cells$fov == fv, , drop = FALSE]
-      if (!nrow(df_fv_poly) || !nrow(df_fv_cells)) next
+      if (!nrow(df_fv_poly)) next
 
       save_presentation_plot(
         make_niche_plot(df_fv_poly, title_suffix = paste0(" (FOV ", fv, ")"),
@@ -1096,7 +1116,8 @@ plot_bcell_niches <- function(gobj,
         width = 10, height = 10, dpi = 600
       )
       save_presentation_plot(
-        make_distance_plot(df_fv_cells, title_suffix = paste0(" (FOV ", fv, ")")),
+        make_distance_plot(df_fv_poly, title_suffix = paste0(" (FOV ", fv, ")"),
+                           per_fov = TRUE),
         filename = file.path(per_fov_dir,
                               paste0(sample_id, "_distance_to_", tag$snake, "s_FOV_",
                                       fv, ".png")),
@@ -1125,25 +1146,53 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
   umap_df <- .prepare_dim_plot_data(gobj_bcell, "umap", cluster_column)
   umap_df[[cluster_column]] <- factor(umap_df[[cluster_column]])
 
+  # Build a per-cluster convex hull on the UMAP coords so each subcluster
+  # gets a coloured outline. Only emit when the cluster has >=4 points
+  # (chull() needs >=3 distinct points).
+  hull_df <- tryCatch({
+    umap_df_clean <- umap_df[stats::complete.cases(
+      umap_df[, c("dim1", "dim2", cluster_column)]), , drop = FALSE]
+    do.call(rbind, lapply(
+      split(umap_df_clean, umap_df_clean[[cluster_column]]),
+      function(d) {
+        if (nrow(d) < 4L) return(NULL)
+        h <- grDevices::chull(d$dim1, d$dim2)
+        d_h <- d[c(h, h[1]), c("dim1", "dim2", cluster_column), drop = FALSE]
+        d_h
+      }
+    ))
+  }, error = function(e) NULL)
+
   leiden_plot <- ggplot2::ggplot(
       umap_df,
       ggplot2::aes(x = dim1, y = dim2, colour = .data[[cluster_column]])
     ) +
-    ggplot2::geom_point(size = 0.6, alpha = 0.8) +
+    ggplot2::geom_point(size = 2.5, alpha = 0.8) +
     ggplot2::labs(
       title  = sample_plot_title(sample_id, paste0(tag$display, " subclusters")),
       x      = "UMAP 1",
       y      = "UMAP 2",
-      colour = "Subcluster"
+      colour = "Leiden subcluster"
     ) +
     presentation_theme(base_size = 12)
+
+  if (!is.null(hull_df) && nrow(hull_df) > 0) {
+    leiden_plot <- leiden_plot +
+      ggplot2::geom_polygon(
+        data    = hull_df,
+        mapping = ggplot2::aes(x = dim1, y = dim2,
+                               group = .data[[cluster_column]],
+                               colour = .data[[cluster_column]]),
+        fill = NA, linewidth = 0.6, inherit.aes = FALSE
+      )
+  }
 
   save_presentation_plot(
     plot     = leiden_plot,
     filename = file.path(out_dir, paste0(sample_id, "_", tag$snake, "_umap_leiden.png")),
     width    = 12,
     height   = 10,
-    dpi      = 300
+    dpi      = 600
   )
 
   expr <- tryCatch(
@@ -1166,7 +1215,7 @@ plot_bcell_subtype_umap <- function(gobj_bcell,
     df <- dim_base
     df$expr <- unname(expr[g, df$cell_ID])
     p <- ggplot2::ggplot(df, ggplot2::aes(x = dim1, y = dim2, colour = expr)) +
-      ggplot2::geom_point(size = 0.6, alpha = 0.85) +
+      ggplot2::geom_point(size = 2.0, alpha = 0.85) +
       ggplot2::scale_colour_gradient(
         low = "lightgrey", high = "red", name = .pretty(g)
       ) +
@@ -1229,7 +1278,7 @@ run_bcell_subclustering <- function(gobj,
                                     save_object         = TRUE,
                                     seed                = 42) {
   # Resolve focus tag FIRST so the early-exit messages below reference
-  # the correct population (T-cell / Plasma / etc.) — previously tag was
+  # the correct population (T-cell / Plasma / etc.) - previously tag was
   # set after these messages, making them error out when annotation was
   # missing and silently mislabel T cells as B cells when it was not.
   tag <- .focus_tag(focus_label)
@@ -1325,6 +1374,80 @@ run_bcell_subclustering <- function(gobj,
     )
   }, error = function(e) {
     message(tag$display, " subtype UMAP plots skipped: ", conditionMessage(e))
+  })
+
+  # Per-FOV spatial subcluster plots - one PNG per FOV that contains B
+  # cells. Polygon-rendered with the parent gobj's polygons so the focus
+  # cells are drawn in their actual shape; non-focus cells are dimmed.
+  tryCatch({
+    poly_df_p <- .extract_polygon_df(gobj)
+    if (!is.null(poly_df_p) && nrow(poly_df_p) > 0) {
+      sub_meta_p <- as.data.frame(.giotto_pdata_dt(gobj_bcell))
+      sub_meta_p <- sub_meta_p[, c("cell_ID", "leiden_bcell_subcluster"),
+                               drop = FALSE]
+      poly_df_p <- merge(poly_df_p, sub_meta_p, by = "cell_ID", all.x = TRUE)
+      if ("fov" %in% names(poly_df_p)) {
+        sub_palette <- cluster_palette(stats::na.omit(poly_df_p$leiden_bcell_subcluster))
+        spatial_per_fov_dir <- ensure_dir(file.path(
+          subcluster_dir, "spatial_per_fov", sample_id))
+        focus_fovs <- sort(unique(poly_df_p$fov[
+          !is.na(poly_df_p$leiden_bcell_subcluster) &
+          !is.na(poly_df_p$fov)
+        ]))
+        n_sub_fov <- 0L
+        for (fv in focus_fovs) {
+          df_fv <- poly_df_p[!is.na(poly_df_p$fov) &
+                              poly_df_p$fov == fv, , drop = FALSE]
+          if (!nrow(df_fv)) next
+          df_fv$is_focus <- !is.na(df_fv$leiden_bcell_subcluster)
+          if (sum(df_fv$is_focus) < 3L) next
+          p_fv <- ggplot2::ggplot() +
+            ggplot2::geom_polygon(
+              data    = df_fv[!df_fv$is_focus, , drop = FALSE],
+              mapping = ggplot2::aes(x = x, y = y,
+                                     group = paste(cell_ID, geom, part, sep = "_")),
+              fill = "grey90", colour = NA, linewidth = 0
+            ) +
+            ggplot2::geom_polygon(
+              data    = df_fv[df_fv$is_focus, , drop = FALSE],
+              mapping = ggplot2::aes(x = x, y = y,
+                                     group = paste(cell_ID, geom, part, sep = "_"),
+                                     fill = leiden_bcell_subcluster),
+              colour = "grey30", linewidth = PER_FOV_LINEWIDTH
+            ) +
+            ggplot2::scale_fill_manual(values = sub_palette,
+                                       name = "Leiden subcluster",
+                                       drop = FALSE) +
+            ggplot2::coord_fixed() +
+            ggplot2::labs(
+              title    = paste0(sample_id, " - ", tag$display,
+                                " subclusters - FOV ", fv),
+              subtitle = NULL, x = NULL, y = NULL
+            ) +
+            presentation_theme(base_size = 11, legend_position = "right") +
+            ggplot2::theme(
+              axis.title   = ggplot2::element_blank(),
+              axis.text    = ggplot2::element_blank(),
+              axis.ticks   = ggplot2::element_blank(),
+              panel.grid   = ggplot2::element_blank(),
+              panel.border = ggplot2::element_blank()
+            )
+          fname_fv <- file.path(
+            spatial_per_fov_dir,
+            paste0(sample_id, "_FOV_", fv, "_", tag$snake,
+                   "_subclusters.png")
+          )
+          save_presentation_plot(p_fv, fname_fv,
+                                 width = 10, height = 10, dpi = 600)
+          n_sub_fov <- n_sub_fov + 1L
+        }
+        cat("  ✓ ", tag$display, " subcluster per-FOV spatial plots: ",
+            n_sub_fov, " written → ", spatial_per_fov_dir, "\n", sep = "")
+      }
+    }
+  }, error = function(e) {
+    message(tag$display, " subcluster per-FOV spatial skipped: ",
+            conditionMessage(e))
   })
 
   # Subcluster x spatial-proximity crosstab: which cell types surround
@@ -1591,13 +1714,52 @@ run_bcell_microenvironment_analysis <- function(gobj,
   }
   
   tryCatch({
-    heatmap_plot <- .build_proximity_heatmap_plot(enrichment_table, sample_id = sample_id)
-    save_presentation_plot(
-      plot = heatmap_plot,
-      filename = file.path(results_dir, paste0(sample_id, "_cell_proximity_heatmap.png")),
-      width = 12,
-      height = 10
-    )
+    # Use the shared ComplexHeatmap helper (Plot_Helpers.R) so 09 and 11 share
+    # an identical heatmap style; difference is data scope (full vs B-cell-
+    # focused). Build the symmetrised enrichment matrix here, then delegate.
+    parsed <- .parse_unified_interactions(enrichment_table$unified_int)
+    metric <- enrichment_table$enrichm
+    labels <- sort(unique(c(parsed$source, parsed$target)))
+    if (length(labels) >= 2) {
+      mat_b <- matrix(0, nrow = length(labels), ncol = length(labels),
+                      dimnames = list(labels, labels))
+      for (i in seq_len(nrow(parsed))) {
+        s <- parsed$source[i]; t <- parsed$target[i]
+        if (!is.na(s) && !is.na(t)) {
+          mat_b[s, t] <- metric[i]; mat_b[t, s] <- metric[i]
+        }
+      }
+      # Pick the first row matching the focus celltype (default "B cell").
+      focus_row <- grep("(^|[^a-z])b ?cell", rownames(mat_b),
+                       ignore.case = TRUE, perl = TRUE, value = TRUE)
+      focus_use <- if (length(focus_row) >= 1L) focus_row[1L] else NULL
+      .plot_proximity_heatmap_complex(
+        mat        = mat_b,
+        title      = sample_plot_title(sample_id,
+                                       "Spatial proximity enrichment heatmap"),
+        subtitle   = paste0("Red = enriched neighborhoods; blue = depleted",
+                            if (!is.null(focus_use))
+                              paste0(" (focus: ", focus_use, ")")
+                            else ""),
+        focus_label = focus_use,
+        filename   = file.path(results_dir,
+                               paste0(sample_id,
+                                      "_cell_proximity_heatmap.png")),
+        width      = 14,
+        height     = 12,
+        dpi        = 300
+      )
+    } else {
+      # Single-celltype edge case: fall back to the legacy ggplot version.
+      heatmap_plot <- .build_proximity_heatmap_plot(enrichment_table,
+                                                    sample_id = sample_id)
+      save_presentation_plot(
+        plot = heatmap_plot,
+        filename = file.path(results_dir,
+                             paste0(sample_id, "_cell_proximity_heatmap.png")),
+        width = 12, height = 10
+      )
+    }
   }, error = function(e) {
     message("cellProximityHeatmap() skipped: ", conditionMessage(e))
   })
@@ -1621,6 +1783,34 @@ run_bcell_microenvironment_analysis <- function(gobj,
       "  [debug] enrichment_table columns: ",
       paste(names(enrichment_table), collapse = ", ")
     )
+  })
+
+  # B-cell-specific proximity network: same builder, but filtered to edges
+  # incident on the focus cell type. Provides a focused view of just the
+  # B-cell-related interactions on top of the full network plot above.
+  tryCatch({
+    parsed_b <- .parse_unified_interactions(enrichment_table$unified_int)
+    is_focus_edge <- .matches_bcell_label(parsed_b$source, bcell_regex) |
+                     .matches_bcell_label(parsed_b$target, bcell_regex)
+    enr_focus <- enrichment_table[is_focus_edge, , drop = FALSE]
+    if (nrow(enr_focus) >= 1) {
+      network_plot_b <- .build_proximity_network_plot(
+        enr_focus,
+        sample_id = paste0(sample_id, " - ", focus_label),
+        max_edges = max_network_edges
+      )
+      save_presentation_plot(
+        plot = network_plot_b,
+        filename = file.path(results_dir,
+                             paste0(sample_id, "_", env_tag$snake,
+                                    "_proximity_network.png")),
+        width = 13, height = 10, dpi = 600
+      )
+    } else {
+      message("Focus-celltype proximity network skipped: no edges incident on focus.")
+    }
+  }, error = function(e) {
+    message(focus_label, " proximity network skipped: ", conditionMessage(e))
   })
   
   tryCatch({

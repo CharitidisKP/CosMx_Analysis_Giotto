@@ -46,7 +46,7 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
 # space-separated sentence case. HCA Kidney returns "B.cell" / "CD4.T.cell"
 # (make.names-style); CosMx 6K Kidney RCC returns "B cell" / "T cell".
 # Downstream code (step 11 focus regex, step 12 smide_annotation_subset)
-# expects a single scheme — apply at source so every celltype_* column is
+# expects a single scheme - apply at source so every celltype_* column is
 # consistent regardless of which reference the user selects.
 .normalize_label <- function(x) {
   if (is.null(x) || length(x) == 0) return(x)
@@ -275,7 +275,7 @@ score_annotation_quality <- function(celltype_col,
                                      conf_threshold = 0.8,
                                      score_weights  = NULL) {
 
-  # Default composite-score weights — override per-run via config:
+  # Default composite-score weights - override per-run via config:
   #   parameters.annotation.score_weights:
   #     { confidence: 0.35, high_conf_fraction: 0.25,
   #       composition: 0.30, coverage: 0.10 }
@@ -477,7 +477,7 @@ select_best_annotation <- function(gobj,
                           " (0 = auto-select best):")),
       error = function(e) {
         cat("  [menu() failed: ", conditionMessage(e),
-            " — auto-selecting row 1]\n", sep = "")
+            " - auto-selecting row 1]\n", sep = "")
         0L
       }
     )
@@ -568,7 +568,7 @@ select_best_annotation <- function(gobj,
 # or NULL when no polygon data are available.
 
 .extract_polygon_df <- function(gobj) {
-  # Try getPolygonInfo() — works for Giotto Suite >= 0.3
+  # Try getPolygonInfo() - works for Giotto Suite >= 0.3
   poly_sv <- tryCatch({
     p <- GiottoClass::getPolygonInfo(gobject = gobj, polygon_name = "cell",
                                       return_giottoPolygon = FALSE)
@@ -637,7 +637,7 @@ select_best_annotation <- function(gobj,
   }
   if (is.null(fn)) return(NULL)
 
-  # Giotto's spatInSituPlotPoints() arg names drift between releases — probe
+  # Giotto's spatInSituPlotPoints() arg names drift between releases - probe
   # the function's formals and only pass arguments it actually accepts.
   accepted <- names(formals(fn))
   pick <- function(val, candidates) {
@@ -713,7 +713,7 @@ select_best_annotation <- function(gobj,
                                                ann_type,
                                                width  = 24,
                                                height = 14,
-                                               dpi    = 300) {
+                                               dpi    = 600) {
   # Hyphen (not em dash) so pipeline plot text stays clean.
   title_txt <- paste0(sample_id, " - ", profile_name, " (", ann_type, ")")
   fname     <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
@@ -724,7 +724,7 @@ select_best_annotation <- function(gobj,
     fill_col       = celltype_col,
     fill_as_factor = TRUE,
     colour_map     = colour_map,
-    legend_title   = "Cell Type",
+    legend_title   = "Cell type",
     title_txt      = title_txt
   )
   if (!is.null(p_giotto)) {
@@ -764,18 +764,22 @@ select_best_annotation <- function(gobj,
         values   = wrapped_cmap,
         na.value = "grey85",
         drop     = FALSE,
-        name     = "Cell Type"
+        name     = "Cell type"
       ) +
       ggplot2::coord_equal() +
-      ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+      ggplot2::labs(title = title_txt, subtitle = NULL, x = NULL, y = NULL) +
       ggplot2::guides(fill = ggplot2::guide_legend(
         ncol = 1, override.aes = list(size = 4))) +
       presentation_theme(base_size = 11, legend_position = "right") +
+      # Drop the panel border (presentation_theme paints a faint grey80 box
+      # around the canvas; on spatial polygon plots that reads as a stray
+      # outline on the top/right edges of the tissue area).
       ggplot2::theme(
-        axis.title = ggplot2::element_blank(),
-        axis.text  = ggplot2::element_blank(),
-        axis.ticks = ggplot2::element_blank(),
-        panel.grid = ggplot2::element_blank()
+        axis.title   = ggplot2::element_blank(),
+        axis.text    = ggplot2::element_blank(),
+        axis.ticks   = ggplot2::element_blank(),
+        panel.grid   = ggplot2::element_blank(),
+        panel.border = ggplot2::element_blank()
       )
 
     save_presentation_plot(
@@ -827,7 +831,7 @@ select_best_annotation <- function(gobj,
                                                     sample_sheet_path = NULL,
                                                     width             = 24,
                                                     height            = 14,
-                                                    dpi               = 300) {
+                                                    dpi               = 600) {
   .plot_spatial_annotation_polygons(
     gobj         = gobj,
     celltype_col = celltype_col,
@@ -845,7 +849,19 @@ select_best_annotation <- function(gobj,
     discover_composite_subsamples(sample_row, sample_sheet_path),
     error = function(e) NULL
   )
-  if (is.null(sub_rows) || nrow(sub_rows) == 0) return(invisible(NULL))
+  if (is.null(sub_rows) || nrow(sub_rows) == 0) {
+    # No composite split: still emit per-FOV variants for the single sample.
+    .plot_spatial_annotation_per_fov(
+      gobj         = gobj,
+      celltype_col = celltype_col,
+      colour_map   = colour_map,
+      profile_name = profile_name,
+      sample_id    = sample_id,
+      out_dir      = out_dir,
+      ann_type     = ann_type
+    )
+    return(invisible(NULL))
+  }
 
   meta_all <- as.data.frame(pDataDT(gobj))
   if (!"fov" %in% names(meta_all)) {
@@ -897,9 +913,96 @@ select_best_annotation <- function(gobj,
       height       = height,
       dpi          = dpi
     )
+    .plot_spatial_annotation_per_fov(
+      gobj         = sub_gobj,
+      celltype_col = celltype_col,
+      colour_map   = colour_map,
+      profile_name = profile_name,
+      sample_id    = sub_id,
+      out_dir      = sub_dir,
+      ann_type     = ann_type
+    )
   }
 
   invisible(NULL)
+}
+
+
+# Per-FOV celltype annotation plot helper. Emits one PNG per FOV containing
+# >=min_cells annotated cells, into <out_dir>/spatial_annotation_per_FOV/<sample_id>/.
+.plot_spatial_annotation_per_fov <- function(gobj,
+                                             celltype_col,
+                                             colour_map,
+                                             profile_name,
+                                             sample_id,
+                                             out_dir,
+                                             ann_type,
+                                             min_cells = 5,
+                                             width  = 10,
+                                             height = 10,
+                                             dpi    = 600) {
+  poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+  if (is.null(poly_df) || !nrow(poly_df)) return(invisible(NULL))
+
+  meta_cols <- c("cell_ID", celltype_col, "fov")
+  meta_all  <- as.data.frame(pDataDT(gobj))
+  if (!"fov" %in% names(meta_all) || all(is.na(meta_all$fov))) return(invisible(NULL))
+  meta <- meta_all[, intersect(meta_cols, names(meta_all)), drop = FALSE]
+
+  poly_df <- merge(poly_df, meta, by = "cell_ID", all.x = TRUE)
+  per_fov_dir <- file.path(out_dir, "spatial_annotation_per_FOV", sample_id)
+  dir.create(per_fov_dir, recursive = TRUE, showWarnings = FALSE)
+
+  fovs <- sort(unique(stats::na.omit(meta$fov)))
+  written <- 0L
+  for (fv in fovs) {
+    df_fv <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
+    if (length(unique(df_fv$cell_ID)) < min_cells) next
+
+    df_fv$CellType_label <- factor(
+      pretty_plot_label(as.character(df_fv[[celltype_col]])),
+      levels = pretty_plot_label(names(colour_map))
+    )
+    wrapped_cmap <- stats::setNames(unname(colour_map),
+                                    pretty_plot_label(names(colour_map)))
+
+    p <- ggplot2::ggplot(
+      df_fv,
+      ggplot2::aes(x = x, y = y,
+                   group = paste(cell_ID, geom, part, sep = "_"),
+                   fill  = CellType_label)) +
+      ggplot2::geom_polygon(colour = "grey20", linewidth = PER_FOV_LINEWIDTH,
+                            alpha = 0.85) +
+      ggplot2::scale_fill_manual(values = wrapped_cmap, na.value = "grey85",
+                                 drop = FALSE, name = "Cell type") +
+      ggplot2::coord_equal() +
+      ggplot2::labs(
+        title    = paste0(sample_id, " - ", profile_name, " (", ann_type, ") - FOV ", fv),
+        subtitle = NULL, x = NULL, y = NULL
+      ) +
+      ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1,
+                                                   override.aes = list(size = 4))) +
+      presentation_theme(base_size = 11, legend_position = "right") +
+      ggplot2::theme(
+        axis.title   = ggplot2::element_blank(),
+        axis.text    = ggplot2::element_blank(),
+        axis.ticks   = ggplot2::element_blank(),
+        panel.grid   = ggplot2::element_blank(),
+        panel.border = ggplot2::element_blank()
+      )
+
+    fname <- file.path(per_fov_dir,
+                       paste0(sample_id, "_FOV_", fv, "_",
+                              profile_name, "_", ann_type, ".png"))
+    save_presentation_plot(p, fname,
+                           width = width, height = height, dpi = dpi)
+    written <- written + 1L
+  }
+  if (written > 0L) {
+    cat("    \u2713 Per-FOV annotation: wrote ", written,
+        " FOV plot(s) to ", per_fov_dir, "\n", sep = "")
+  }
+  invisible(written)
 }
 
 
@@ -1717,7 +1820,7 @@ refine_annotation <- function(gobj,
   if (length(remaining) < 2) {
     reason <- paste0(
       "only ", length(remaining),
-      " cell type retained after confidence filtering — refinement requires >=2 types"
+      " cell type retained after confidence filtering - refinement requires >=2 types"
     )
     warning(
       "[Annotation] refineClusters skipped for profile '", profile_name,
@@ -1828,7 +1931,7 @@ refine_annotation <- function(gobj,
   if (create_plots) {
     cat("  Creating refined visualizations...\n")
     
-    # Refined — flightpath
+    # Refined - flightpath
     tryCatch({
       plot_custom_flightpath(
         insitu_result = insitu_refined,
@@ -1842,7 +1945,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Flightpath (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — UMAP
+    # Refined - UMAP
     tryCatch({
       clust_named_ref <- stats::setNames(
         as.character(refined_clust), cell_order)
@@ -1859,7 +1962,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 UMAP (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — spatial (polygon-based, falls back to points)
+    # Refined - spatial (polygon-based, falls back to points)
     tryCatch({
       .plot_spatial_annotation_with_composite(
         gobj              = gobj,
@@ -1877,7 +1980,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Spatial (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — proportions
+    # Refined - proportions
     tryCatch({
       .plot_proportions(
         summary_df   = ref_summary,
@@ -1894,7 +1997,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Proportions (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — heatmap
+    # Refined - heatmap
     tryCatch({
       .plot_annotation_heatmap(
         counts_mat   = counts_mat,
@@ -1910,7 +2013,7 @@ refine_annotation <- function(gobj,
       cat("  \u26A0 Heatmap (refined) failed:", conditionMessage(e), "\n")
     })
     
-    # Refined — dot plot
+    # Refined - dot plot
     tryCatch({
       .plot_annotation_dotplot(
         counts_mat   = counts_mat,
@@ -1996,7 +2099,7 @@ load_reference_profile <- function(profile_config) {
 }
 
 
-# annotate_cells — main pipeline function ---------------------------------
+# annotate_cells - main pipeline function ---------------------------------
 
 if (!exists("%||%")) {
   `%||%` <- function(x, y) {
@@ -2056,7 +2159,7 @@ annotate_cells <- function(gobj,
   profile_strategy <- tolower(trimws(as.character(profile_strategy %||% "default")))
   if (!profile_strategy %in% c("default", "all", "best_select")) {
     warning("Unknown profile_strategy '", profile_strategy,
-            "' — falling back to 'default'.", call. = FALSE)
+            "' - falling back to 'default'.", call. = FALSE)
     profile_strategy <- "default"
   }
   cat("Profile strategy:", profile_strategy, "\n")
@@ -2478,7 +2581,7 @@ annotate_cells <- function(gobj,
       if (create_plots) {
         cat("Creating visualizations...\n")
         
-        # Supervised — flightpath
+        # Supervised - flightpath
         tryCatch({
           plot_custom_flightpath(
             insitu_result = insitu_supervised,
@@ -2492,7 +2595,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Flightpath (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — UMAP
+        # Supervised - UMAP
         tryCatch({
           clust_named_sup <- stats::setNames(
             as.character(insitu_supervised$clust), cell_order)
@@ -2509,7 +2612,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 UMAP (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — spatial (polygon-based, falls back to points)
+        # Supervised - spatial (polygon-based, falls back to points)
         tryCatch({
           .plot_spatial_annotation_with_composite(
             gobj              = gobj,
@@ -2527,7 +2630,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Spatial (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — proportions
+        # Supervised - proportions
         tryCatch({
           .plot_proportions(
             summary_df   = sup_summary,
@@ -2544,7 +2647,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Proportions (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — heatmap
+        # Supervised - heatmap
         tryCatch({
           .plot_annotation_heatmap(
             counts_mat   = counts_mat,
@@ -2560,7 +2663,7 @@ annotate_cells <- function(gobj,
           cat("  \u26A0 Heatmap (supervised) failed:", conditionMessage(e), "\n")
         })
         
-        # Supervised — dot plot
+        # Supervised - dot plot
         tryCatch({
           .plot_annotation_dotplot(
             counts_mat   = counts_mat,
@@ -2579,7 +2682,7 @@ annotate_cells <- function(gobj,
         # Semi-supervised plots (only if semi succeeded)
         if (!is.null(insitu_semi) && !is.null(annot_semi)) {
           
-          # Semi — flightpath
+          # Semi - flightpath
           tryCatch({
             plot_custom_flightpath(
               insitu_result = insitu_semi,
@@ -2593,7 +2696,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 Flightpath (semi) failed:", conditionMessage(e), "\n")
           })
           
-          # Semi — UMAP
+          # Semi - UMAP
           tryCatch({
             clust_named_semi <- stats::setNames(
               as.character(insitu_semi$clust), cell_order)
@@ -2610,7 +2713,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 UMAP (semi) failed:", conditionMessage(e), "\n")
           })
           
-          # Semi — spatial (polygon-based, falls back to points)
+          # Semi - spatial (polygon-based, falls back to points)
           tryCatch({
             .plot_spatial_annotation_with_composite(
               gobj              = gobj,
@@ -2628,7 +2731,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 Spatial (semi) failed:", conditionMessage(e), "\n")
           })
           
-          # Semi — proportions
+          # Semi - proportions
           if (!is.null(semi_summary)) {
             tryCatch({
               .plot_proportions(
@@ -2647,7 +2750,7 @@ annotate_cells <- function(gobj,
             })
           }
           
-          # Semi — heatmap
+          # Semi - heatmap
           tryCatch({
             .plot_annotation_heatmap(
               counts_mat   = counts_mat,
@@ -2663,7 +2766,7 @@ annotate_cells <- function(gobj,
             cat("  \u26A0 Heatmap (semi) failed:", conditionMessage(e), "\n")
           })
           
-          # Semi — dot plot
+          # Semi - dot plot
           tryCatch({
             .plot_annotation_dotplot(
               counts_mat   = counts_mat,
@@ -3000,6 +3103,77 @@ annotate_cells <- function(gobj,
         width    = max(10, 0.4 * nrow(best_per_cluster) + 4),
         height   = 7, dpi = 300
       )
+
+      # B-cell percentage strip + cluster_purity stacked below.
+      # Top panel: thin barplot of B-cell % per cluster (printed inside bar).
+      # Bottom panel: the existing cluster_purity figure (unchanged in
+      # construction). Patchwork-stacked into _cluster_purity_with_bcell_top.png
+      # so the original cluster_purity.png stays intact for direct comparison.
+      tryCatch({
+        is_bcell <- grepl("(^|[^a-z])b ?cell", as.character(meta_diag[[best]]),
+                          ignore.case = TRUE)
+        bcell_df <- data.frame(
+          cluster = as.character(meta_diag$leiden_clust),
+          is_b    = is_bcell
+        )
+        bcell_pct <- aggregate(is_b ~ cluster, data = bcell_df,
+                               FUN = function(v) 100 * mean(v, na.rm = TRUE))
+        names(bcell_pct)[2] <- "pct_bcell"
+        # Match the cluster ordering of the lower purity plot.
+        bcell_pct$cluster <- factor(bcell_pct$cluster,
+                                    levels = levels(best_per_cluster$cluster))
+        bcell_pct <- bcell_pct[!is.na(bcell_pct$cluster), , drop = FALSE]
+
+        p_btop <- ggplot2::ggplot(bcell_pct,
+            ggplot2::aes(x = cluster, y = pct_bcell)) +
+          ggplot2::geom_col(fill = "mediumspringgreen", colour = "grey30",
+                            linewidth = 0.2) +
+          ggplot2::geom_text(
+            ggplot2::aes(label = sprintf("%.1f%%", pct_bcell)),
+            vjust = -0.4, size = 2.6, colour = "grey15"
+          ) +
+          ggplot2::scale_y_continuous(
+            limits = c(0, max(5, max(bcell_pct$pct_bcell, na.rm = TRUE) * 1.15)),
+            expand = ggplot2::expansion(mult = c(0, 0.05))
+          ) +
+          ggplot2::labs(
+            title    = sample_plot_title(sample_id,
+                                         "B-cell percentage by Leiden cluster"),
+            subtitle = NULL, x = NULL, y = "% B cells"
+          ) +
+          presentation_theme(base_size = 11) +
+          ggplot2::theme(
+            axis.text.x  = ggplot2::element_blank(),
+            axis.ticks.x = ggplot2::element_blank()
+          )
+
+        if (requireNamespace("patchwork", quietly = TRUE)) {
+          combined <- patchwork::wrap_plots(p_btop, p_pur, ncol = 1,
+                                            heights = c(0.3, 1))
+          save_presentation_plot(
+            plot     = combined,
+            filename = file.path(diag_dir,
+                                 paste0(sample_id,
+                                        "_cluster_purity_with_bcell_top.png")),
+            width    = max(10, 0.4 * nrow(best_per_cluster) + 4),
+            height   = 10, dpi = 300
+          )
+          cat("  ✓ cluster_purity_with_bcell_top saved\n")
+        } else {
+          # Fallback: just save the top strip alongside the existing plot.
+          save_presentation_plot(
+            plot     = p_btop,
+            filename = file.path(diag_dir,
+                                 paste0(sample_id, "_bcell_pct_per_cluster.png")),
+            width    = max(10, 0.4 * nrow(best_per_cluster) + 4),
+            height   = 4, dpi = 300
+          )
+        }
+      }, error = function(e) {
+        cat("  ⚠ cluster_purity_with_bcell_top failed: ",
+            conditionMessage(e), "\n", sep = "")
+      })
+
       readr::write_csv(
         purity_df,
         file.path(diag_dir, paste0(sample_id, "_cluster_purity_breakdown.csv"))

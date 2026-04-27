@@ -383,7 +383,7 @@ merge_giotto_samples <- function(gobject_list,
   }, error = function(e) NULL)
 
   if (is.null(raw_mat)) {
-    cat("⚠ Merged object has no raw expression slot — skipping ",
+    cat("⚠ Merged object has no raw expression slot - skipping ",
         "re-normalization.\n", sep = "")
     return(merged_gobj)
   }
@@ -495,15 +495,15 @@ batch_correct_merged_object <- function(gobj,
     }
   }
 
-  # Sub-checkpoints — saved inside output_dir alongside the main checkpoints.
+  # Sub-checkpoints - saved inside output_dir alongside the main checkpoints.
   # Each represents one completed stage so a crash mid-run can resume from
   # the last successful save rather than restarting from Giotto_Object_Merged.
   #
-  #   Stage 0  Giotto_Object_Merged           (input — created by merge step)
+  #   Stage 0  Giotto_Object_Merged           (input - created by merge step)
   #   Stage 1  Giotto_Object_Merged_PCA       (after HVG selection + PCA)
   #   Stage 2  Giotto_Object_Merged_Harmony   (after Harmony batch correction)
   #   Stage 3  Giotto_Object_Merged_Embeddings (after UMAP + tSNE)
-  #   Stage 4  Giotto_Object_BatchCorrected   (after NN + Leiden — final output)
+  #   Stage 4  Giotto_Object_BatchCorrected   (after NN + Leiden - final output)
 
   subckpt_pca        <- file.path(output_dir, "Giotto_Object_Merged_PCA")
   subckpt_harmony    <- file.path(output_dir, "Giotto_Object_Merged_Harmony")
@@ -513,19 +513,19 @@ batch_correct_merged_object <- function(gobj,
   if (!isTRUE(force_recompute)) {
     if (.sub_ckpt_exists(subckpt_embeddings)) {
       resume_stage <- 3L
-      cat("\u21a9 Sub-checkpoint found — resuming after UMAP/tSNE\n")
+      cat("\u21a9 Sub-checkpoint found - resuming after UMAP/tSNE\n")
       cat("  Loading:", subckpt_embeddings, "\n\n")
       gobj     <- load_giotto_checkpoint(subckpt_embeddings)
       metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
     } else if (.sub_ckpt_exists(subckpt_harmony)) {
       resume_stage <- 2L
-      cat("\u21a9 Sub-checkpoint found — resuming after Harmony\n")
+      cat("\u21a9 Sub-checkpoint found - resuming after Harmony\n")
       cat("  Loading:", subckpt_harmony, "\n\n")
       gobj     <- load_giotto_checkpoint(subckpt_harmony)
       metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
     } else if (.sub_ckpt_exists(subckpt_pca)) {
       resume_stage <- 1L
-      cat("\u21a9 Sub-checkpoint found — resuming after PCA\n")
+      cat("\u21a9 Sub-checkpoint found - resuming after PCA\n")
       cat("  Loading:", subckpt_pca, "\n\n")
       gobj     <- load_giotto_checkpoint(subckpt_pca)
       metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
@@ -580,7 +580,7 @@ batch_correct_merged_object <- function(gobj,
   }
 
   # ── Stage 3: UMAP + tSNE ─────────────────────────────────────────────────
-  # Call Giotto dim-reduction functions DIRECTLY (no wrappers) — they use
+  # Call Giotto dim-reduction functions DIRECTLY (no wrappers) - they use
   # sys.frame(-2) internally; an extra wrapper frame shifts the lookup to the
   # wrong environment and causes "accessor not found". (Do-Not-Repeat rule)
   if (resume_stage < 3L) {
@@ -670,7 +670,7 @@ batch_correct_merged_object <- function(gobj,
       title = paste(sample_id, "- UMAP by Leiden cluster"),
       output_file  = file.path(results_dir, paste0(sample_id, "_umap_by_leiden_clust.png")))
 
-    # Validation: UMAP coloured by cell type — confirms Harmony preserved biology.
+    # Validation: UMAP coloured by cell type - confirms Harmony preserved biology.
     if (is.null(annotation_columns)) {
       annotation_columns <- grep("^celltype_", names(metadata), value = TRUE)
     }

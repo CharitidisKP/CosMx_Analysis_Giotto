@@ -222,7 +222,7 @@ save_presentation_plot <- function(plot,
                                    bg = "white") {
   ext <- tolower(tools::file_ext(filename))
 
-  # PNG output goes through base-R grDevices::png() first — avoids the
+  # PNG output goes through base-R grDevices::png() first - avoids the
   # xfun-version minefield that ggplot2::ggsave() can trip when certain
   # rendering deps are upgraded mid-session. On failure we fall through
   # to ggsave.
@@ -373,7 +373,7 @@ load_giotto_checkpoint <- function(checkpoint_dir) {
     return(readRDS(rds_file))
   }
 
-  # Manifest without payload signals a prior aborted save — be explicit.
+  # Manifest without payload signals a prior aborted save - be explicit.
   if (file.exists(manifest_file)) {
     stop(
       "Checkpoint manifest present but no payload (giotto/, object.qs, object.rds) in ",

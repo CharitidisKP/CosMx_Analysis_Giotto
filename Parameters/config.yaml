@@ -256,6 +256,12 @@ spatial_de:
   # caps the number processed per (stratifier × comparison) iteration.
   smide_min_cells_per_stratum: 200
   smide_max_strata_per_comparison: 30
+  # Per-(stratum x comparison) plot caps. plot_top_n controls how many
+  # genes are labelled / shown in the spatial overlay panel grid;
+  # plot_max_strata_panels caps the spatial overlay grid size to keep
+  # runtime + file count predictable.
+  plot_top_n: 30
+  plot_max_strata_panels: 12
   sample_column: "sample_id"
   treatment_column: "treatment"
   patient_column: "patient_id"

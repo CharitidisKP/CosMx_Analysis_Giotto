@@ -10,7 +10,7 @@
 #
 # The pipeline reads only cell-level files, so the per-transcript
 # `*_tx_file.csv.gz` is NOT copied to the sub-folders. The original slide
-# folder is left untouched — this script never writes to, renames, or deletes
+# folder is left untouched - this script never writes to, renames, or deletes
 # anything inside --source-dir. The composite row in sample_sheet.csv keeps
 # pointing at the original folder so the whole-slide view remains analysable.
 #
@@ -149,7 +149,7 @@ main <- function() {
   }
 
   if (isTRUE(opts$dry_run)) {
-    cat("\n=== Dry run — no files written ===\n")
+    cat("\n=== Dry run - no files written ===\n")
     return(invisible(NULL))
   }
 
@@ -174,7 +174,7 @@ main <- function() {
   # CosMx exports sometimes store cell_ID as integer in one file and character
   # in another. Coerce both sides of every comparison with as.character() so
   # %chin% never hits a type mismatch. Values written to disk are unchanged
-  # because we only coerce inside the comparison — original columns are intact.
+  # because we only coerce inside the comparison - original columns are intact.
 
   # Cross-file sanity: every cell in the expression matrix should exist in metadata.
   if (!all(as.character(expr[[expr_cell_c]]) %chin% as.character(meta[[meta_cell_c]]))) {

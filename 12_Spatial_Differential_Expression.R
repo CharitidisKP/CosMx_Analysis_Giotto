@@ -316,7 +316,7 @@ coerce_overlap_metric_table <- function(overlap_obj) {
     if ("target" %in% names(overlap_df) && !"gene" %in% names(overlap_df)) {
       overlap_df$gene <- overlap_df$target
     } else if ("target" %in% names(overlap_df)) {
-      # 'gene' exists but is a numeric index — overwrite with gene symbols
+      # 'gene' exists but is a numeric index - overwrite with gene symbols
       overlap_df$gene <- overlap_df$target
     } else if (!"gene" %in% names(overlap_df)) {
       overlap_df$gene <- rownames(overlap_df)
@@ -759,6 +759,39 @@ guess_significance_column <- function(result_df) {
   c(lo[1], up[1])
 }
 
+# Auto-detect smiDE neighbour-vs-self mean-expression columns.
+# smiDE column names vary by version; canonical pairs include:
+#   est.t1.mean         vs est.t0.mean
+#   t1_mean / nbr_mean  vs t0_mean / self_mean
+#   neighbour_mean      vs self_mean
+# Returns list(self=, neighbour=) or NULL if no recognisable pair.
+.smide_guess_neighbour_self_columns <- function(result_df) {
+  if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
+  nms <- names(result_df)
+  pairs <- list(
+    list(self = "self_mean",       neighbour = "neighbour_mean"),
+    list(self = "self_mean",       neighbour = "nbr_mean"),
+    list(self = "est.t0.mean",     neighbour = "est.t1.mean"),
+    list(self = "t0_mean",         neighbour = "t1_mean"),
+    list(self = "ref_mean",        neighbour = "nbr_mean"),
+    list(self = "mean.cell",       neighbour = "mean.neighbour"),
+    list(self = "mean_cell",       neighbour = "mean_neighbour"),
+    list(self = "expression.self", neighbour = "expression.neighbour")
+  )
+  for (p in pairs) {
+    if (p$self %in% nms && p$neighbour %in% nms) return(p)
+  }
+  # Last-resort heuristic: any "self" + "neighbour"/"nbr" suffix.
+  self_cand <- grep("(^|[._])self([._]|$)", nms, value = TRUE,
+                    ignore.case = TRUE, perl = TRUE)
+  nbr_cand  <- grep("(^|[._])(neighbou?r|nbr)([._]|$)", nms, value = TRUE,
+                    ignore.case = TRUE, perl = TRUE)
+  if (length(self_cand) >= 1L && length(nbr_cand) >= 1L) {
+    return(list(self = self_cand[1L], neighbour = nbr_cand[1L]))
+  }
+  NULL
+}
+
 # Guess the gene-identifier column. Returns NULL if no obvious candidate.
 .guess_gene_column <- function(result_df) {
   if (is.null(result_df) || nrow(result_df) == 0) return(NULL)
@@ -997,8 +1030,104 @@ guess_significance_column <- function(result_df) {
       }
     }
 
+    # --- 4b. Effect-size distribution histogram (log2FC histogram) ---------
+    # Quick visual check of how the |log2FC| distribution looks across the
+    # whole tested gene set, with significant genes coloured.
+    tryCatch({
+      hist_df <- de_df
+      hist_df$is_sig <- hist_df$sig < fdr_threshold
+      p_hist <- ggplot2::ggplot(hist_df,
+          ggplot2::aes(x = fc, fill = is_sig)) +
+        ggplot2::geom_histogram(bins = 50, colour = "white",
+                                linewidth = 0.15) +
+        ggplot2::geom_vline(xintercept = c(-lfc_threshold, lfc_threshold),
+                            linetype = "dashed", colour = "grey60",
+                            linewidth = 0.3) +
+        ggplot2::scale_fill_manual(
+          values = c(`FALSE` = "grey75", `TRUE` = "#C44E52"),
+          labels = c(`FALSE` = "Not significant",
+                     `TRUE`  = sprintf("%s < %g", sig_col, fdr_threshold)),
+          name = NULL
+        ) +
+        ggplot2::labs(
+          title    = paste0(file_stub, " - effect-size distribution"),
+          subtitle = NULL,
+          x = fc_col, y = "Genes"
+        ) +
+        presentation_theme(base_size = 11)
+      save_presentation_plot(
+        plot     = p_hist,
+        filename = file.path(plots_dir,
+                             paste0(file_stub, "_log2fc_histogram.png")),
+        width    = 9, height = 5, dpi = 300
+      )
+    }, error = function(e) {
+      message("  log2FC histogram skipped: ", conditionMessage(e))
+    })
+
+    # --- 4c. Neighbour-vs-self mean expression scatter ---------------------
+    # smiDE's distinguishing output has per-gene self vs neighbour means.
+    # Auto-detect columns by name (varies between smiDE versions).
+    tryCatch({
+      ns_cols <- .smide_guess_neighbour_self_columns(result_df)
+      if (!is.null(ns_cols)) {
+        ns_df <- data.frame(
+          gene      = gene_vec,
+          self_mean = as.numeric(result_df[[ns_cols$self]]),
+          nbr_mean  = as.numeric(result_df[[ns_cols$neighbour]]),
+          sig       = as.numeric(result_df[[sig_col]]),
+          stringsAsFactors = FALSE
+        )
+        ns_df <- ns_df[is.finite(ns_df$self_mean) &
+                       is.finite(ns_df$nbr_mean) &
+                       is.finite(ns_df$sig), , drop = FALSE]
+        if (nrow(ns_df) > 0) {
+          ns_df$is_sig <- ns_df$sig < fdr_threshold
+          p_ns <- ggplot2::ggplot(ns_df,
+              ggplot2::aes(x = self_mean, y = nbr_mean,
+                           colour = is_sig)) +
+            ggplot2::geom_abline(slope = 1, intercept = 0,
+                                 linetype = "dashed", colour = "grey50") +
+            ggplot2::geom_point(size = 1.2, alpha = 0.65, stroke = 0) +
+            ggplot2::scale_colour_manual(
+              values = c(`FALSE` = "grey75", `TRUE` = "#C44E52"),
+              labels = c(`FALSE` = "Not significant",
+                         `TRUE`  = sprintf("%s < %g", sig_col, fdr_threshold)),
+              name = NULL
+            ) +
+            ggplot2::labs(
+              title    = paste0(file_stub, " - neighbour vs self expression"),
+              subtitle = paste0("Self: ", ns_cols$self,
+                                " | Neighbour: ", ns_cols$neighbour),
+              x = "Self mean expression",
+              y = "Neighbour mean expression"
+            ) +
+            presentation_theme(base_size = 11)
+          if (requireNamespace("ggrepel", quietly = TRUE) &&
+              sum(ns_df$is_sig) > 0) {
+            top_label <- ns_df[ns_df$is_sig, , drop = FALSE]
+            top_label <- top_label[order(top_label$sig), , drop = FALSE]
+            top_label <- utils::head(top_label, top_n_label)
+            p_ns <- p_ns + ggrepel::geom_text_repel(
+              data = top_label, mapping = ggplot2::aes(label = gene),
+              size = 3, max.overlaps = Inf, segment.colour = "grey50",
+              show.legend = FALSE
+            )
+          }
+          save_presentation_plot(
+            plot     = p_ns,
+            filename = file.path(plots_dir,
+                                 paste0(file_stub, "_neighbour_vs_self.png")),
+            width    = 9, height = 8, dpi = 300
+          )
+        }
+      }
+    }, error = function(e) {
+      message("  Neighbour-vs-self plot skipped: ", conditionMessage(e))
+    })
+
     # --- 5. Spatial overlay of top-N DE genes (smiDE Fig 5g / 6f-g style) ---
-    # Optional — only emitted when the caller supplies an expression matrix
+    # Optional - only emitted when the caller supplies an expression matrix
     # and a polygon data.frame. Delegates to `.save_spatial_de_gene_overlay()`
     # which builds a per-gene polygon heatmap and patchworks the panels.
     if (!is.null(expr_mat) && !is.null(polygon_df) && !is.null(gene_col) &&
@@ -1034,7 +1163,7 @@ guess_significance_column <- function(result_df) {
   invisible(NULL)
 }
 
-# Spatial overlay of gene expression on cell polygons — one panel per gene,
+# Spatial overlay of gene expression on cell polygons - one panel per gene,
 # patchworked into a single PNG. Renders all cells (no subsetting); the fill
 # gradient is log1p of the raw counts found in `expr_mat`. Gracefully skipped
 # if patchwork is unavailable or polygon/expression rows cannot be resolved.
@@ -1805,7 +1934,7 @@ run_smide_merged_backend <- function(expr_mat,
   treatment_groups <- sort(unique(stats::na.omit(metadata[[treatment_column]])))
   n_niches_effective <- length(unique(stats::na.omit(metadata$spatial_niche)))
 
-  cat("Merged smiDE — candidate cell types:", length(candidate_cell_types), "\n")
+  cat("Merged smiDE - candidate cell types:", length(candidate_cell_types), "\n")
   cat("  Types:", paste(candidate_cell_types, collapse = ", "), "\n")
   cat("  Samples:", length(sample_ids), " | Treatment groups:", paste(treatment_groups, collapse = ", "), "\n")
   cat("  Neighborhood split by:", sample_column, "\n")
@@ -2102,7 +2231,7 @@ run_smide_merged_backend <- function(expr_mat,
 #   2. Add a `smide_de_group` column ("A" or "B") to the subset metadata.
 #   3. Call run_smide_merged_backend() with annotation_column set to the
 #      stratifier (celltype or leiden cluster column) and treatment_column
-#      set to "smide_de_group" — so smiDE's contrast variable is the per-
+#      set to "smide_de_group" - so smiDE's contrast variable is the per-
 #      comparison group rather than the global treatment column.
 #
 # Outputs land in:
@@ -2113,7 +2242,7 @@ run_smide_merged_backend <- function(expr_mat,
 #   smide_max_strata_per_comparison: cap the number of strata processed per
 #     comparison (alphabetical order, with a clear log warning when exceeded).
 #
-# Descriptive comparisons (CART vs Control) are skipped — smiDE needs at
+# Descriptive comparisons (CART vs Control) are skipped - smiDE needs at
 # least 2 biological replicates per side and Control has only 1. Step 13
 # handles those contrasts as descriptive log2FC tables.
 # ==============================================================================
@@ -3535,7 +3664,7 @@ run_spatial_differential_expression <- function(gobj,
       min_type_count <- min(n_cells_per_type)
 
       # Re-assign niches with fewer groups if cell count is too small for
-      # the global n_niches — this prevents the 6-niche assignment leaving
+      # the global n_niches - this prevents the 6-niche assignment leaving
       # only 4 cells/niche on average, which the replicate filter then drops
       n_niches_fallback <- max(2L, min(n_niches, as.integer(floor(min_type_count / 10L))))
       if (n_niches_fallback < n_niches) {

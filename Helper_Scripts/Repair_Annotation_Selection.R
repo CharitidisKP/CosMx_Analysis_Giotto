@@ -156,7 +156,7 @@ for (sdir in sample_dirs) {
   cat(sprintf("\n[%s]\n", sample_id))
 
   if (file.exists(json_path) && !isTRUE(opts$force)) {
-    cat("  Existing JSON present — skipping (pass --force to overwrite).\n")
+    cat("  Existing JSON present - skipping (pass --force to overwrite).\n")
     existing <- tryCatch(jsonlite::fromJSON(json_path), error = function(e) NULL)
     record(sample_id, "skipped_existing",
            selected_column = existing$selected_annotation_column %||% NA_character_,
@@ -166,7 +166,7 @@ for (sdir in sample_dirs) {
   }
 
   if (!dir.exists(ckpt_dir)) {
-    cat("  No step-07 checkpoint at ", ckpt_dir, " — skipping.\n", sep = "")
+    cat("  No step-07 checkpoint at ", ckpt_dir, " - skipping.\n", sep = "")
     record(sample_id, "skipped_no_checkpoint",
            reason = paste("missing checkpoint dir:", ckpt_dir))
     next

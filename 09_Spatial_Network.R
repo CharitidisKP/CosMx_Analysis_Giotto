@@ -2,7 +2,7 @@
 # ============================================================================== 
 # 09_Spatial_Network.R
 # Spatial network construction, neighbourhood enrichment, and spot-level
-# niche deconvolution — all self-contained within Giotto.
+# niche deconvolution - all self-contained within Giotto.
 #
 # Column conventions in cellProximityEnrichment output:
 #   unified_int  = cell-type pair label string  e.g. "TypeA--TypeB"
@@ -230,10 +230,15 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
 
   safe_ct <- gsub("[^A-Za-z0-9]", "_", score_col)
   label_tag <- if (!is.null(file_label) && nzchar(file_label)) file_label else sample_id
-  save_path <- file.path(deconv_folder,
+  # Per-sample directory (one PNG per sample x enrichment x score_col).
+  # Existing flat files in deconv_folder remain readable; new files land
+  # under deconv_folder/<sample_id>/.
+  per_sample_dir <- file.path(deconv_folder, label_tag)
+  dir.create(per_sample_dir, recursive = TRUE, showWarnings = FALSE)
+  save_path <- file.path(per_sample_dir,
                          paste0(label_tag, "_", enrichment_name, "_",
                                 safe_ct, ".png"))
-  save_presentation_plot(p, save_path, width = 12, height = 10, dpi = 200)
+  save_presentation_plot(p, save_path, width = 14, height = 11, dpi = 600)
   invisible(save_path)
 }
 
@@ -258,7 +263,7 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   all_types <- sort(unique(c(enr$from, enr$to)))
   n_types   <- length(all_types)
   
-  # Enrichment matrix (symmetrised) — initialise with 0
+  # Enrichment matrix (symmetrised) - initialise with 0
   mat <- matrix(0, nrow = n_types, ncol = n_types,
                 dimnames = list(all_types, all_types))
   
@@ -334,42 +339,22 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   
   save_path <- file.path(prox_folder,
                          paste0(sample_id, "_proximity_heatmap.png"))
-  
-  grDevices::png(save_path, width = 16, height = 14, units = "in", res = 150)
-  pheatmap::pheatmap(
-    mat_masked,
-    color             = colors,
-    breaks            = breaks,
-    na_col            = "grey92",
-    cluster_rows      = FALSE,
-    cluster_cols      = FALSE,
-    show_rownames     = TRUE,
-    show_colnames     = TRUE,
-    fontsize          = 7.5,
-    fontsize_row      = 7.5,
-    fontsize_col      = 7.5,
-    angle_col         = 45,
-    border_color      = NA,
-    annotation_row    = anno_df,
-    annotation_col    = anno_df,
-    annotation_colors = anno_colours,
-    main              = paste0(
-      sample_id,
-      "  \u2014  Cell-type neighbourhood enrichment\n",
-      "grey = not significant (FDR \u2265 0.05)  |  ",
-      "blue = spatial exclusion  |  red = co-localisation"
-    ),
-    legend_breaks = c(-max_abs, -max_abs / 2, 0, max_abs / 2, max_abs),
-    legend_labels = c(
-      sprintf("%.2f  (strong exclusion)",   -max_abs),
-      sprintf("%.2f",                       -max_abs / 2),
-      "0",
-      sprintf("%.2f",                        max_abs / 2),
-      sprintf("%.2f  (strong co-loc)",       max_abs)
-    )
+
+  # Delegate to the shared ComplexHeatmap-based helper (Plot_Helpers.R) so
+  # 09 and 11 produce visually identical heatmaps. Falls back to pheatmap
+  # internally when ComplexHeatmap is unavailable. Pass the symmetrised
+  # matrix (significance masking still applied via NA breaks).
+  .plot_proximity_heatmap_complex(
+    mat        = mat_masked,
+    title      = paste0(sample_id, " - Cell-type neighbourhood enrichment"),
+    subtitle   = "Grey = not significant (FDR >= 0.05); blue = exclusion; red = co-localisation",
+    focus_label = NULL,
+    filename   = save_path,
+    width      = 14,
+    height     = 12,
+    dpi        = 300
   )
-  grDevices::dev.off()
-  
+
   cat("\u2713 Proximity heatmap saved:", basename(save_path), "\n")
   invisible(save_path)
 }
@@ -458,7 +443,7 @@ build_spatial_network <- function(gobj,
   cat("Cell types:", n_types, "\n\n")
   
   if (is.null(marker_list)) {
-    cat("No marker_list supplied — using built-in HCA Kidney markers.\n\n")
+    cat("No marker_list supplied - using built-in HCA Kidney markers.\n\n")
     marker_list <- list(
       Proximal.tubule             = c("SLC3A1","SLC7A9","CUBN","LRP2","UMOD","SLC34A1","GATM","ALDOB","PCK1","SLC17A3"),
       Distinct.proximal.tubule.1  = c("SLC17A3","SLC22A8","SLC22A6","ALDOB","GATM","SLC7A13","PRODH2","SLC16A9","SLC4A4","GPX3"),
@@ -515,7 +500,7 @@ build_spatial_network <- function(gobj,
   
   
   # ============================================================================ 
-  # SECTION 1 — SPATIAL NETWORK CONSTRUCTION 
+  # SECTION 1 - SPATIAL NETWORK CONSTRUCTION 
   # ============================================================================ 
   
   cat("================================================================================\n")
@@ -604,7 +589,7 @@ build_spatial_network <- function(gobj,
 
 
   # ============================================================================
-  # SECTION 1b — NETWORK DIAGNOSTICS (edge-length + degree distributions)
+  # SECTION 1b - NETWORK DIAGNOSTICS (edge-length + degree distributions)
   # ============================================================================
 
   tryCatch({
@@ -737,7 +722,7 @@ build_spatial_network <- function(gobj,
 
 
   # ============================================================================
-  # SECTION 2 — NEIGHBOURHOOD ENRICHMENT (cellProximityEnrichment)
+  # SECTION 2 - NEIGHBOURHOOD ENRICHMENT (cellProximityEnrichment)
   # ============================================================================
   
   cat("================================================================================\n")
@@ -800,7 +785,7 @@ build_spatial_network <- function(gobj,
         cat("\u26A0 Proximity heatmap failed:", conditionMessage(e), "\n")
       })
       
-      # Vis plot — direct ggplot2 (bypasses cellProximityVisPlot Giotto bug)
+      # Vis plot - direct ggplot2 (bypasses cellProximityVisPlot Giotto bug)
       tryCatch({
         if (!file.exists(prox_csv_path))
           stop("Proximity enrichment CSV not found")
@@ -880,6 +865,58 @@ build_spatial_network <- function(gobj,
       }, error = function(e) {
         cat("\u26A0 Proximity vis plot failed:", conditionMessage(e), "\n")
       })
+
+      # B-cell-focused proximity visplot - top 5 partner cell types by
+      # enrichment. Reads the same enrichment CSV, filters to interactions
+      # where one side is B cell, ranks by enrichm, takes top 5, then runs
+      # one .plot_cell_proximity per pair into a B-cell subdirectory.
+      tryCatch({
+        if (file.exists(prox_csv_path)) {
+          enr_b <- data.table::fread(prox_csv_path, data.table = FALSE)
+          enr_b$unified_int <- as.character(enr_b$unified_int)
+          # Match "B cell" or "B.cell" on either side of the pair string
+          # (smiDE-native scheme is space-separated; legacy uses dots).
+          bcell_pat <- "(^|--)B[ .]cell($|--)"
+          is_bcell  <- grepl(bcell_pat, enr_b$unified_int, perl = TRUE)
+          enr_bc    <- enr_b[is_bcell &
+                              !is.na(enr_b$type_int) &
+                              enr_b$type_int == "hetero", ]
+          if (nrow(enr_bc) > 0) {
+            enr_bc <- enr_bc[order(-enr_bc$enrichm), ]
+            top5   <- head(enr_bc, 5)
+            bcell_dir <- file.path(prox_folder, "bcell_top5")
+            dir.create(bcell_dir, recursive = TRUE, showWarnings = FALSE)
+            cat("  Rendering top-5 B-cell proximity partner plots\n")
+            for (i in seq_len(nrow(top5))) {
+              tryCatch(
+                .plot_cell_proximity(
+                  gobj             = gobj,
+                  interaction_name = top5$unified_int[i],
+                  celltype_col     = celltype_col,
+                  primary_network  = primary_network,
+                  sample_id        = sample_id,
+                  prox_folder      = bcell_dir
+                ),
+                error = function(e) cat("    \u26A0 ", top5$unified_int[i],
+                  " skipped: ", conditionMessage(e), "\n", sep = "")
+              )
+            }
+            # Concise summary table written next to the plots.
+            utils::write.csv(
+              top5[, intersect(c("unified_int", "enrichm",
+                                 "p.adj_higher", "p.adj_lower"),
+                               names(top5))],
+              file.path(bcell_dir,
+                        paste0(sample_id, "_bcell_top5_partners.csv")),
+              row.names = FALSE
+            )
+          } else {
+            cat("  No B-cell hetero pairs in proximity enrichment\n")
+          }
+        }
+      }, error = function(e) {
+        cat("\u26A0 B-cell proximity top-5 failed:", conditionMessage(e), "\n")
+      })
     }
     
     # Console summary
@@ -932,7 +969,7 @@ build_spatial_network <- function(gobj,
   
   
   # ============================================================================ 
-  # SECTION 3 — NICHE DECONVOLUTION 
+  # SECTION 3 - NICHE DECONVOLUTION 
   # ============================================================================ 
   
   cat("================================================================================\n")
@@ -1077,7 +1114,7 @@ build_spatial_network <- function(gobj,
   
   
   # ============================================================================ 
-  # SECTION 4 — SAVE & SUMMARISE 
+  # SECTION 4 - SAVE & SUMMARISE 
   # ============================================================================ 
   
   cat("================================================================================\n")

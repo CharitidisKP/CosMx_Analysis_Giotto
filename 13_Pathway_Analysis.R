@@ -51,7 +51,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# Giotto accessors — mirrored from step 10 to avoid cross-script sourcing and
+# Giotto accessors - mirrored from step 10 to avoid cross-script sourcing and
 # to sidestep Giotto's match.call()[[1]] dispatch pitfall (see cerebrum
 # 2026-04-19): always call Giotto's namespaced function directly, never via
 # a variable-held reference.
@@ -85,7 +85,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# Polygon overlay helpers — adapted from 10_CCI_Analysis.R so step 13 is
+# Polygon overlay helpers - adapted from 10_CCI_Analysis.R so step 13 is
 # self-contained. Reuses the safe grouping key (cell_ID + geom + part) per
 # cerebrum bug-065.
 # ==============================================================================
@@ -130,7 +130,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# Pathway-name cleaning — produces "<collection>[:subcollection] - <Description>"
+# Pathway-name cleaning - produces "<collection>[:subcollection] - <Description>"
 # with underscores/slashes/periods stripped, title-cased on the description
 # half only (collection + sub-collection codes stay uppercase).
 # ==============================================================================
@@ -178,7 +178,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# MSigDB gene-set loader — returns per-database "by_id" list (pathway_id →
+# MSigDB gene-set loader - returns per-database "by_id" list (pathway_id →
 # gene SYMBOL vector) plus a $meta data frame with collection / subcollection
 # / description for each pathway ID. Uses the msigdbr CRAN package.
 # ==============================================================================
@@ -225,7 +225,7 @@ if ((!exists("presentation_theme") ||
       sym_col <- if ("gene_symbol" %in% names(df)) "gene_symbol" else "human_gene_symbol"
       if (!id_col %in% names(df) || !sym_col %in% names(df)) {
         cat("⚠ Unexpected msigdbr output for ", coll, ":",
-            sub %||% "", " — skipping\n", sep = "")
+            sub %||% "", " - skipping\n", sep = "")
         next
       }
 
@@ -254,7 +254,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# Resolve comparison groups — returns list(label=..., cell_ids_a=..., cell_ids_b=...)
+# Resolve comparison groups - returns list(label=..., cell_ids_a=..., cell_ids_b=...)
 # ==============================================================================
 
 .pathway_match_meta_filter <- function(meta, filter_spec) {
@@ -279,7 +279,7 @@ if ((!exists("presentation_theme") ||
 .pathway_resolve_groups <- function(cfg_pathway, cell_meta) {
   comps <- cfg_pathway$comparisons
   if (is.null(comps) || length(comps) == 0) {
-    stop("pathway.comparisons is empty — nothing to analyse.")
+    stop("pathway.comparisons is empty - nothing to analyse.")
   }
   out <- vector("list", length(comps))
   for (i in seq_along(comps)) {
@@ -310,7 +310,7 @@ if ((!exists("presentation_theme") ||
 #   - "paired"      → ~ patient_id + de_group (CART/Conv before-vs-after)
 #   - "unpaired"    → ~ de_group              (CART vs Conv at each timepoint)
 #   - "descriptive" → no model; emit log2FC of pseudobulk means + flag
-#                     inference="none"  (CART vs Control — n=1 Control side,
+#                     inference="none"  (CART vs Control - n=1 Control side,
 #                     no estimable Control variance)
 #
 # Auto-degrade: if either side has fewer than `de_min_pseudobulk_per_group`
@@ -319,7 +319,7 @@ if ((!exists("presentation_theme") ||
 # patient's B cells were filtered out at QC.
 #
 # Legacy `presto_wilcox` engine (cell-level Wilcoxon) is kept available via
-# pathway.de_engine: "presto_wilcox" — anti-conservative on n=2 designs but
+# pathway.de_engine: "presto_wilcox" - anti-conservative on n=2 designs but
 # useful when DESeq2 isn't installed or for sanity checks.
 #
 # Output schema (every engine):
@@ -399,7 +399,7 @@ if ((!exists("presentation_theme") ||
   # Per-cell group vector aligned to raw_sub for pct_expressed downstream.
   cell_group <- meta_sub$de_group
 
-  # Descriptive degrade — either by request or by replicate floor.
+  # Descriptive degrade - either by request or by replicate floor.
   if (design_kind == "descriptive" || n_a < min_reps || n_b < min_reps) {
     if (design_kind != "descriptive") {
       cat("    ⚠ only ", n_a, "/", n_b, " replicates per side ",
@@ -567,7 +567,7 @@ if ((!exists("presentation_theme") ||
     stringsAsFactors = FALSE
   )
   de$logFC[!is.finite(de$logFC)] <- 0
-  # GSEA needs a ranking — without p-values, rank by raw logFC magnitude.
+  # GSEA needs a ranking - without p-values, rank by raw logFC magnitude.
   de$stat <- de$logFC
   de <- de[order(-abs(de$stat)), , drop = FALSE]
   attr(de, "engine") <- "descriptive"
@@ -612,7 +612,7 @@ if ((!exists("presentation_theme") ||
   de[order(-abs(de$stat)), , drop = FALSE]
 }
 
-# Legacy presto::wilcoxauc engine — kept for backwards compatibility and as a
+# Legacy presto::wilcoxauc engine - kept for backwards compatibility and as a
 # sanity check. Cell-level Wilcoxon over-states significance under n=2
 # biological replication, so it is no longer the default.
 .pathway_run_de_presto <- function(expr_mat, ids_a, ids_b) {
@@ -662,7 +662,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# GSEA — run fgsea on each database's gene sets. Returns a long-format tibble
+# GSEA - run fgsea on each database's gene sets. Returns a long-format tibble
 # with collection/subcollection/clean_name columns joined in.
 # ==============================================================================
 
@@ -706,7 +706,7 @@ if ((!exists("presentation_theme") ||
     )
     if (is.null(res) || nrow(res) == 0) next
     res_df <- as.data.frame(res)
-    # fgsea returns `leadingEdge` as a list-column — collapse to comma-string.
+    # fgsea returns `leadingEdge` as a list-column - collapse to comma-string.
     if ("leadingEdge" %in% names(res_df)) {
       res_df$leadingEdge <- vapply(
         res_df$leadingEdge,
@@ -730,7 +730,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# ORA — clusterProfiler::enricher with TERM2GENE per database. Runs once on
+# ORA - clusterProfiler::enricher with TERM2GENE per database. Runs once on
 # up-regulated genes (logFC > threshold & padj < threshold) and once on
 # down-regulated (same thresholds, opposite sign), then merges with a
 # "direction" column.
@@ -863,7 +863,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# Plot helpers — each returns the saved file path (or NULL). All PNG writes
+# Plot helpers - each returns the saved file path (or NULL). All PNG writes
 # go through save_presentation_plot() (falls back to direct grDevices::png /
 # ggsave as needed, see cerebrum bug-060).
 # ==============================================================================
@@ -1066,7 +1066,7 @@ if ((!exists("presentation_theme") ||
     ggplot2::geom_tile(colour = "white", linewidth = 0.15) +
     ggplot2::scale_fill_gradient2(low = "steelblue", mid = "white",
                                   high = "firebrick", midpoint = 0) +
-    ggplot2::labs(title = paste0("Cross-comparison pathway heatmap — ",
+    ggplot2::labs(title = paste0("Cross-comparison pathway heatmap - ",
                                  stratum_label),
                   x = NULL, y = NULL,
                   fill = "sign(NES) * -log10(padj)") +
@@ -1197,7 +1197,7 @@ if ((!exists("presentation_theme") ||
   })
   combined <- patchwork::wrap_plots(panels, ncol = ncol_grid) +
     patchwork::plot_annotation(
-      title = "PROGENy pathway activity — B cells outlined"
+      title = "PROGENy pathway activity - B cells outlined"
     )
   ok <- tryCatch({
     ggplot2::ggsave(outfile, combined, width = width, height = height,
@@ -1242,7 +1242,7 @@ if ((!exists("presentation_theme") ||
     ggplot2::geom_boxplot(outlier.size = 0.3, alpha = 0.75) +
     ggplot2::facet_grid(pathway ~ comparison, scales = "free_y") +
     ggplot2::scale_fill_manual(values = c(A = "firebrick", B = "steelblue")) +
-    ggplot2::labs(title = "PROGENy activity — B cells, by comparison",
+    ggplot2::labs(title = "PROGENy activity - B cells, by comparison",
                   x = NULL, y = "activity z-score") +
     ggplot2::theme_minimal(base_size = 8) +
     ggplot2::theme(legend.position = "none",
@@ -1387,7 +1387,7 @@ run_pathway_analysis <- function(gobj,
   leiden_column <- leiden_column %||% cfg_p$leiden_column %||% "leiden_clust"
   if (!leiden_column %in% names(meta)) {
     cat("⚠ Leiden column '", leiden_column,
-        "' not in metadata — will skip cluster stratification\n", sep = "")
+        "' not in metadata - will skip cluster stratification\n", sep = "")
     leiden_column <- NA_character_
   }
   cat("Cell-type column :", celltype_column, "\n")
@@ -1414,7 +1414,7 @@ run_pathway_analysis <- function(gobj,
     stop("No comparisons passed the min_cells_per_stratum filter.")
   }
 
-  # Pre-extract expression matrices for the merged object — reused for all
+  # Pre-extract expression matrices for the merged object - reused for all
   # comparisons × strata. Pseudobulk DE engines need raw counts (DESeq2/edgeR
   # work on integers); legacy presto + leading-edge / PROGENy plots use
   # normalized values.
@@ -1615,7 +1615,7 @@ run_pathway_analysis <- function(gobj,
       }
     }
 
-    # P5 / P6 — per-comparison cross-stratum heatmaps
+    # P5 / P6 - per-comparison cross-stratum heatmaps
     for (st_type in names(cross_stratum_gsea)) {
       store <- cross_stratum_gsea[[st_type]]
       if (length(store) < 2) next
@@ -1625,7 +1625,7 @@ run_pathway_analysis <- function(gobj,
       outfile <- file.path(comp_dir, paste0("_cross_", st_type, "_heatmap.png"))
       .pathway_plot_cross_stratum_heatmap(
         long, outfile,
-        title = sprintf("%s — top pathways across %s strata",
+        title = sprintf("%s - top pathways across %s strata",
                         cp$label, st_type)
       )
     }
@@ -1658,7 +1658,7 @@ run_pathway_analysis <- function(gobj,
     )
     .pathway_plot_cross_comparison_heatmap(store, lvl, outfile)
   }
-  # P8 — union upset across the 4 comparisons, aggregated across ALL strata
+  # P8 - union upset across the 4 comparisons, aggregated across ALL strata
   # (pool any significant pathway from any stratum into the comparison's set).
   per_comp_paths <- list()
   for (key in names(cross_comp_store)) {
@@ -1734,7 +1734,7 @@ run_pathway_analysis <- function(gobj,
     cat("✓ Wrote merged results: ",
         nrow(merged_df), " rows → _all_results_merged.csv\n", sep = "")
   } else {
-    cat("⚠ No enrichment results produced — merged CSV skipped\n")
+    cat("⚠ No enrichment results produced - merged CSV skipped\n")
   }
 
   # ---------- P12 : B-cell PDF ----------
@@ -1756,7 +1756,7 @@ run_pathway_analysis <- function(gobj,
 }
 
 # ==============================================================================
-# Tidy helpers — normalise GSEA/ORA outputs into a common "long" schema for
+# Tidy helpers - normalise GSEA/ORA outputs into a common "long" schema for
 # the merged results CSV.
 # ==============================================================================
 

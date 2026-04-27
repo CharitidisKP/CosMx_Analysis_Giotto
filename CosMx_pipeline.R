@@ -741,7 +741,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
             )
           }
           # Call subsetGiotto directly by name. Giotto uses match.call()[[1]]
-          # for dynamic dispatch — wrapping via get() makes the name resolve
+          # for dynamic dispatch - wrapping via get() makes the name resolve
           # to "asNamespace(...)" and fails in sys.frame(-2). See cerebrum.
           gobj <- if (requireNamespace("GiottoClass", quietly = TRUE) &&
                       exists("subsetGiotto", envir = asNamespace("GiottoClass"),
@@ -924,7 +924,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       marker_genes_cfg <- cfg$parameters$visualization$marker_genes %||% list()
       bcsub <- cfg$parameters$bcell_subclustering %||% list()
 
-      # Build focus-analysis list — multi-focus mode if focus_analyses
+      # Build focus-analysis list - multi-focus mode if focus_analyses
       # is defined, single-focus fallback otherwise.
       focus_list <- cfg$interaction$focus_analyses
       if (is.null(focus_list) || length(focus_list) == 0) {
@@ -1034,7 +1034,7 @@ run_sample_pipeline <- function(runtime_env,
     # Per-sample log: writes to <sample_output_dir>/Pipeline_log_<id>_<date>.log
     # split = TRUE duplicates stdout to both log and terminal so the shell-level
     # tee in Run_Giotto_Pipeline.sh still captures a combined global log. R does
-    # NOT allow split = TRUE for the message stream — message sinks can only
+    # NOT allow split = TRUE for the message stream - message sinks can only
     # redirect to one destination, so messages go to the per-sample log only
     # (they no longer appear on the terminal, but the per-sample log keeps them
     # alongside the combined output stream).
@@ -1326,7 +1326,7 @@ run_merged_pipeline <- function(runtime_env,
       } else if (step_id == "13_pathway") {
         pathway_cfg <- cfg$pathway %||% list()
         if (!isTRUE(pathway_cfg$enabled)) {
-          message("  pathway.enabled is FALSE — skipping step 13 for merged run")
+          message("  pathway.enabled is FALSE - skipping step 13 for merged run")
         } else {
           # Pass the sample metadata table so .pathway_ensure_metadata()
           # can inject treatment/timepoint if the merged cell metadata
@@ -1548,7 +1548,7 @@ run_pipeline <- function(cli_opts) {
   }
   
   if (cli_opts$mode %in% c("all", "merged")) {
-    # Consensus annotation column across samples — each per-sample run writes
+    # Consensus annotation column across samples - each per-sample run writes
     # annotation_selection.json in step 07, but run_sample_pipeline's cfg
     # mutation is local; we re-resolve here so the merged object uses the
     # same column the per-sample pipeline chose.

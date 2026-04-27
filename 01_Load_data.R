@@ -527,7 +527,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     poly_ID = as.character(poly_list$cell)
   )
   
-  # Create GiottoPolygon — do NOT pre-store centroids here.
+  # Create GiottoPolygon - do NOT pre-store centroids here.
   # joinGiottoObjects (merged mode) rbinds spatVectorCentroids across samples and
   # checks count equality against spatVector; any per-sample mismatch (degenerate
   # geometry, serialisation artefact) propagates to a fatal count error.
