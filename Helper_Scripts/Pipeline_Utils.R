@@ -205,11 +205,7 @@ presentation_theme <- function(base_size = 13,
         lineheight = 0.95
       ),
       legend.spacing.y = grid::unit(0.12, "cm"),
-      panel.border = ggplot2::element_rect(
-        colour = "grey80",
-        fill = NA,
-        linewidth = 0.4
-      ),
+      panel.border = ggplot2::element_blank(),
       plot.margin = ggplot2::margin(12, 16, 12, 12)
     )
 }
