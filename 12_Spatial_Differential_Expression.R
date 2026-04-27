@@ -2093,6 +2093,240 @@ run_smide_merged_backend <- function(expr_mat,
   )
 }
 
+# ==============================================================================
+# Per-comparison + multi-stratifier smiDE wrapper.
+#
+# For each (stratifier ∈ stratify_by) × (comparison ∈ comparisons):
+#   1. Subset metadata + counts + spatial_locations + neighbor_counts to cells
+#      that match either group_a or group_b of the comparison.
+#   2. Add a `smide_de_group` column ("A" or "B") to the subset metadata.
+#   3. Call run_smide_merged_backend() with annotation_column set to the
+#      stratifier (celltype or leiden cluster column) and treatment_column
+#      set to "smide_de_group" — so smiDE's contrast variable is the per-
+#      comparison group rather than the global treatment column.
+#
+# Outputs land in:
+#   <output_dir>/12_Spatial_Differential_Expression/<stratifier>/<comparison>/
+#
+# Runtime caps:
+#   smide_min_cells_per_stratum: skip strata with fewer cells than this.
+#   smide_max_strata_per_comparison: cap the number of strata processed per
+#     comparison (alphabetical order, with a clear log warning when exceeded).
+#
+# Descriptive comparisons (CART vs Control) are skipped — smiDE needs at
+# least 2 biological replicates per side and Control has only 1. Step 13
+# handles those contrasts as descriptive log2FC tables.
+# ==============================================================================
+run_smide_per_comparison_backend <- function(expr_mat,
+                                             metadata,
+                                             run_label,
+                                             output_dir,
+                                             stratifier_columns,
+                                             comparisons,
+                                             tables_dir,
+                                             sample_column = "sample_id",
+                                             min_cells_per_niche = 30,
+                                             spatial_locations = NULL,
+                                             neighbor_counts = NULL,
+                                             smide_family = "nbinom2",
+                                             smide_radius = 0.05,
+                                             smide_ncores = 1,
+                                             smide_overlap_threshold = NULL,
+                                             smide_min_detection_fraction = 0.05,
+                                             smide_save_raw = TRUE,
+                                             smide_adaptive_thresholds = TRUE,
+                                             smide_min_cells_per_stratum = 200,
+                                             smide_max_strata_per_comparison = 30,
+                                             polygon_df = NULL) {
+  if (length(stratifier_columns) == 0L) {
+    stop("run_smide_per_comparison_backend(): stratifier_columns is empty.")
+  }
+  if (length(comparisons) == 0L) {
+    stop("run_smide_per_comparison_backend(): no comparisons supplied.")
+  }
+  stratifier_columns <- stratifier_columns[stratifier_columns %in% names(metadata)]
+  if (length(stratifier_columns) == 0L) {
+    stop("None of the requested stratifier_columns are present in cell metadata.")
+  }
+
+  per_comp_summary  <- list()
+  per_comp_results  <- list()
+
+  for (st_label in names(stratifier_columns)) {
+    st_col <- stratifier_columns[[st_label]]
+    cat("\n========================================\n")
+    cat("smiDE | Stratifier: ", st_label, " (column: ", st_col, ")\n", sep = "")
+    cat("========================================\n")
+
+    for (cp in comparisons) {
+      cp_label <- cp$label %||% "comparison"
+      design_kind <- cp$design %||% "unpaired"
+      if (design_kind == "descriptive") {
+        cat("  - ", cp_label, ": descriptive comparison; skipping smiDE ",
+            "(handled as log2FC-only by step 13)\n", sep = "")
+        next
+      }
+
+      mask_a <- .smide_match_meta_filter(metadata, cp$group_a)
+      mask_b <- .smide_match_meta_filter(metadata, cp$group_b)
+      keep   <- mask_a | mask_b
+      if (sum(keep) < 2L * min_cells_per_niche) {
+        cat("  - ", cp_label, ": fewer than ",
+            2L * min_cells_per_niche, " cells across both groups; skipping\n",
+            sep = "")
+        next
+      }
+
+      sub_meta <- metadata[keep, , drop = FALSE]
+      sub_meta$smide_de_group <- ifelse(mask_a[keep], "A", "B")
+      stratum_vec <- as.character(sub_meta[[st_col]])
+      stratum_sizes <- table(stratum_vec[!is.na(stratum_vec) & nzchar(stratum_vec)])
+      eligible_strata <- names(stratum_sizes[stratum_sizes >= smide_min_cells_per_stratum])
+
+      if (length(eligible_strata) == 0L) {
+        cat("  - ", cp_label, ": no ", st_label, " strata reach ",
+            smide_min_cells_per_stratum, "-cell floor; skipping\n", sep = "")
+        next
+      }
+
+      # Apply max_strata cap (alphabetical for determinism).
+      eligible_strata <- sort(eligible_strata)
+      if (length(eligible_strata) > smide_max_strata_per_comparison) {
+        cat("  - ", cp_label, ": ", length(eligible_strata),
+            " ", st_label, " strata exceed cap of ",
+            smide_max_strata_per_comparison,
+            "; running first ", smide_max_strata_per_comparison,
+            " (alphabetical)\n", sep = "")
+        eligible_strata <- head(eligible_strata,
+                                smide_max_strata_per_comparison)
+      }
+
+      cat("  ▶ ", cp_label, " (", st_label, "): A=", sum(mask_a[keep]),
+          " B=", sum(mask_b[keep]), " cells over ",
+          length(eligible_strata), " stratum/strata\n", sep = "")
+
+      cp_dir <- file.path(output_dir, "12_Spatial_Differential_Expression",
+                          st_label, .smide_safe_name(cp_label))
+      dir.create(cp_dir, recursive = TRUE, showWarnings = FALSE)
+      cp_tables <- ensure_dir(file.path(cp_dir, "tables"))
+
+      # Subset the auxiliary inputs to the comparison cells.
+      cell_ids_keep <- sub_meta$cell_ID
+      sub_expr <- expr_mat[, intersect(colnames(expr_mat), cell_ids_keep),
+                           drop = FALSE]
+      sub_spatial_locs <- if (!is.null(spatial_locations)) {
+        spatial_locations[match(cell_ids_keep,
+                                spatial_locations$cell_ID), , drop = FALSE]
+      } else NULL
+      sub_neighbor <- if (!is.null(neighbor_counts)) {
+        neighbor_counts[intersect(rownames(neighbor_counts), cell_ids_keep),
+                        , drop = FALSE]
+      } else NULL
+
+      iter_label <- paste(run_label, .smide_safe_name(cp_label),
+                          st_label, sep = "_")
+
+      iter_result <- tryCatch(
+        run_smide_merged_backend(
+          expr_mat = sub_expr,
+          metadata = sub_meta,
+          run_label = iter_label,
+          output_dir = cp_dir,
+          annotation_column = st_col,
+          tables_dir = cp_tables,
+          treatment_column = "smide_de_group",
+          sample_column = sample_column,
+          min_cells_per_niche = min_cells_per_niche,
+          spatial_locations = sub_spatial_locs,
+          neighbor_counts = sub_neighbor,
+          smide_family = smide_family,
+          smide_radius = smide_radius,
+          smide_ncores = smide_ncores,
+          smide_overlap_threshold = smide_overlap_threshold,
+          smide_annotation_subset = eligible_strata,
+          smide_min_detection_fraction = smide_min_detection_fraction,
+          smide_save_raw = smide_save_raw,
+          smide_adaptive_thresholds = smide_adaptive_thresholds,
+          polygon_df = polygon_df
+        ),
+        error = function(e) {
+          message("smiDE failed for ", iter_label, ": ", conditionMessage(e))
+          NULL
+        }
+      )
+      if (is.null(iter_result)) next
+
+      if (!is.null(iter_result$summary) && nrow(iter_result$summary) > 0) {
+        iter_result$summary$comparison       <- cp_label
+        iter_result$summary$stratifier_label <- st_label
+        per_comp_summary[[length(per_comp_summary) + 1L]] <- iter_result$summary
+      }
+      if (!is.null(iter_result$results) && nrow(iter_result$results) > 0) {
+        iter_result$results$comparison       <- cp_label
+        iter_result$results$stratifier_label <- st_label
+        per_comp_results[[length(per_comp_results) + 1L]] <- iter_result$results
+      }
+    }
+  }
+
+  combined_summary <- if (length(per_comp_summary) > 0) {
+    do.call(rbind, per_comp_summary)
+  } else data.frame()
+  combined_results <- if (length(per_comp_results) > 0) {
+    do.call(rbind, per_comp_results)
+  } else data.frame()
+
+  if (nrow(combined_summary) > 0) {
+    utils::write.csv(
+      combined_summary,
+      file.path(tables_dir, paste0(run_label, "_smide_per_comparison_summary.csv")),
+      row.names = FALSE
+    )
+  }
+  if (nrow(combined_results) > 0) {
+    utils::write.csv(
+      combined_results,
+      file.path(tables_dir, paste0(run_label, "_smide_per_comparison_results.csv")),
+      row.names = FALSE
+    )
+  }
+
+  list(
+    metadata = metadata,
+    summary  = combined_summary,
+    results  = combined_results,
+    skipped_cell_types = character(0)
+  )
+}
+
+# Filename-safe slugify.
+.smide_safe_name <- function(x) {
+  s <- gsub("[^A-Za-z0-9]+", "_", as.character(x))
+  s <- gsub("^_+|_+$", "", s)
+  if (!nzchar(s)) "x" else s
+}
+
+# Mirror of step 13's pathway match-meta-filter, kept local to avoid
+# cross-script sourcing.
+.smide_match_meta_filter <- function(meta, filter_spec) {
+  if (is.null(filter_spec) || length(filter_spec) == 0L) {
+    return(rep(FALSE, nrow(meta)))
+  }
+  hits <- rep(TRUE, nrow(meta))
+  for (key in names(filter_spec)) {
+    want <- filter_spec[[key]]
+    if (is.null(want) || length(want) == 0L) next
+    if (!key %in% names(meta)) {
+      cat("  ⚠ filter key '", key,
+          "' not in cell metadata; treating as no match\n", sep = "")
+      return(rep(FALSE, nrow(meta)))
+    }
+    have <- as.character(meta[[key]])
+    hits <- hits & (have %in% as.character(want))
+  }
+  hits
+}
+
 detect_annotation_column <- function(metadata, preferred = NULL) {
   annotation_stats <- function(column) {
     values <- metadata[[column]]
@@ -2985,6 +3219,12 @@ run_spatial_differential_expression <- function(gobj,
                                                 smide_save_raw = TRUE,
                                                 smide_adaptive_thresholds = TRUE,
                                                 smide_edger_fallback = TRUE,
+                                                # Per-comparison + multi-stratifier extension
+                                                # (see run_smide_per_comparison_backend()):
+                                                comparisons = NULL,
+                                                stratifier_columns = NULL,
+                                                smide_min_cells_per_stratum = 200,
+                                                smide_max_strata_per_comparison = 30,
                                                 save_object = FALSE) {
   analysis_scope <- match.arg(analysis_scope)
   backend <- match.arg(backend)
@@ -3206,28 +3446,63 @@ run_spatial_differential_expression <- function(gobj,
     }
   } else {
     if (backend == "smiDE") {
-      run_smide_merged_backend(
-        expr_mat = expr_mat,
-        metadata = metadata,
-        run_label = run_label,
-        output_dir = output_dir,
-        annotation_column = annotation_column,
-        tables_dir = tables_dir,
-        treatment_column = treatment_column,
-        sample_column = sample_column,
-        min_cells_per_niche = min_cells_per_niche,
-        spatial_locations = spatial_locations,
-        neighbor_counts = niche_counts,
-        smide_family = smide_family,
-        smide_radius = smide_radius,
-        smide_ncores = smide_ncores,
-        smide_overlap_threshold = smide_overlap_threshold,
-        smide_annotation_subset = smide_annotation_subset,
-        smide_min_detection_fraction = smide_min_detection_fraction,
-        smide_save_raw = smide_save_raw,
-        smide_adaptive_thresholds = smide_adaptive_thresholds,
-        polygon_df = polygon_df
-      )
+      use_per_comparison <- !is.null(comparisons) && length(comparisons) > 0L &&
+                            !is.null(stratifier_columns) &&
+                            length(stratifier_columns) > 0L
+      if (use_per_comparison) {
+        cat("Using per-comparison + multi-stratifier smiDE wrapper:\n")
+        cat("  Stratifiers : ", paste(names(stratifier_columns),
+                                       collapse = ", "), "\n", sep = "")
+        cat("  Comparisons : ",
+            paste(vapply(comparisons, function(cp) cp$label %||% "?",
+                         character(1)), collapse = ", "), "\n", sep = "")
+        run_smide_per_comparison_backend(
+          expr_mat = expr_mat,
+          metadata = metadata,
+          run_label = run_label,
+          output_dir = output_dir,
+          stratifier_columns = stratifier_columns,
+          comparisons = comparisons,
+          tables_dir = tables_dir,
+          sample_column = sample_column,
+          min_cells_per_niche = min_cells_per_niche,
+          spatial_locations = spatial_locations,
+          neighbor_counts = niche_counts,
+          smide_family = smide_family,
+          smide_radius = smide_radius,
+          smide_ncores = smide_ncores,
+          smide_overlap_threshold = smide_overlap_threshold,
+          smide_min_detection_fraction = smide_min_detection_fraction,
+          smide_save_raw = smide_save_raw,
+          smide_adaptive_thresholds = smide_adaptive_thresholds,
+          smide_min_cells_per_stratum = smide_min_cells_per_stratum,
+          smide_max_strata_per_comparison = smide_max_strata_per_comparison,
+          polygon_df = polygon_df
+        )
+      } else {
+        run_smide_merged_backend(
+          expr_mat = expr_mat,
+          metadata = metadata,
+          run_label = run_label,
+          output_dir = output_dir,
+          annotation_column = annotation_column,
+          tables_dir = tables_dir,
+          treatment_column = treatment_column,
+          sample_column = sample_column,
+          min_cells_per_niche = min_cells_per_niche,
+          spatial_locations = spatial_locations,
+          neighbor_counts = niche_counts,
+          smide_family = smide_family,
+          smide_radius = smide_radius,
+          smide_ncores = smide_ncores,
+          smide_overlap_threshold = smide_overlap_threshold,
+          smide_annotation_subset = smide_annotation_subset,
+          smide_min_detection_fraction = smide_min_detection_fraction,
+          smide_save_raw = smide_save_raw,
+          smide_adaptive_thresholds = smide_adaptive_thresholds,
+          polygon_df = polygon_df
+        )
+      }
     } else {
       run_merged_scope_spatial_de(
         expr_mat = expr_mat,

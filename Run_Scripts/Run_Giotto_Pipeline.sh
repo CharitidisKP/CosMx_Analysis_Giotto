@@ -2,21 +2,29 @@
 # ==============================================================================
 # CosMx Pipeline Launcher
 # Usage:
-#   ./Run_Giotto_Pipeline.sh                   # composite view: CART_composite + Control + 4 Conv (6 samples)
-#   ./Run_Giotto_Pipeline.sh --split           # split view: 4 CART biopsies + Control + 4 Conv (9 samples)
+#   ./Run_Giotto_Pipeline.sh                   # DEFAULT split view: 4 CART biopsies + Control + 4 Conv (9 samples)
+#   ./Run_Giotto_Pipeline.sh --no-split        # composite view: CART_composite + Control + 4 Conv (6 samples)
 #   ./Run_Giotto_Pipeline.sh --samples 1281    # one sample (bypasses include=FALSE if set)
 #   ./Run_Giotto_Pipeline.sh --samples CART_T0_S1
-#                                              # runs a single CART split even without --split
+#                                              # runs a single CART split (default already selects splits)
 #   ./Run_Giotto_Pipeline.sh --samples 1281 --sample-steps 01_load,02_qc
-#   ./Run_Giotto_Pipeline.sh --pairs pair_CART_S1 --split
-#                                              # T0 + T12 for patient 1 (paired design)
+#   ./Run_Giotto_Pipeline.sh --pairs pair_CART_S1
+#                                              # T0 + T12 for CART patient 1 (paired contrast)
 #   ./Run_Giotto_Pipeline.sh --dry-run         # preview without running
+#
+# Default set to --split 2026-04-27: all of the cross-sample comparisons in
+# config.yaml::pathway.comparisons (CART/Conv before-vs-after, CART vs Conv
+# at each timepoint, CART vs Control at each timepoint) require T0/T12 +
+# patient labels at the cell level, which only exist when the CART composite
+# is split into its 4 biopsies. --no-split is an alternative escape hatch
+# (CART_composite + Control + 4 Conv = 6 samples) for the rare case you want
+# a composite-view overview UMAP — not the regular run.
 #
 # Sample selection rules:
 #   - `include` column in sample_sheet.csv is the default on/off switch.
 #   - `split_role` column ("composite"/"split"/"") controls which view is
-#     active: --split OFF keeps "composite" and "" (default); --split ON keeps
-#     "split" and "".
+#     active: --split (default) keeps "split" and ""; --no-split keeps
+#     "composite" and "".
 #   - --samples X always runs X, bypassing include and split_role.
 #   - --pairs / --groups layer on top but do NOT resurrect include=FALSE rows.
 #
@@ -80,6 +88,13 @@ if [[ "$COSMX_PYTHON_PATH" == "/usr/bin/python3" ]]; then
 fi
 
 mkdir -p "$TMPDIR_HOST" "$LOG_DIR" "$R_LIBS_USER"
+
+# Default to --split unless the user explicitly opted in/out. Padding with
+# spaces around "$*" avoids matching --splitfoo or --no-splittery.
+case " $* " in
+  *" --split "*|*" --no-split "*) ;;
+  *) set -- --split "$@" ;;
+esac
 
 # ---- Resolve current user (fall back to id -un inside containerless envs) ---
 USER_NAME="${USER:-$(id -un)}"

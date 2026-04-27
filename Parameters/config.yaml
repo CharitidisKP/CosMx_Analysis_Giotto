@@ -33,6 +33,19 @@ merged:
   input_step: "07_annotate"
   join_method: "shift"
   x_padding: 1000
+  # Re-normalize the merged object on its joined raw counts (recommended).
+  # Per-sample normalization (step 03) uses each sample's own scale factor;
+  # carrying those values straight into HVG / PCA / Harmony lets per-sample
+  # scale-factor mismatches leak into the integrated embedding. Re-running
+  # normalizeGiotto on the merged raw counts with one global scale factor
+  # gives consistent per-cell scaling across samples. Pseudobulk DE engines
+  # (DESeq2/edgeR in step 13) use raw counts and are unaffected.
+  renormalize: true
+  # null = dynamic, computed as median library size across the merged cells
+  # (recommended; adapts to the merged dataset). Integer = fixed scalefactor
+  # (e.g., 6000 to match step 03's per-sample setting).
+  normalization_scalefactor: null
+  normalization_log_transform: true
   # batch_column controls what Harmony corrects for.
   # "slide_id" = the physical run/preparation batch:
   #   batch_CART     → all 4 CART sub-samples (same slide, same run)
@@ -137,19 +150,41 @@ cci:
 # ==============================================================================
 pathway:
   enabled: true
+  # Comparisons:
+  #   1. CART_before_vs_after  — paired by patient (CART_pt1, CART_pt2 across T0/T12)
+  #   2. Conv_before_vs_after  — paired by patient (Conv_pt1 = pair_Conv_31_32,
+  #                              Conv_pt2 = pair_Conv_3_4, each across T0/T12)
+  #   3a/b. CART vs Conv at each timepoint — unpaired, n=2 vs n=2
+  #   4. CART_baseline_vs_Control — descriptive only (n=1 Control, no p-values)
+  #   5. CART_after_vs_Control    — descriptive only (n=1 Control, no p-values)
+  # Pseudobulk + DESeq2 design is selected per-comparison by the DE engine in
+  # 13_Pathway_Analysis.R; descriptive contrasts skip the model and emit
+  # log2FC only (de_min_pseudobulk_per_group guard, see below).
   comparisons:
     - label: "CART_before_vs_after"
       group_a: { treatment: "CART",         timepoint: "T0" }
       group_b: { treatment: "CART",         timepoint: "T12" }
+      design: "paired"
+    - label: "Conv_before_vs_after"
+      group_a: { treatment: "Conventional", timepoint: "T0" }
+      group_b: { treatment: "Conventional", timepoint: "T12" }
+      design: "paired"
     - label: "CART_vs_Conv_before"
       group_a: { treatment: "CART",         timepoint: "T0" }
       group_b: { treatment: "Conventional", timepoint: "T0" }
+      design: "unpaired"
     - label: "CART_vs_Conv_after"
       group_a: { treatment: "CART",         timepoint: "T12" }
       group_b: { treatment: "Conventional", timepoint: "T12" }
+      design: "unpaired"
+    - label: "CART_baseline_vs_Control"
+      group_a: { treatment: "CART",         timepoint: "T0" }
+      group_b: { treatment: "Control" }
+      design: "descriptive"
     - label: "CART_after_vs_Control"
       group_a: { treatment: "CART",         timepoint: "T12" }
       group_b: { treatment: "Control" }
+      design: "descriptive"
   # "celltype" uses celltype_column (auto-detected celltype_*_supervised if null).
   # "leiden" uses leiden_column. List both for double stratification.
   stratifications: ["celltype", "leiden"]
@@ -159,6 +194,20 @@ pathway:
   # Per-stratum cell and gene thresholds — strata that fail are skipped with a log note.
   min_cells_per_stratum: 30
   min_genes_tested: 50
+  # DE engine — see .pathway_run_de in 13_Pathway_Analysis.R for routing.
+  #   "pseudobulk_deseq2" (default) — DESeq2 on per-(sample × stratum)
+  #     pseudobulk counts. Per-comparison `design:` field selects paired
+  #     (~ patient_id + .group) vs unpaired (~ .group); CART vs Control
+  #     contrasts auto-degrade to descriptive (no inference).
+  #   "pseudobulk_edger" — same shape, edgeR glmQLFit instead.
+  #   "presto_wilcox"    — legacy cell-level Wilcoxon. Anti-conservative on
+  #     n=2 designs (every cell counted as an independent replicate); kept
+  #     for sanity checks and for runs where raw counts are unavailable.
+  de_engine: "pseudobulk_deseq2"
+  # If either side has fewer biological replicates than this, the comparison
+  # silently degrades to descriptive (log2FC only, no p-values). Hard floor
+  # for any pseudobulk inferential test.
+  de_min_pseudobulk_per_group: 2
   species: "Homo sapiens"
   # All MSigDB collections to pull (human). Leave subcollections null to include
   # every subcollection within the collection.
@@ -188,6 +237,25 @@ pathway:
 spatial_de:
   sample_backend: "smiDE"
   annotation_column: "celltype_HCA_Kidney_supervised"
+  # Leiden cluster column used as the alternative stratifier when
+  # stratify_by includes "leiden". Falls back to "leiden_clust" if absent.
+  leiden_column: "leiden_clust"
+  # Per-comparison + multi-stratifier extension. When non-empty, smiDE runs
+  # once per (stratifier × comparison) — see run_smide_per_comparison_backend.
+  # Each label maps to a column: celltype → annotation_column (above);
+  # leiden → leiden_column. Set to [] to fall back to the legacy single-call
+  # one_vs_rest backend (per-celltype only, no comparison subsetting).
+  stratify_by: ["celltype", "leiden"]
+  # Use the same comparisons that drive step 13 pathway DE (pathway.comparisons)
+  # so the two steps stay aligned. Set to false + populate spatial_de.comparisons
+  # to override.
+  use_pathway_comparisons: true
+  # Runtime caps. With 4 inferential comparisons × (celltype + leiden) ×
+  # ~20 strata each, smiDE realistically runs for 8–24 h on this cluster.
+  # smide_min_cells_per_stratum skips sparse strata; smide_max_strata_per_comparison
+  # caps the number processed per (stratifier × comparison) iteration.
+  smide_min_cells_per_stratum: 200
+  smide_max_strata_per_comparison: 30
   sample_column: "sample_id"
   treatment_column: "treatment"
   patient_column: "patient_id"
@@ -215,14 +283,13 @@ spatial_de:
   # between adjacent cells; a threshold of 0.8 removes genes where >80% of
   # expression is attributable to neighboring cells.
   smide_overlap_threshold: 0.8
-  # Restrict smiDE to B-cell types only.
-  # With null, smiDE iterates over ALL ~20 cell types × 200k cells which
-  # takes hours to days. Restricting to B cells reduces runtime to ~10-30 min.
-  # Labels follow smiDE-native NanoString scheme (space-separated, sentence
-  # case). Normalization is applied at source in 07_Annotation.R so this
-  # value works across every reference profile (HCA Kidney, CosMx 6K RCC, …).
-  # Add more types as needed: ["B cell", "Plasma cell", "CD4 T cell"]
-  smide_annotation_subset: ["B cell"]
+  # Legacy single-call cell-type filter — used only when stratify_by is empty
+  # (the per-comparison wrapper above is bypassed). Setting to null lets smiDE
+  # iterate over every cell type in annotation_column; set to a vector like
+  # ["B cell", "Plasma cell"] to restrict. The per-comparison wrapper does NOT
+  # consult this field — it uses smide_min_cells_per_stratum +
+  # smide_max_strata_per_comparison to gate runtime instead.
+  smide_annotation_subset: null
   # Reduced the lower minimum detection threshold since B cells are rare 
   smide_min_detection_fraction: 0.01
   smide_custom_predictor: null

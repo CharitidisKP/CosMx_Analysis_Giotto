@@ -1245,6 +1245,13 @@ run_merged_pipeline <- function(runtime_env,
           output_dir = output_dir,
           join_method = cfg$merged$join_method %||% "shift",
           x_padding = cfg$merged$x_padding %||% 1000,
+          # Re-normalize on the joined raw counts so per-sample scale-factor
+          # mismatches don't leak into HVG/Harmony. Default scalefactor=null
+          # → median library size across the merged cells (set explicitly to
+          # an integer to override).
+          renormalize = cfg$merged$renormalize %||% TRUE,
+          scalefactor = cfg$merged$normalization_scalefactor %||% NULL,
+          log_transform = cfg$merged$normalization_log_transform %||% TRUE,
           save_object = TRUE
         )
       } else if (step_id == "merge_batch") {
@@ -1265,13 +1272,36 @@ run_merged_pipeline <- function(runtime_env,
         )
       } else if (step_id == "12_spatial_de") {
         spatial_de_cfg <- cfg$spatial_de %||% list()
+        # Resolve the per-comparison + multi-stratifier extension. When
+        # spatial_de.stratify_by is set (e.g. ["celltype", "leiden"]) AND
+        # comparisons exist (taken from pathway.comparisons by default to
+        # keep step 12 + step 13 contrasts aligned), the new wrapper runs
+        # smiDE once per (stratifier × comparison) combination.
+        sde_strat_labels <- spatial_de_cfg$stratify_by %||% character(0)
+        sde_celltype_col <- spatial_de_cfg$annotation_column %||%
+                             cfg$interaction$annotation_column
+        sde_leiden_col   <- spatial_de_cfg$leiden_column %||% "leiden_clust"
+        sde_strat_cols <- list()
+        for (lbl in sde_strat_labels) {
+          col <- switch(lbl,
+                        celltype = sde_celltype_col,
+                        leiden   = sde_leiden_col,
+                        NA_character_)
+          if (!is.na(col) && nzchar(col)) sde_strat_cols[[lbl]] <- col
+        }
+        sde_comparisons <- if (isTRUE(spatial_de_cfg$use_pathway_comparisons %||% TRUE)) {
+          cfg$pathway$comparisons %||% NULL
+        } else {
+          spatial_de_cfg$comparisons %||% NULL
+        }
+
         current_gobj <- runtime_env$run_spatial_differential_expression(
           gobj = current_gobj,
           run_label = merged_name,
           output_dir = output_dir,
           analysis_scope = "merged",
           backend = spatial_de_cfg$sample_backend %||% "smiDE",
-          annotation_column = spatial_de_cfg$annotation_column %||% NULL,
+          annotation_column = sde_celltype_col,
           sample_column = spatial_de_cfg$sample_column %||% "sample_id",
           treatment_column = spatial_de_cfg$treatment_column %||% "treatment",
           patient_column = spatial_de_cfg$patient_column %||% "patient_id",
@@ -1287,6 +1317,10 @@ run_merged_pipeline <- function(runtime_env,
           smide_annotation_subset = spatial_de_cfg$smide_annotation_subset %||% NULL,
           smide_min_detection_fraction = spatial_de_cfg$smide_min_detection_fraction %||% 0.05,
           smide_save_raw = spatial_de_cfg$smide_save_raw %||% TRUE,
+          comparisons = sde_comparisons,
+          stratifier_columns = sde_strat_cols,
+          smide_min_cells_per_stratum = spatial_de_cfg$smide_min_cells_per_stratum %||% 200,
+          smide_max_strata_per_comparison = spatial_de_cfg$smide_max_strata_per_comparison %||% 30,
           save_object = TRUE
         )
       } else if (step_id == "13_pathway") {
@@ -1378,6 +1412,11 @@ parse_cli_args <- function(args) {
     }
     if (key == "split") {
       opts$split <- TRUE
+      i <- i + 1L
+      next
+    }
+    if (key == "no-split") {
+      opts$split <- FALSE
       i <- i + 1L
       next
     }

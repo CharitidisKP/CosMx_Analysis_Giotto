@@ -311,11 +311,14 @@ merge_giotto_samples <- function(gobject_list,
                                  output_dir,
                                  join_method = "shift",
                                  x_padding = 1000,
+                                 renormalize = TRUE,
+                                 scalefactor = NULL,
+                                 log_transform = TRUE,
                                  save_object = FALSE) {
   if (length(gobject_list) == 0) {
     stop("No Giotto objects were provided for merging.")
   }
-  
+
   if (length(gobject_list) == 1) {
     merged_gobj <- gobject_list[[1]]
   } else {
@@ -326,22 +329,98 @@ merge_giotto_samples <- function(gobject_list,
       x_padding = x_padding
     )
   }
-  
+
+  # Re-normalize on the merged raw counts so per-sample scale-factor mismatches
+  # don't leak into HVG selection / Harmony / any downstream consumer of the
+  # normalized matrix. Pseudobulk DE engines use raw counts and are unaffected.
+  if (isTRUE(renormalize)) {
+    merged_gobj <- .renormalize_merged_object(
+      merged_gobj,
+      scalefactor   = scalefactor,
+      log_transform = log_transform
+    )
+  } else {
+    cat("Skipping merged-object renormalization (renormalize = FALSE).\n",
+        "  HVG/PCA/Harmony will run on the per-sample normalized matrix as-joined.\n",
+        sep = "")
+  }
+
   results_dir <- ensure_dir(file.path(output_dir, "10_Merged"))
   readr::write_csv(sample_table, file.path(results_dir, "merged_sample_manifest.csv"))
   readr::write_csv(
     tibble::as_tibble(.giotto_pdata_dt(merged_gobj)),
     file.path(results_dir, "merged_cell_metadata.csv")
   )
-  
+
   if (save_object) {
     save_giotto_checkpoint(
       gobj = merged_gobj,
       checkpoint_dir = file.path(output_dir, "Giotto_Object_Merged"),
-      metadata = list(stage = "merge")
+      metadata = list(stage = "merge",
+                      renormalize = renormalize,
+                      scalefactor = scalefactor %||% "dynamic_median_lib_size")
     )
   }
-  
+
+  merged_gobj
+}
+
+# Re-runs library-size + log normalization on the merged object using a
+# global scale factor. Mirrors 03_Normalisation.R's call so the merged
+# normalized values follow the same definition as the per-sample ones.
+.renormalize_merged_object <- function(merged_gobj,
+                                       scalefactor = NULL,
+                                       log_transform = TRUE) {
+  raw_mat <- tryCatch({
+    if (requireNamespace("Giotto", quietly = TRUE) &&
+        exists("getExpression", envir = asNamespace("Giotto"),
+               inherits = FALSE)) {
+      Giotto::getExpression(merged_gobj, values = "raw", output = "matrix")
+    } else if (requireNamespace("GiottoClass", quietly = TRUE)) {
+      GiottoClass::getExpression(merged_gobj, values = "raw",
+                                 output = "matrix")
+    } else NULL
+  }, error = function(e) NULL)
+
+  if (is.null(raw_mat)) {
+    cat("⚠ Merged object has no raw expression slot — skipping ",
+        "re-normalization.\n", sep = "")
+    return(merged_gobj)
+  }
+
+  lib_sizes <- Matrix::colSums(raw_mat)
+  median_lib <- stats::median(lib_sizes[lib_sizes > 0])
+  if (!is.finite(median_lib) || median_lib <= 0) median_lib <- 6000
+
+  source_tag <- "config"
+  if (is.null(scalefactor) || !is.numeric(scalefactor) || scalefactor <= 0) {
+    scalefactor <- round(median_lib)
+    source_tag <- "dynamic_median_lib_size"
+  }
+
+  cat("Re-normalizing merged object on raw counts...\n")
+  cat("  Scale factor   : ", scalefactor, " (", source_tag, ")\n", sep = "")
+  cat("  Median lib size: ", round(median_lib), " across ",
+      length(lib_sizes), " cells\n", sep = "")
+  cat("  Log transform  : ", log_transform, "\n", sep = "")
+
+  merged_gobj <- .run_known_giotto_warning_safe(
+    normalizeGiotto(
+      gobject           = merged_gobj,
+      spat_unit         = "cell",
+      feat_type         = "rna",
+      scalefactor       = scalefactor,
+      verbose           = FALSE,
+      norm_methods      = "standard",
+      library_size_norm = TRUE,
+      log_norm          = log_transform,
+      log_offset        = 1,
+      scale_feats       = FALSE,
+      scale_cells       = FALSE
+    )
+  )
+
+  cat("✓ Merged-object re-normalization complete\n\n")
   merged_gobj
 }
 

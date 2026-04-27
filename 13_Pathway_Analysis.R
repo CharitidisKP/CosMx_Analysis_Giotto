@@ -303,21 +303,328 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# DE — presto::wilcoxauc (very fast Wilcoxon on sparse matrix). Returns a
-# tidy data frame suitable for both GSEA ranking and ORA filtering.
+# DE engines.
+#
+# Default engine = pseudobulk + DESeq2 with per-comparison design taken from
+# the `design:` field of each pathway.comparisons entry in config.yaml:
+#   - "paired"      → ~ patient_id + de_group (CART/Conv before-vs-after)
+#   - "unpaired"    → ~ de_group              (CART vs Conv at each timepoint)
+#   - "descriptive" → no model; emit log2FC of pseudobulk means + flag
+#                     inference="none"  (CART vs Control — n=1 Control side,
+#                     no estimable Control variance)
+#
+# Auto-degrade: if either side has fewer than `de_min_pseudobulk_per_group`
+# biological replicates (default 2), the comparison degrades to descriptive
+# regardless of the requested design. This protects strata where one CART
+# patient's B cells were filtered out at QC.
+#
+# Legacy `presto_wilcox` engine (cell-level Wilcoxon) is kept available via
+# pathway.de_engine: "presto_wilcox" — anti-conservative on n=2 designs but
+# useful when DESeq2 isn't installed or for sanity checks.
+#
+# Output schema (every engine):
+#   data.frame(gene, logFC, auc, pval, padj, pct_a, pct_b, stat)
+# Attributes:
+#   engine, design, n_pseudobulk = list(A=, B=)
+#
+# stat = sign(logFC) * -log10(pval+1e-300) for inferential engines, or
+#        logFC for descriptive (so GSEA can still rank by it).
 # ==============================================================================
 
-.pathway_run_de <- function(expr_mat, ids_a, ids_b) {
+.pathway_run_de <- function(raw_mat, norm_mat, cell_meta,
+                            ids_a, ids_b,
+                            comparison_spec,
+                            cfg_pathway) {
+  engine <- cfg_pathway$de_engine %||% "pseudobulk_deseq2"
+  design_kind <- comparison_spec$design %||% "unpaired"
+  min_reps <- cfg_pathway$de_min_pseudobulk_per_group %||% 2L
+
+  if (engine == "presto_wilcox") {
+    return(.pathway_run_de_presto(norm_mat, ids_a, ids_b))
+  }
+
+  .pathway_run_de_pseudobulk(
+    raw_mat = raw_mat,
+    cell_meta = cell_meta,
+    ids_a = ids_a,
+    ids_b = ids_b,
+    design_kind = design_kind,
+    min_reps = min_reps,
+    engine = engine
+  )
+}
+
+# Pseudobulk aggregation + DESeq2/edgeR fit. Falls back to descriptive when
+# either side has < min_reps biological replicates.
+.pathway_run_de_pseudobulk <- function(raw_mat, cell_meta,
+                                       ids_a, ids_b,
+                                       design_kind, min_reps,
+                                       engine) {
+  both_ids <- c(ids_a, ids_b)
+  both_ids <- intersect(both_ids, colnames(raw_mat))
+  ids_a <- intersect(ids_a, both_ids)
+  ids_b <- intersect(ids_b, both_ids)
+  if (length(ids_a) < 3L || length(ids_b) < 3L) return(NULL)
+
+  meta_idx <- match(both_ids, as.character(cell_meta$cell_ID))
+  meta_sub <- as.data.frame(cell_meta)[meta_idx, , drop = FALSE]
+  meta_sub$de_group <- ifelse(both_ids %in% ids_a, "A",
+                     ifelse(both_ids %in% ids_b, "B", NA_character_))
+  keep <- !is.na(meta_sub$de_group) & !is.na(meta_sub$sample_id)
+  if (sum(keep) == 0L) return(NULL)
+  meta_sub <- meta_sub[keep, , drop = FALSE]
+  both_ids <- both_ids[keep]
+
+  # Pseudobulk key: (sample_id, de_group). Splitting by de_group is only relevant
+  # if a single sample contributes cells to both sides (shouldn't happen on
+  # this design but keeps the path safe under future sample sheets).
+  pb_key <- paste(meta_sub$sample_id, meta_sub$de_group, sep = "__")
+
+  # Aggregate counts per pseudobulk key.
+  raw_sub <- raw_mat[, both_ids, drop = FALSE]
+  raw_for_rowsum <- if (inherits(raw_sub, "Matrix")) as.matrix(raw_sub) else raw_sub
+  pb_counts <- t(rowsum(t(raw_for_rowsum), pb_key))
+  storage.mode(pb_counts) <- "integer"
+
+  # Sample-level metadata, deduplicated to one row per pseudobulk key.
+  first_idx <- !duplicated(pb_key)
+  pb_meta <- meta_sub[first_idx, , drop = FALSE]
+  rownames(pb_meta) <- pb_key[first_idx]
+  pb_meta <- pb_meta[colnames(pb_counts), , drop = FALSE]
+  pb_meta$de_group <- factor(pb_meta$de_group, levels = c("B", "A"))
+
+  n_a <- sum(pb_meta$de_group == "A")
+  n_b <- sum(pb_meta$de_group == "B")
+
+  # Per-cell group vector aligned to raw_sub for pct_expressed downstream.
+  cell_group <- meta_sub$de_group
+
+  # Descriptive degrade — either by request or by replicate floor.
+  if (design_kind == "descriptive" || n_a < min_reps || n_b < min_reps) {
+    if (design_kind != "descriptive") {
+      cat("    ⚠ only ", n_a, "/", n_b, " replicates per side ",
+          "(< de_min_pseudobulk_per_group=", min_reps,
+          "); degrading to descriptive\n", sep = "")
+    }
+    return(.pathway_descriptive_de(pb_counts, pb_meta, raw_sub, cell_group))
+  }
+
+  # Paired design needs a usable patient_id with at least 2 distinct levels
+  # AND each patient appearing on both sides of the contrast.
+  if (design_kind == "paired") {
+    has_patient <- "patient_id" %in% colnames(pb_meta) &&
+                   !any(is.na(pb_meta$patient_id)) &&
+                   length(unique(pb_meta$patient_id)) >= 2L
+    if (has_patient) {
+      tab <- table(pb_meta$patient_id, pb_meta$de_group)
+      if (any(tab[, "A"] == 0) || any(tab[, "B"] == 0)) {
+        has_patient <- FALSE
+      }
+    }
+    if (!has_patient) {
+      cat("    ⚠ paired design requested but patient_id is unusable; ",
+          "falling back to unpaired ~ de_group\n", sep = "")
+      design_kind <- "unpaired"
+    }
+  }
+
+  if (engine == "pseudobulk_deseq2") {
+    return(.pathway_de_deseq2(pb_counts, pb_meta, raw_sub, cell_group,
+                              design_kind, n_a, n_b))
+  }
+  if (engine == "pseudobulk_edger") {
+    return(.pathway_de_edger(pb_counts, pb_meta, raw_sub, cell_group,
+                             design_kind, n_a, n_b))
+  }
+  stop("Unknown pathway.de_engine: '", engine, "' ",
+       "(expected pseudobulk_deseq2, pseudobulk_edger, or presto_wilcox)")
+}
+
+.pathway_de_deseq2 <- function(pb_counts, pb_meta, raw_sub, cell_group,
+                               design_kind, n_a, n_b) {
+  if (!requireNamespace("DESeq2", quietly = TRUE)) {
+    stop("DESeq2 is required for pseudobulk_deseq2. ",
+         "BiocManager::install('DESeq2').")
+  }
+  design_formula <- if (design_kind == "paired") {
+    pb_meta$patient_id <- factor(pb_meta$patient_id)
+    stats::as.formula("~ patient_id + de_group")
+  } else {
+    stats::as.formula("~ de_group")
+  }
+
+  dds <- tryCatch(
+    DESeq2::DESeqDataSetFromMatrix(countData = pb_counts,
+                                   colData   = pb_meta,
+                                   design    = design_formula),
+    error = function(e) {
+      cat("    ⚠ DESeq2 setup failed: ", conditionMessage(e), "\n", sep = "")
+      NULL
+    })
+  if (is.null(dds)) return(NULL)
+
+  dds <- tryCatch(DESeq2::DESeq(dds, quiet = TRUE),
+                  error = function(e) {
+                    cat("    ⚠ DESeq2 fit failed: ", conditionMessage(e),
+                        "\n", sep = "")
+                    NULL
+                  })
+  if (is.null(dds)) return(NULL)
+
+  # Reference is "B"; this names the contrast de_group_A_vs_B. Use the name to
+  # avoid coefficient-order surprises.
+  res_df <- tryCatch(
+    as.data.frame(DESeq2::results(dds, name = "de_group_A_vs_B")),
+    error = function(e) {
+      coef_names <- DESeq2::resultsNames(dds)
+      grp_coef <- grep("de_group", coef_names, value = TRUE)[1]
+      if (is.na(grp_coef)) {
+        cat("    ⚠ no de_group coefficient in DESeq2 results: ",
+            paste(coef_names, collapse = ", "), "\n", sep = "")
+        return(NULL)
+      }
+      as.data.frame(DESeq2::results(dds, name = grp_coef))
+    })
+  if (is.null(res_df) || nrow(res_df) == 0) return(NULL)
+  res_df$gene <- rownames(res_df)
+
+  pcts <- .pathway_pct_expressed(raw_sub, cell_group, rownames(res_df))
+  de <- .pathway_finalise_de(
+    gene  = res_df$gene,
+    logFC = res_df$log2FoldChange,
+    pval  = res_df$pvalue,
+    padj  = res_df$padj,
+    pct_a = pcts$a,
+    pct_b = pcts$b
+  )
+  attr(de, "engine") <- "pseudobulk_deseq2"
+  attr(de, "design") <- deparse(design_formula)
+  attr(de, "n_pseudobulk") <- list(A = n_a, B = n_b)
+  de
+}
+
+.pathway_de_edger <- function(pb_counts, pb_meta, raw_sub, cell_group,
+                              design_kind, n_a, n_b) {
+  if (!requireNamespace("edgeR", quietly = TRUE)) {
+    stop("edgeR is required for pseudobulk_edger. ",
+         "BiocManager::install('edgeR').")
+  }
+  design_formula <- if (design_kind == "paired") {
+    pb_meta$patient_id <- factor(pb_meta$patient_id)
+    stats::model.matrix(~ patient_id + de_group, data = pb_meta)
+  } else {
+    stats::model.matrix(~ de_group, data = pb_meta)
+  }
+
+  y <- edgeR::DGEList(counts = pb_counts, samples = pb_meta)
+  keep_genes <- edgeR::filterByExpr(y, design = design_formula)
+  y <- y[keep_genes, , keep.lib.sizes = FALSE]
+  y <- edgeR::calcNormFactors(y)
+  y <- edgeR::estimateDisp(y, design = design_formula)
+  fit <- edgeR::glmQLFit(y, design = design_formula)
+  qlf <- edgeR::glmQLFTest(fit, coef = "de_groupA")
+  tt <- edgeR::topTags(qlf, n = Inf, sort.by = "none")$table
+
+  pcts <- .pathway_pct_expressed(raw_sub, cell_group, rownames(tt))
+  de <- .pathway_finalise_de(
+    gene  = rownames(tt),
+    logFC = tt$logFC,
+    pval  = tt$PValue,
+    padj  = tt$FDR,
+    pct_a = pcts$a,
+    pct_b = pcts$b
+  )
+  attr(de, "engine") <- "pseudobulk_edger"
+  attr(de, "design") <- paste(deparse(stats::formula(qlf$design)),
+                              collapse = " ")
+  attr(de, "n_pseudobulk") <- list(A = n_a, B = n_b)
+  de
+}
+
+# Descriptive: log2(meanA / meanB) over size-factor-normalized pseudobulk
+# means. No p-values, no padj. Surfaces inference="none" so the schema makes
+# the lack of inference obvious to anyone reading the CSV.
+.pathway_descriptive_de <- function(pb_counts, pb_meta, raw_sub, cell_group) {
+  size_factors <- colSums(pb_counts)
+  size_factors <- size_factors / stats::median(size_factors[size_factors > 0])
+  norm <- sweep(pb_counts, 2, size_factors, "/")
+  cols_a <- which(pb_meta$de_group == "A")
+  cols_b <- which(pb_meta$de_group == "B")
+  mean_a <- rowMeans(norm[, cols_a, drop = FALSE])
+  mean_b <- rowMeans(norm[, cols_b, drop = FALSE])
+  pseudo <- max(1e-3 * stats::median(c(mean_a, mean_b)), 1e-6)
+  logfc <- log2((mean_a + pseudo) / (mean_b + pseudo))
+
+  pcts <- .pathway_pct_expressed(raw_sub, cell_group, rownames(pb_counts))
+  de <- data.frame(
+    gene  = rownames(pb_counts),
+    logFC = logfc,
+    auc   = NA_real_,
+    pval  = NA_real_,
+    padj  = NA_real_,
+    pct_a = pcts$a,
+    pct_b = pcts$b,
+    stringsAsFactors = FALSE
+  )
+  de$logFC[!is.finite(de$logFC)] <- 0
+  # GSEA needs a ranking — without p-values, rank by raw logFC magnitude.
+  de$stat <- de$logFC
+  de <- de[order(-abs(de$stat)), , drop = FALSE]
+  attr(de, "engine") <- "descriptive"
+  attr(de, "design") <- "log2((mean_A+pseudo)/(mean_B+pseudo)) of size-factor-normalized pseudobulk"
+  attr(de, "n_pseudobulk") <- list(A = length(cols_a), B = length(cols_b))
+  attr(de, "inference") <- "none"
+  de
+}
+
+# Cell-level percent expressed per side, computed directly from the raw
+# subset so it doesn't depend on which DE engine ran. cell_group is a
+# character vector aligned to colnames(raw_sub) with values "A" / "B".
+.pathway_pct_expressed <- function(raw_sub, cell_group, gene_order) {
+  cols_a <- which(cell_group == "A")
+  cols_b <- which(cell_group == "B")
+  pct_a <- if (length(cols_a) > 0L) {
+    Matrix::rowMeans(raw_sub[, cols_a, drop = FALSE] > 0)
+  } else rep(NA_real_, nrow(raw_sub))
+  pct_b <- if (length(cols_b) > 0L) {
+    Matrix::rowMeans(raw_sub[, cols_b, drop = FALSE] > 0)
+  } else rep(NA_real_, nrow(raw_sub))
+  names(pct_a) <- rownames(raw_sub)
+  names(pct_b) <- rownames(raw_sub)
+  list(a = pct_a[gene_order], b = pct_b[gene_order])
+}
+
+.pathway_finalise_de <- function(gene, logFC, pval, padj, pct_a, pct_b) {
+  de <- data.frame(
+    gene  = as.character(gene),
+    logFC = suppressWarnings(as.numeric(logFC)),
+    auc   = NA_real_,
+    pval  = suppressWarnings(as.numeric(pval)),
+    padj  = suppressWarnings(as.numeric(padj)),
+    pct_a = unname(pct_a[gene]),
+    pct_b = unname(pct_b[gene]),
+    stringsAsFactors = FALSE
+  )
+  de$pval[!is.finite(de$pval)] <- 1
+  de$padj[!is.finite(de$padj)] <- 1
+  de$logFC[!is.finite(de$logFC)] <- 0
+  de$stat <- sign(de$logFC) * -log10(pmax(de$pval, 1e-300))
+  de[order(-abs(de$stat)), , drop = FALSE]
+}
+
+# Legacy presto::wilcoxauc engine — kept for backwards compatibility and as a
+# sanity check. Cell-level Wilcoxon over-states significance under n=2
+# biological replication, so it is no longer the default.
+.pathway_run_de_presto <- function(expr_mat, ids_a, ids_b) {
   if (!requireNamespace("presto", quietly = TRUE)) {
-    stop("presto is required. Install with remotes::install_github('immunogenomics/presto').")
+    stop("presto is required for de_engine='presto_wilcox'. ",
+         "remotes::install_github('immunogenomics/presto').")
   }
   both_ids <- c(ids_a, ids_b)
   both_ids <- intersect(both_ids, colnames(expr_mat))
   ids_a <- intersect(ids_a, both_ids)
   ids_b <- intersect(ids_b, both_ids)
-  if (length(ids_a) < 3L || length(ids_b) < 3L) {
-    return(NULL)
-  }
+  if (length(ids_a) < 3L || length(ids_b) < 3L) return(NULL)
   y <- ifelse(both_ids %in% ids_a, "A",
               ifelse(both_ids %in% ids_b, "B", NA))
   keep <- !is.na(y)
@@ -327,10 +634,10 @@ if ((!exists("presentation_theme") ||
   wx <- tryCatch(
     presto::wilcoxauc(sub_expr, y = y),
     error = function(e) {
-      cat("  ⚠ presto::wilcoxauc error: ", conditionMessage(e), "\n", sep = "")
+      cat("  ⚠ presto::wilcoxauc error: ", conditionMessage(e), "\n",
+          sep = "")
       NULL
-    }
-  )
+    })
   if (is.null(wx) || nrow(wx) == 0) return(NULL)
   group_a_rows <- wx[wx$group == "A", , drop = FALSE]
   if (nrow(group_a_rows) == 0) return(NULL)
@@ -349,6 +656,8 @@ if ((!exists("presentation_theme") ||
   de$logFC[!is.finite(de$logFC)] <- 0
   de$stat <- sign(de$logFC) * -log10(pmax(de$pval, 1e-300))
   de <- de[order(-abs(de$stat)), , drop = FALSE]
+  attr(de, "engine") <- "presto_wilcox"
+  attr(de, "design") <- "cell-level Wilcoxon"
   de
 }
 
@@ -1059,9 +1368,12 @@ run_pathway_analysis <- function(gobj,
     cat("✓ Loaded\n")
   }
 
+  # patient_id is required for paired DE designs (CART/Conv before-vs-after).
+  # It's commonly stripped by joinGiottoObjects so we re-inject from the
+  # sample_table here.
   meta <- .pathway_ensure_metadata(
     gobj, sample_table = sample_table,
-    required = c("treatment", "timepoint", "sample_id")
+    required = c("treatment", "timepoint", "sample_id", "patient_id")
   )
   if (is.null(celltype_column) || !nzchar(celltype_column)) {
     celltype_column <- cfg_p$celltype_column %||%
@@ -1102,14 +1414,33 @@ run_pathway_analysis <- function(gobj,
     stop("No comparisons passed the min_cells_per_stratum filter.")
   }
 
-  # Pre-extract normalized expression for the merged object — reused for
-  # all comparisons × strata.
+  # Pre-extract expression matrices for the merged object — reused for all
+  # comparisons × strata. Pseudobulk DE engines need raw counts (DESeq2/edgeR
+  # work on integers); legacy presto + leading-edge / PROGENy plots use
+  # normalized values.
   cat("Extracting normalized expression matrix...\n")
   expr_mat <- .pathway_get_expression(gobj, values = "normalized",
                                       output = "matrix")
   expr_mat <- as.matrix(expr_mat)
-  cat("✓ Expression matrix: ", paste(dim(expr_mat), collapse = " x "),
+  cat("✓ Normalized matrix : ", paste(dim(expr_mat), collapse = " x "),
       "\n", sep = "")
+
+  raw_mat <- tryCatch(
+    .pathway_get_expression(gobj, values = "raw", output = "matrix"),
+    error = function(e) {
+      cat("⚠ Raw counts not available on merged object: ", conditionMessage(e),
+          "\n  Falling back to presto_wilcox engine for DE.\n", sep = "")
+      NULL
+    })
+  if (!is.null(raw_mat)) {
+    raw_mat <- as.matrix(raw_mat)
+    cat("✓ Raw counts matrix : ", paste(dim(raw_mat), collapse = " x "),
+        "\n", sep = "")
+  } else {
+    # Force the legacy engine for the rest of this run if raw counts are
+    # missing; pseudobulk DESeq2/edgeR cannot operate on normalized values.
+    cfg_p$de_engine <- "presto_wilcox"
+  }
 
   # Run per comparison / per stratification / per stratum.
   all_results <- list()
@@ -1160,16 +1491,40 @@ run_pathway_analysis <- function(gobj,
         cat("    [", stratum_tag, "] A=", length(ids_a_s),
             " B=", length(ids_b_s), "\n", sep = "")
 
-        de <- .pathway_run_de(expr_mat, ids_a_s, ids_b_s)
+        de <- .pathway_run_de(
+          raw_mat         = raw_mat,
+          norm_mat        = expr_mat,
+          cell_meta       = meta,
+          ids_a           = ids_a_s,
+          ids_b           = ids_b_s,
+          comparison_spec = cp,
+          cfg_pathway     = cfg_p
+        )
         if (is.null(de) || nrow(de) < (cfg_p$min_genes_tested %||% 50)) {
           cat("      skipped (too few genes)\n")
           next
         }
+        de_engine <- attr(de, "engine") %||% "unknown"
+        de_design <- attr(de, "design") %||% "unknown"
+        de_npb    <- attr(de, "n_pseudobulk")
+        de_inference <- attr(de, "inference")
+        # Persist engine/design/replicate counts so the per-stratum CSV is
+        # self-describing (no need to cross-reference the run config later).
+        de$engine <- de_engine
+        de$design <- de_design
+        if (!is.null(de_npb)) {
+          de$n_pseudobulk_a <- de_npb$A
+          de$n_pseudobulk_b <- de_npb$B
+        }
+        if (!is.null(de_inference)) de$inference <- de_inference
         utils::write.csv(
           de,
           file.path(stratum_dir, paste0(stratum_tag, "_de_ranks.csv")),
           row.names = FALSE
         )
+        cat("      engine=", de_engine, " design=", de_design,
+            if (!is.null(de_npb)) sprintf(" pb=%d/%d", de_npb$A, de_npb$B) else "",
+            "\n", sep = "")
 
         gsea_df <- .pathway_run_gsea(de, genesets_by_db, cfg_p)
         if (!is.null(gsea_df) && nrow(gsea_df) > 0) {
