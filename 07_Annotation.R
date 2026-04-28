@@ -2849,12 +2849,19 @@ annotate_cells <- function(gobj,
       auto_hi <- as.integer(unsupervised_auto_range[2])
       cat(sprintf("\n--- Unsupervised InSituType (auto-selecting n_clusts in %d:%d) ---\n",
                   auto_lo, auto_hi))
+      # cohort = NULL is intentional here: InSituType::chooseClusterNumber has
+      # an upstream bug (Nanostring-Biostats/InSituType issue #89, unfixed) \u2014
+      # at chooseClusterNumber.R:91-98 it subsamples counts/neg/bg but forgets
+      # to subset cohort, then passes the full-length cohort to nbclust(),
+      # whose Mstep does `cohort == name` and indexes the now-shorter logliks
+      # matrix \u2192 "(subscript) logical subscript too long". Cohort is
+      # preserved in the actual insitutype() fit below where it works correctly.
       sweep <- tryCatch(
         suppressMessages(InSituType::chooseClusterNumber(
           counts   = counts_mat,
           neg      = bg_per_cell,
           n_clusts = auto_lo:auto_hi,
-          cohort   = cohort_vec,
+          cohort   = NULL,
           n_starts = n_starts
         )),
         error = function(e) {
