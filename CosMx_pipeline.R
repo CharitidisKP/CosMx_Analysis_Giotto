@@ -285,7 +285,7 @@ load_config <- function(config_path = default_config_path(repo_dir)) {
   
   cfg$pipeline <- modifyList(
     list(
-      mode = "all",
+      mode = "separate",
       save_intermediates = TRUE,
       overwrite_existing = FALSE,
       skip_on_error = FALSE
@@ -1417,7 +1417,8 @@ parse_cli_args <- function(args) {
     run_label = NULL,
     dry_run = FALSE,
     split = FALSE,
-    overwrite = FALSE
+    overwrite = FALSE,
+    merged = FALSE
   )
   
   i <- 1L
@@ -1444,6 +1445,11 @@ parse_cli_args <- function(args) {
     }
     if (key == "overwrite") {
       opts$overwrite <- TRUE
+      i <- i + 1L
+      next
+    }
+    if (key == "merged") {
+      opts$merged <- TRUE
       i <- i + 1L
       next
     }
@@ -1483,7 +1489,12 @@ parse_cli_args <- function(args) {
 run_pipeline <- function(cli_opts) {
   cfg <- load_config(cli_opts$config)
   if (is.null(cli_opts$mode) || !nzchar(cli_opts$mode)) {
-    cli_opts$mode <- cfg$pipeline$mode %||% "all"
+    cli_opts$mode <- cfg$pipeline$mode %||% "separate"
+  }
+  # --merged shortcut: enable both per-sample AND merged pipelines, unless
+  # the user explicitly passed --mode (which wins).
+  if (isTRUE(cli_opts$merged) && cli_opts$mode == "separate") {
+    cli_opts$mode <- "all"
   }
 
   # CLI flags override YAML defaults (must happen after load_config()).
@@ -1583,6 +1594,14 @@ run_pipeline <- function(cli_opts) {
     write_results_csv(sample_results, file.path(run_dir, "sample_pipeline_results.csv"))
   }
   
+  if (cli_opts$mode %in% c("all", "merged") && nrow(selected_samples) < 2L) {
+    message(sprintf(
+      "[Merge] Skipping merged pipeline: only %d sample selected. ",
+      nrow(selected_samples)),
+      "Merge / batch-correct / cross-sample DE require >=2 samples.")
+    cli_opts$mode <- if (cli_opts$mode == "merged") "merged_skipped" else "separate"
+  }
+
   if (cli_opts$mode %in% c("all", "merged")) {
     # Consensus annotation column across samples - each per-sample run writes
     # annotation_selection.json in step 07, but run_sample_pipeline's cfg

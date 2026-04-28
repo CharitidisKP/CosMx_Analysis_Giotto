@@ -13,6 +13,11 @@
 #   ./Run_Giotto_Pipeline.sh --dry-run         # preview without running
 #   ./Run_Giotto_Pipeline.sh --overwrite       # regenerate existing checkpoints
 #                                              #  + section outputs (default skips them)
+#   ./Run_Giotto_Pipeline.sh --merged          # ALSO run the cross-sample merged
+#                                              #  pipeline (merge → Harmony → cross-
+#                                              #  sample DE → pathway). Default mode
+#                                              #  is per-sample only. Auto-skips if
+#                                              #  fewer than 2 samples are selected.
 #
 # Skip-by-default: per-step Giotto checkpoints (steps 01-09, 11) and
 # canonical CCI / smiDE section outputs (CSVs) are detected on disk and

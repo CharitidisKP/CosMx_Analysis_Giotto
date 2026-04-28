@@ -12,7 +12,12 @@ paths:
   python_path: null
 
 pipeline:
-  mode: "all"
+  # "separate" (default): per-sample pipeline only. "merged" runs only the
+  # cross-sample merge → Harmony → cross-sample DE → pathway pipeline.
+  # "all" runs both. Use --merged on the launcher as a shortcut for "all".
+  # Merged auto-skips when fewer than 2 samples are selected, regardless of
+  # this setting — you can't merge a single sample with itself.
+  mode: "separate"
   save_intermediates: true
   overwrite_existing: false
   skip_on_error: false
