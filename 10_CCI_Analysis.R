@@ -45,58 +45,22 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("s
 # SECTION 0 - InSituCor (NanoString-native spatially co-expressed modules)
 # ==============================================================================
 
+.giotto_fun <- function(name) {
+  for (pkg in c("Giotto", "GiottoClass")) {
+    if (requireNamespace(pkg, quietly = TRUE) &&
+        exists(name, envir = asNamespace(pkg), inherits = FALSE)) {
+      return(get(name, envir = asNamespace(pkg)))
+    }
+  }
+  get(name, mode = "function")
+}
+
 .giotto_get_expression <- function(gobj, values, output = "matrix") {
-  accessor <- NULL
-  
-  if (requireNamespace("Giotto", quietly = TRUE) &&
-      exists("getExpression", envir = asNamespace("Giotto"), inherits = FALSE)) {
-    accessor <- get("getExpression", envir = asNamespace("Giotto"))
-  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
-             exists("getExpression", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
-    accessor <- get("getExpression", envir = asNamespace("GiottoClass"))
-  } else {
-    accessor <- get("getExpression", mode = "function")
-  }
-  
-  accessor(gobj, values = values, output = output)
+  .giotto_fun("getExpression")(gobj, values = values, output = output)
 }
-
-.giotto_pdata_dt <- function(gobj) {
-  accessor <- NULL
-  
-  if (requireNamespace("Giotto", quietly = TRUE) &&
-      exists("pDataDT", envir = asNamespace("Giotto"), inherits = FALSE)) {
-    accessor <- get("pDataDT", envir = asNamespace("Giotto"))
-  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
-             exists("pDataDT", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
-    accessor <- get("pDataDT", envir = asNamespace("GiottoClass"))
-  } else {
-    accessor <- get("pDataDT", mode = "function")
-  }
-  
-  accessor(gobj)
-}
-
+.giotto_pdata_dt <- function(gobj) .giotto_fun("pDataDT")(gobj)
 .giotto_get_spatial_locations <- function(gobj, output = "data.table") {
-  accessor <- NULL
-  
-  if (requireNamespace("Giotto", quietly = TRUE) &&
-      exists("getSpatialLocations", envir = asNamespace("Giotto"), inherits = FALSE)) {
-    accessor <- get("getSpatialLocations", envir = asNamespace("Giotto"))
-  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
-             exists("getSpatialLocations", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
-    accessor <- get("getSpatialLocations", envir = asNamespace("GiottoClass"))
-  } else {
-    accessor <- get("getSpatialLocations", mode = "function")
-  }
-  
-  accessor(gobj, output = output)
-}
-
-.sanitize_feature_names <- function(x) {
-  safe <- make.names(x, unique = TRUE)
-  names(safe) <- x
-  safe
+  .giotto_fun("getSpatialLocations")(gobj, output = output)
 }
 
 .first_existing_column <- function(df, candidates) {
@@ -625,7 +589,7 @@ plot_insitucor_results <- function(cor_results,
   # -- Plot 6: per-module gene-weight panel -------------------------------
   # Complements plot 1 (which only annotates the top-3 genes) by showing
   # the full weight distribution inside each top module.
-  tryCatch({
+  safe_run("InSituCor gene-weight panel", {
     gw_df <- modules_df[modules_df$module %in% top_modules$module, , drop = FALSE]
     gw_df <- as.data.frame(gw_df, stringsAsFactors = FALSE)
     gw_df$module <- factor(gw_df$module, levels = top_modules$module)
@@ -675,7 +639,7 @@ plot_insitucor_results <- function(cor_results,
   })
 
   # -- Plot 1: module sizes with top-3 genes annotated --------------------
-  tryCatch({
+  safe_run("InSituCor module sizes", {
     p1 <- ggplot2::ggplot(
       top_modules,
       ggplot2::aes(x = stats::reorder(module, n_genes),
@@ -708,7 +672,7 @@ plot_insitucor_results <- function(cor_results,
   })
 
   # -- Plot 2: celltype involvement as ggplot heatmap ---------------------
-  tryCatch({
+  safe_run("InSituCor celltype involvement", {
     inv <- cor_results$celltypeinvolvement
     if (!is.null(inv)) {
       inv_mat <- as.matrix(inv)
@@ -795,16 +759,13 @@ plot_insitucor_results <- function(cor_results,
     } else {
       cat("  \u26A0 InSituCor: no celltypeinvolvement slot; heatmap skipped.\n")
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor celltype involvement failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Per-cell module scores CSV (numeric, no polygons required) --------
   # Writes wide cell_ID x module score matrix using the same log1p-normalised
   # weighted aggregate as the spatial plots below. Saved regardless of
   # whether polygons are available.
-  tryCatch({
+  safe_run("InSituCor per-cell module scores CSV", {
     all_mod_ids <- unique(module_stats$module)
     cell_total  <- rowSums(counts)
     cell_total[cell_total == 0] <- 1
@@ -835,14 +796,11 @@ plot_insitucor_results <- function(cor_results,
     )
     cat("  \u2713 InSituCor per-cell module scores CSV saved (",
         nrow(score_mat), " cells x ", ncol(score_mat), " modules)\n", sep = "")
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor per-cell module scores CSV failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Plot 3: spatial polygon maps of aggregate module expression --------
   spatial_plots <- list()
-  tryCatch({
+  safe_run("InSituCor spatial module maps", {
     poly_df <- .cci_extract_polygon_df(gobj)
     if (is.null(poly_df) || nrow(poly_df) == 0) {
       cat("  \u26A0 InSituCor spatial module maps skipped: polygon data unavailable.\n")
@@ -1059,15 +1017,12 @@ plot_insitucor_results <- function(cor_results,
         }
       }
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor spatial module maps failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Plot 7: combined spatial modules overlay ---------------------------
   # Stitches the per-module spatial maps (plot 3) into a single multi-panel
   # PNG. Requires `patchwork`; silently skipped otherwise.
-  tryCatch({
+  safe_run("InSituCor combined spatial overlay", {
     if (length(spatial_plots) >= 2) {
       if (!requireNamespace("patchwork", quietly = TRUE)) {
         cat("  \u26A0 InSituCor combined spatial overlay skipped: 'patchwork' not installed.\n")
@@ -1110,9 +1065,6 @@ plot_insitucor_results <- function(cor_results,
         cat("  \u2713 InSituCor combined spatial modules overlay saved\n")
       }
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor combined spatial overlay failed:",
-        conditionMessage(e), "\n")
   })
 
   # Resolve module-correlation matrix once; used by both the CSV export,
@@ -1121,7 +1073,7 @@ plot_insitucor_results <- function(cor_results,
              cor_results$module_cor %||% NULL
 
   # -- Module correlation CSV + heatmap (plot 5) --------------------------
-  tryCatch({
+  safe_run("InSituCor module correlation heatmap/CSV", {
     if (is.null(mod_cor)) {
       cat("  \u26A0 InSituCor module correlation heatmap/CSV skipped: no modulecor slot.\n")
     } else {
@@ -1178,16 +1130,13 @@ plot_insitucor_results <- function(cor_results,
       )
       cat("  \u2713 InSituCor module correlation heatmap saved\n")
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor module correlation heatmap/CSV failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Plot 1b/6b: B-cell-only module size + gene weight panels ------------
   # Ranks modules by B-cell involvement (from plot 2's involvement matrix)
   # and re-uses the same rendering style as plots 1 and 6. Silent no-op when
   # no B-cell row is present or the top B-cell involvement is zero.
-  tryCatch({
+  safe_run("InSituCor B-cell module/gene panels", {
     inv_all <- cor_results$celltypeinvolvement
     if (!is.null(inv_all) && nrow(modules_df) > 0) {
       inv_all_mat <- as.matrix(inv_all)
@@ -1303,13 +1252,10 @@ plot_insitucor_results <- function(cor_results,
         cat("  \u2139 No B-cell row in celltype involvement; skipping B-cell panels\n")
       }
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor B-cell module/gene panels failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Plot 4: module co-expression network -------------------------------
-  tryCatch({
+  safe_run("InSituCor module network", {
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       cat("  \u26A0 InSituCor module network skipped: 'ggraph' not installed.\n")
     } else {
@@ -1394,9 +1340,6 @@ plot_insitucor_results <- function(cor_results,
         cat("  \u2713 InSituCor module co-expression network saved\n")
       }
     }
-  }, error = function(e) {
-    cat("  \u26A0 InSituCor module network failed:",
-        conditionMessage(e), "\n")
   })
 
   invisible(NULL)
@@ -1593,7 +1536,7 @@ plot_liana_extended <- function(liana_agg,
   }
 
   # -- Plot 1: LR ranking bar chart ------------------------------------------
-  tryCatch({
+  safe_run("LIANA LR ranking plot", {
     agg_sorted <- agg[order(agg$aggregate_rank, na.last = TRUE), ]
     top_lr     <- head(agg_sorted, top_n)
 
@@ -1650,8 +1593,6 @@ plot_liana_extended <- function(liana_agg,
       dpi      = 150
     )
     cat("\u2713 LIANA LR ranking plot saved\n")
-  }, error = function(e) {
-    cat("\u26A0 LIANA LR ranking plot failed:", conditionMessage(e), "\n")
   })
 
   # -- Plot 1b: LIANA dotplot (main + B-cell-specific) -----------------------
@@ -1732,7 +1673,7 @@ plot_liana_extended <- function(liana_agg,
   }
 
   # Main dotplot: top 8 senders x top 8 receivers (by interaction count).
-  tryCatch({
+  safe_run("LIANA dotplot", {
     src_col_dp <- .first_existing_column(liana_agg, c("source", "sender", "Sender"))
     tgt_col_dp <- .first_existing_column(liana_agg, c("target", "receiver", "Receiver"))
     top_n_groups <- 8L
@@ -1754,12 +1695,10 @@ plot_liana_extended <- function(liana_agg,
                        paste0(sample_id, "_liana_dotplot.png"))
     )
     cat("\u2713 LIANA dotplot saved\n")
-  }, error = function(e) {
-    cat("\u26A0 LIANA dotplot failed:", conditionMessage(e), "\n")
   })
 
   # B-cell dotplot: focus_celltype as sender, top 10 receivers.
-  tryCatch({
+  safe_run("LIANA B-cell dotplot", {
     if (is.null(focus_celltype) || length(focus_celltype) == 0) {
       cat("\u26A0 LIANA B-cell dotplot skipped: no focus_celltype resolved.\n")
     } else {
@@ -1792,12 +1731,10 @@ plot_liana_extended <- function(liana_agg,
         cat("\u2713 LIANA B-cell dotplot saved \u2192", bcell_dir, "\n")
       }
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA B-cell dotplot failed:", conditionMessage(e), "\n")
   })
 
   # -- Plot 2: CCI heatmap ---------------------------------------------------
-  tryCatch({
+  safe_run("LIANA CCI heatmap", {
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
 
     n_ct      <- length(unique(c(count_df$source, count_df$target)))
@@ -1828,9 +1765,6 @@ plot_liana_extended <- function(liana_agg,
       dpi      = 150
     )
     cat("\u2713 LIANA CCI heatmap saved\n")
-  }, error = function(e) {
-    cat("\u26A0 LIANA CCI heatmap failed:", conditionMessage(e), "\n")
-    message("  Detail: ", conditionMessage(e))
   })
 
   # -- Plot 3: CCI network graph (requires ggraph) ---------------------------
@@ -1910,7 +1844,7 @@ plot_liana_extended <- function(liana_agg,
   }
 
   # Plot 3a: pure top-25 edges (no focus union) -----------------------------
-  tryCatch({
+  safe_run("LIANA CCI network", {
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       cat("\u26A0 LIANA CCI network skipped: 'ggraph' is not installed.\n")
     } else if (is.null(count_df) || nrow(count_df) == 0) {
@@ -1928,13 +1862,10 @@ plot_liana_extended <- function(liana_agg,
       )
       cat("\u2713 LIANA CCI network saved (top-25)\n")
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA CCI network failed:", conditionMessage(e), "\n")
-    message("  Detail: ", conditionMessage(e))
   })
 
   # Plot 3a-withBcell: top 25 + every focus-cell-type edge ------------------
-  tryCatch({
+  safe_run("LIANA CCI network (top25 + B-cell)", {
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       # already warned in 3a
     } else if (is.null(focus_celltype) || length(focus_celltype) == 0) {
@@ -1960,13 +1891,10 @@ plot_liana_extended <- function(liana_agg,
       )
       cat("\u2713 LIANA CCI network saved (top-25 + B-cell)\n")
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA CCI network (top25 + B-cell) failed:",
-        conditionMessage(e), "\n")
   })
 
   # -- Plot 3b: B-cell-focused CCI network (requires ggraph) ----------------
-  tryCatch({
+  safe_run("LIANA B-cell CCI network", {
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       cat("\u26A0 LIANA B-cell CCI network skipped: 'ggraph' is not installed.\n")
     } else if (is.null(focus_celltype) || length(focus_celltype) == 0) {
@@ -2060,9 +1988,6 @@ plot_liana_extended <- function(liana_agg,
         cat("\u2713 LIANA B-cell CCI network saved \u2192", bcell_dir, "\n")
       }
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA B-cell CCI network failed:", conditionMessage(e), "\n")
-    message("  Detail: ", conditionMessage(e))
   })
 
   # -- Plot 3c: Top-N B-cell CCI network (filtered to most significant L-R) --
@@ -2070,7 +1995,7 @@ plot_liana_extended <- function(liana_agg,
   # top N most significant B-cell-involved L-R pairs, then aggregates to
   # source-target counts for the graph. More readable than Plot 3b when the
   # focus cell type interacts with many partners.
-  tryCatch({
+  safe_run("LIANA B-cell top-N CCI network", {
     if (!requireNamespace("ggraph", quietly = TRUE)) {
       cat("\u26A0 LIANA B-cell top-N CCI network skipped: 'ggraph' not installed.\n")
     } else if (is.null(focus_celltype) || length(focus_celltype) == 0) {
@@ -2171,9 +2096,6 @@ plot_liana_extended <- function(liana_agg,
         cat("\u2713 LIANA B-cell top-N CCI network saved \u2192", bcell_dir, "\n")
       }
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA B-cell top-N CCI network failed:", conditionMessage(e), "\n")
-    message("  Detail: ", conditionMessage(e))
   })
 
   # -- Plot 4: Chord diagram (requires circlize) -----------------------------
@@ -2272,7 +2194,7 @@ plot_liana_extended <- function(liana_agg,
   # Renders real cell shapes via getPolygonInfo(). Emits two directories:
   #   out_dir/spatial_lr/                         - default top-10 LR pairs
   #   bcell_dir/spatial_lr/ (if focus set)        - EVERY B-cell L-R pair
-  tryCatch({
+  safe_run("LIANA spatial LR map", {
     poly_df <- .cci_extract_polygon_df(gobj)
     spat    <- tryCatch(
       as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table")),
@@ -2670,12 +2592,10 @@ plot_liana_extended <- function(liana_agg,
         }
       }
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA spatial LR map failed:", conditionMessage(e), "\n")
   })
 
   # -- Plot 6a: UMAP CCI overview -----------------------------------------------
-  tryCatch({
+  safe_run("LIANA CCI UMAP", {
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
 
     # Robust UMAP extraction: try several stored names, handle both
@@ -2857,16 +2777,13 @@ plot_liana_extended <- function(liana_agg,
       )
       cat("\u2713 LIANA B-cell UMAP L-R activity saved \u2192", bcell_dir, "\n")
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA CCI UMAP failed:", conditionMessage(e), "\n")
-    message("  Detail: ", conditionMessage(e))
   })
 
   # Plot 6b (centroid-level spatial CCI overlay) removed - the centroid-
   # arrow rendering was not interpretable on tissue-scale data.
 
   # -- Plot 7: Dominance scatter (outgoing vs incoming per cell type) ---------
-  tryCatch({
+  safe_run("LIANA dominance scatter", {
     if (!requireNamespace("ggrepel", quietly = TRUE)) {
       cat("\u26A0 LIANA dominance scatter skipped: 'ggrepel' is not installed.\n")
     } else if (is.null(count_df) || nrow(count_df) == 0) {
@@ -2927,12 +2844,10 @@ plot_liana_extended <- function(liana_agg,
     )
     cat("\u2713 LIANA dominance scatter saved\n")
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA dominance scatter failed:", conditionMessage(e), "\n")
   })
 
   # -- Plot 8: Top sender-receiver pairs (information flow bar chart) ---------
-  tryCatch({
+  safe_run("LIANA information flow", {
     if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
 
     n_pairs  <- min(25L, nrow(count_df))
@@ -2969,12 +2884,10 @@ plot_liana_extended <- function(liana_agg,
       width = 14, height = 10, dpi = 150
     )
     cat("\u2713 LIANA information flow saved\n")
-  }, error = function(e) {
-    cat("\u26A0 LIANA information flow failed:", conditionMessage(e), "\n")
   })
 
   # -- Plot 8b: B-cell-only information flow ---------------------------------
-  tryCatch({
+  safe_run("LIANA B-cell information flow", {
     if (is.null(focus_celltype) || length(focus_celltype) == 0) {
       cat("\u26A0 LIANA B-cell information flow skipped: no focus_celltype resolved.\n")
     } else if (is.null(count_df) || nrow(count_df) == 0) {
@@ -3031,8 +2944,6 @@ plot_liana_extended <- function(liana_agg,
         cat("\u2713 LIANA B-cell information flow saved \u2192", bcell_dir, "\n")
       }
     }
-  }, error = function(e) {
-    cat("\u26A0 LIANA B-cell information flow failed:", conditionMessage(e), "\n")
   })
 
   invisible(NULL)

@@ -61,6 +61,23 @@ sample_plot_title <- function(sample_id, title) {
   paste(sample_id, title, sep = " - ")
 }
 
+# Run an I/O / plot block with uniform error logging. On error, prints
+# "  ⚠ <label> failed: <msg>" and swallows the exception so downstream
+# blocks still execute. `expr` is a brace-block evaluated lazily in the
+# caller's scope. Success cats stay inline with the calling code (so
+# skip-branches that print their own "⚠ X skipped: ..." don't get an
+# extra "✓" tacked on).
+safe_run <- function(label, expr) {
+  tryCatch(
+    force(expr),
+    error = function(e) {
+      cat("  ⚠ ", label, " failed: ", conditionMessage(e), "\n",
+          sep = "")
+    }
+  )
+  invisible(NULL)
+}
+
 # Build a human-friendly plot title from a sample_sheet row. Examples:
 #   CART_pt1   T0      -> "CART S1 - Before treatment - <subtitle>"
 #   CART_pt2   T12     -> "CART S2 - After treatment - <subtitle>"
