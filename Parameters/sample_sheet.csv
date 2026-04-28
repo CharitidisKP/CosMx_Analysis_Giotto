@@ -9,3 +9,4 @@ CART_T12_S2,,MCFASCIST1250Slide14320,1,batch_CART,CART_pt2,pair_CART_S2,CART,CAR
 17H13349,,MCFASCLST1196_Slide317H13349,3,batch_Conv_1,Conv_pt2,pair_Conv_3_4,Conventional,Conventional,T0,TRUE,,,,
 20H24159,,MCFASCLST1196Slide3220H24159,32,batch_Conv_2,Conv_pt1,pair_Conv_31_32,Conventional,Conventional,T12,TRUE,,,,
 18H12037,,MCFASCLST1196_Slide418H12037,4,batch_Conv_1,Conv_pt2,pair_Conv_3_4,Conventional,Conventional,T12,TRUE,,,,
+TEST_5k,,TEST_5k,99,batch_TEST,test_pt,,TEST,Test,T0,TRUE,,68,70,Smoke-test subset (5193 cells, FOV 68-70) from MCFASCIST1250Slide11979
