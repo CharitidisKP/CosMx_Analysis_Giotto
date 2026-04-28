@@ -3039,7 +3039,7 @@ run_spatial_differential_expression <- function(gobj,
   }
 
   cat("Analysis scope:", analysis_scope, "\n")
-  cat("Backend:", backend, "\n")
+  cat("Backend: smiDE\n")
   cat("Annotation column:", annotation_column, "\n")
   cat("Sample column:", sample_column, "\n")
   if (analysis_scope == "merged") {
