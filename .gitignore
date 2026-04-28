@@ -48,4 +48,7 @@ Other_stuff/*
 .claude/*
 .wolf/*
 CLAUDE.md
+Pipeline_log_edited_CART_run_1.txt
 
+# Quarantined legacy DE backend (kept for reproducibility, not tracked)
+Helper_Scripts/Legacy_EdgeR_DE.R
