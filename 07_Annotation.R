@@ -2145,6 +2145,9 @@ annotate_cells <- function(gobj,
                            conf_threshold    = NULL,
                            score_weights     = NULL,
                            profile_strategy  = "default",
+                           refinement              = TRUE,
+                           unsupervised_n_clusts   = "auto",
+                           unsupervised_auto_range = c(4L, 14L),
                            save_object       = TRUE,
                            seed              = 42,
                            sample_row        = NULL,
@@ -2788,7 +2791,9 @@ annotate_cells <- function(gobj,
       }  # end if (create_plots)
       
       # BLOCK D: OPTIONAL INLINE REFINEMENT --------------------------------
-      if (!is.null(conf_threshold) && conf_threshold > 0) {
+      if (!isTRUE(refinement)) {
+        cat("  ↻ Refinement disabled by config (annotation.refinement = false)\n")
+      } else if (!is.null(conf_threshold) && conf_threshold > 0) {
         gobj <- refine_annotation(
           gobj           = gobj,
           insitu_result  = insitu_supervised,
@@ -2817,7 +2822,163 @@ annotate_cells <- function(gobj,
       cat("\u2717 Error with", profile_name, ":\n  ", conditionMessage(e), "\n\n")
     })
   }  # end for loop over profiles
-  
+
+  # \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  # Unsupervised InSituType pass \u2014 profile-independent de novo clustering.
+  # Runs once per sample (NOT per profile) so it uses the unaligned full
+  # count matrix at function scope rather than counts_mat_aligned.
+  #
+  # unsupervised_n_clusts accepts: "auto" (default, runs chooseClusterNumber
+  # over unsupervised_auto_range to pick the best N), a positive integer
+  # (use directly), or 0 / "0" / FALSE (skip).
+  #
+  # Output column: cluster_unsup_<N> on the Giotto object
+  # Output dir:    <output_dir>/07_Annotation/unsupervised_<N>/
+  # \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  unsup_mode <- tolower(as.character(unsupervised_n_clusts %||% "auto"))
+  unsup_n    <- suppressWarnings(as.integer(unsup_mode))
+  unsup_skip <- identical(unsup_mode, "0") || identical(unsup_mode, "false") ||
+                (!is.na(unsup_n) && unsup_n <= 0L)
+  unsup_auto <- identical(unsup_mode, "auto") ||
+                identical(unsup_mode, "true")
+
+  if (!unsup_skip) {
+    sweep_df <- NULL
+    if (unsup_auto) {
+      auto_lo <- as.integer(unsupervised_auto_range[1])
+      auto_hi <- as.integer(unsupervised_auto_range[2])
+      cat(sprintf("\n--- Unsupervised InSituType (auto-selecting n_clusts in %d:%d) ---\n",
+                  auto_lo, auto_hi))
+      sweep <- tryCatch(
+        suppressMessages(InSituType::chooseClusterNumber(
+          counts   = counts_mat,
+          neg      = bg_per_cell,
+          n_clusts = auto_lo:auto_hi,
+          cohort   = cohort_vec,
+          n_starts = n_starts
+        )),
+        error = function(e) {
+          cat("\u2717 chooseClusterNumber() failed: ", conditionMessage(e),
+              "\n  Falling back to midpoint of range.\n", sep = "")
+          NULL
+        }
+      )
+      if (!is.null(sweep) && !is.null(sweep$best_clust_number)) {
+        unsup_n <- as.integer(sweep$best_clust_number)
+        sweep_df <- data.frame(
+          n_clusts = sweep$n_clusts,
+          loglik   = sweep$loglik %||% rep(NA_real_, length(sweep$n_clusts)),
+          stringsAsFactors = FALSE
+        )
+        cat(sprintf("  Auto-picked n_clusts = %d\n", unsup_n))
+      } else {
+        unsup_n <- as.integer((auto_lo + auto_hi) %/% 2L)
+        cat(sprintf("  Falling back to n_clusts = %d (midpoint)\n", unsup_n))
+      }
+    } else if (is.na(unsup_n) || unsup_n <= 0L) {
+      cat(sprintf("\u26a0 Unsupervised pass: could not parse '%s' as auto/integer; skipping.\n",
+                  unsup_mode))
+      unsup_skip <- TRUE
+    } else {
+      cat(sprintf("\n--- Unsupervised InSituType (n_clusts = %d, manual) ---\n", unsup_n))
+    }
+  }
+
+  if (!unsup_skip) {
+    unsup_dir <- file.path(output_dir, "07_Annotation",
+                           paste0("unsupervised_", unsup_n))
+    dir.create(unsup_dir, recursive = TRUE, showWarnings = FALSE)
+    unsup_col <- paste0("cluster_unsup_", unsup_n)
+
+    if (!is.null(sweep_df)) {
+      write.csv(sweep_df,
+                file.path(unsup_dir, paste0(sample_id, "_n_clusts_sweep.csv")),
+                row.names = FALSE)
+    }
+
+    insitu_unsup <- tryCatch(
+      suppressMessages(InSituType::insitutype(
+        x        = counts_mat,
+        neg      = bg_per_cell,
+        n_clusts = unsup_n,
+        cohort   = cohort_vec,
+        n_starts = n_starts
+      )),
+      error = function(e) {
+        cat("\u2717 Unsupervised pass failed: ", conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
+
+    if (!is.null(insitu_unsup)) {
+      cell_clusters <- as.character(insitu_unsup$clust)
+      cluster_levels <- sort(unique(cell_clusters))
+      cat(sprintf("  Clusters discovered: %d (%s)\n",
+                  length(cluster_levels), paste(cluster_levels, collapse = ", ")))
+
+      # \u2500\u2500 Add cluster column to gobj \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      annot_unsup <- data.frame(
+        cell_ID = cell_order,
+        v       = cell_clusters,
+        stringsAsFactors = FALSE
+      )
+      names(annot_unsup)[2] <- unsup_col
+      gobj <- addCellMetadata(
+        gobject        = gobj,
+        new_metadata   = annot_unsup,
+        by_column      = TRUE,
+        column_cell_ID = "cell_ID"
+      )
+
+      # \u2500\u2500 Per-cluster top-10 marker genes (log2FC vs all-other-clusters) \u2500\u2500
+      # counts_mat is cells x genes (dense), so colMeans gives per-gene means.
+      marker_rows <- lapply(cluster_levels, function(cl) {
+        in_idx  <- which(cell_clusters == cl)
+        out_idx <- which(cell_clusters != cl)
+        if (!length(in_idx) || !length(out_idx)) return(NULL)
+        mean_in  <- colMeans(counts_mat[in_idx,  , drop = FALSE])
+        mean_out <- colMeans(counts_mat[out_idx, , drop = FALSE])
+        fc <- log2((mean_in + 1) / (mean_out + 1))
+        top <- head(order(-fc), 10L)
+        data.frame(
+          cluster  = cl,
+          gene     = colnames(counts_mat)[top],
+          mean_in  = round(mean_in[top],  3),
+          mean_out = round(mean_out[top], 3),
+          log2fc   = round(fc[top],       3),
+          stringsAsFactors = FALSE
+        )
+      })
+      markers_df <- do.call(rbind, marker_rows)
+      write.csv(markers_df,
+                file.path(unsup_dir, paste0(sample_id, "_markers.csv")),
+                row.names = FALSE)
+
+      # \u2500\u2500 Per-cell cluster assignments \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      write.csv(
+        data.frame(cell_ID = cell_order, cluster = cell_clusters,
+                   stringsAsFactors = FALSE),
+        file.path(unsup_dir, paste0(sample_id, "_cluster_assignments.csv")),
+        row.names = FALSE
+      )
+
+      # \u2500\u2500 Manual-label template (one row per cluster, blank label col) \u2500\u2500
+      template <- data.frame(
+        cluster      = cluster_levels,
+        n_cells      = as.integer(table(cell_clusters)[cluster_levels]),
+        manual_label = "",
+        notes        = "",
+        stringsAsFactors = FALSE
+      )
+      write.csv(template,
+                file.path(unsup_dir, paste0(sample_id, "_manual_labels_template.csv")),
+                row.names = FALSE)
+
+      cat("  Wrote: cluster_assignments.csv, markers.csv, manual_labels_template.csv\n")
+      cat(sprintf("  Cluster col on gobj: %s\n", unsup_col))
+    }
+  }
+
   cat("\u2713 All annotations complete for", sample_id, "\n\n")
 
   # ── Persist per-profile annotation diagnostics ───────────────────────────

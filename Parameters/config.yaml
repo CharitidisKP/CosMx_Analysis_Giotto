@@ -411,7 +411,22 @@ parameters:
     cohort_column: "leiden_clust"
     min_gene_overlap: 100
     create_plots: true
+    # Post-hoc refinement: when TRUE and conf_threshold > 0, refine_annotation()
+    # re-assigns cells from low-confidence cluster types via InSituType::refineClusters().
+    # Set FALSE to keep raw supervised annotations as-is (skips the refined CSVs/PNGs
+    # and the celltype_*_supervised_refined column).
+    refinement: true
     conf_threshold: 0.8
+    # Pure-unsupervised InSituType pass for de novo cluster discovery (manual labelling).
+    # Accepted values:
+    #   "auto"  -> run InSituType::chooseClusterNumber() over the range below to
+    #              pick the best N, then run insitutype() with that N. (Default.)
+    #   <int>   -> use that N directly (e.g. 12). Skips the sweep.
+    #   0       -> skip the unsupervised pass entirely.
+    # Output: 07_Annotation/unsupervised_<N>/ + cluster_unsup_<N> col on gobj.
+    # When "auto", a *_n_clusts_sweep.csv is also written for audit.
+    unsupervised_n_clusts: "auto"
+    unsupervised_auto_range: [4, 14]   # n_clusts range tested when "auto"
     # Which annotation profiles to run and whether to score/select the best:
     #   "default"     -> only default_profile (HCA_Kidney), supervised + refinement.
     #                    Both columns kept in pDataDT; no scoring.
