@@ -48,8 +48,10 @@
 #                   Default: $PROJECT_DIR/Environment/Docker_Image/giotto_rstudio_latest.sif
 #   CONFIG          Path to config.yaml.
 #                   Default: $PROJECT_DIR/Scripts/Parameters/config.yaml
-#   R_LIBS_USER     R library path inside the container.
-#                   Default: $HOME/Rlibs_giotto
+#   R_LIBS_USER     R library path inside the container. Leave UNSET to let
+#                   renv activate from $PROJECT_DIR/.Rprofile (the standard
+#                   path — packages live in $PROJECT_DIR/renv/library/).
+#                   Only set this if you have a non-renv setup.
 #   COSMX_PYTHON_PATH
 #                   Python interpreter for reticulate/InSituType.
 #                   Default: $HOME/anaconda3/envs/giotto_Py_3_11/bin/python3
@@ -65,7 +67,10 @@ SIF="${SIF:-$PROJECT_DIR/Environment/Docker_Image/giotto_rstudio_latest.sif}"
 CONFIG="${CONFIG:-$PROJECT_DIR/Scripts/Parameters/config.yaml}"
 TMPDIR_HOST="${TMPDIR_HOST:-$PROJECT_DIR/tmp}"
 LOG_DIR="$PROJECT_DIR/Output"
-R_LIBS_USER="${R_LIBS_USER:-$HOME/Rlibs_giotto}"
+# renv (in $PROJECT_DIR/renv) handles the library path via .Rprofile when
+# Rscript is started from $PROJECT_DIR. Only honour an externally-set
+# R_LIBS_USER (advanced override); do NOT default to one — that bypasses renv.
+R_LIBS_USER="${R_LIBS_USER:-}"
 COSMX_PYTHON_PATH="${COSMX_PYTHON_PATH:-$HOME/anaconda3/envs/giotto_Py_3_11/bin/python3}"
 
 # ---- Pre-flight checks ------------------------------------------------------
@@ -97,7 +102,8 @@ if [[ "$COSMX_PYTHON_PATH" == "/usr/bin/python3" ]]; then
   echo "  clustering will fail. Check 'env | grep -i python' and your shell rc." >&2
 fi
 
-mkdir -p "$TMPDIR_HOST" "$LOG_DIR" "$R_LIBS_USER"
+mkdir -p "$TMPDIR_HOST" "$LOG_DIR"
+[[ -n "$R_LIBS_USER" ]] && mkdir -p "$R_LIBS_USER"
 
 # Default to --split unless the user explicitly opted in/out. Padding with
 # spaces around "$*" avoids matching --splitfoo or --no-splittery.
@@ -131,7 +137,7 @@ echo "  Project: $PROJECT_DIR"
 echo "  Config:  $CONFIG"
 echo "  Image:   $(basename "$SIF")"
 echo "  User:    $USER_NAME"
-echo "  R libs:  $R_LIBS_USER"
+echo "  R libs:  ${R_LIBS_USER:-<renv via $PROJECT_DIR/renv>}"
 echo "  Python:  $COSMX_PYTHON_PATH"
 echo "  TmpDir:  $TMPDIR_HOST"
 echo "  Log:     $LOG_FILE"
@@ -153,6 +159,7 @@ export APPTAINERENV_VROOM_TEMP_PATH="$TMPDIR_HOST"
 export APPTAINERENV_TMPDIR="$TMPDIR_HOST"
 
 apptainer exec --cleanenv \
+  --pwd "$PROJECT_DIR" \
   --env USER="$USER_NAME" \
   --env LOGNAME="$LOG_NAME" \
   --env R_LIBS_USER="$R_LIBS_USER" \
