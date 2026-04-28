@@ -4107,23 +4107,28 @@ run_nnsvg <- function(gobj,
     NULL
   })
   
-  # SEraster rasterization preprocessing. nnSVG's nearest-neighbor GP does
-  # not scale to im-SRT cell counts (CosMx slides routinely exceed 50k cells,
-  # and the paper's own guidance is Visium-scale ~5k spots). Pattanayak et
-  # al. 2023 (PMC10491191) show that aggregating cells into square pixels
-  # with SEraster before nnSVG is the recommended route for MERFISH/CosMx:
-  # it preserves every cell's signal by averaging into bins rather than
-  # discarding cells, and the pixel-level SpatialExperiment fits nnSVG's
-  # design scale. Falls back to random subsampling if SEraster is not
-  # installed.
-  MAX_CELLS_NNSVG        <- 20000
+  # ---- Tissue-wide pass: rasterise, or fall back to 5k cell subsample ------
+  # nnSVG's nearest-neighbor GP scales to ~Visium-spot counts. Preferred path
+  # is SEraster aggregation into square pixels (Pattanayak et al. 2023,
+  # PMC10491191) — bins preserve every cell's signal via averaging. If
+  # rasterisation cannot produce a usable result (auto-pick failed or bins are
+  # sub-cellular), fall back to a 5k random cell subsample so the pass always
+  # produces SVG results in tractable time.
   TARGET_CELLS_PER_PIXEL <- 30
-  MIN_REDUCTION_OK       <- 3   # sub-3x reduction = bins are sub-cellular
+  MIN_REDUCTION_OK       <- 3      # sub-3x reduction = bins are sub-cellular
+  SUBSAMPLE_FALLBACK     <- 5000   # ~Visium-spot scale; nnSVG's design point
 
-  # Resolve "auto" / NULL / numeric into a single numeric R (or NULL = disabled).
-  # "auto" picks resolution from coord extent so it is robust to whatever unit
-  # the SPE coords use (CosMx exports often use ~0.12 um/unit, which silently
-  # no-ops a hard-coded resolution = 50).
+  result_df     <- NULL
+  ct_raster     <- NULL
+  spe_raster    <- NULL
+  spe_for_nnsvg <- NULL
+  nnsvg_assay   <- NULL
+
+  n_cells_in <- ncol(spe)
+
+  # Resolve "auto" / NULL / numeric into a single numeric resolution. "auto"
+  # picks resolution from coord extent so it is unit-agnostic (CosMx exports
+  # use ~0.12 um/unit, which silently no-ops a hard-coded resolution = 50).
   resolved_resolution <- raster_resolution
   if (is.character(resolved_resolution) &&
       identical(tolower(resolved_resolution), "auto")) {
@@ -4131,156 +4136,136 @@ run_nnsvg <- function(gobj,
       coords = SpatialExperiment::spatialCoords(spe),
       target_cells_per_pixel = TARGET_CELLS_PER_PIXEL
     )
-    if (!is.null(resolved_resolution)) {
-      cat("  Auto-picked SEraster resolution = ",
-          sprintf("%.2f", resolved_resolution),
-          " coord units (target ", TARGET_CELLS_PER_PIXEL,
-          " cells/pixel)\n", sep = "")
-    } else {
-      cat("  \u26A0 Auto-pick failed (fewer than 100 cells or zero coord ",
-          "extent); rasterization disabled.\n", sep = "")
-    }
   }
 
-  use_raster <- !is.null(resolved_resolution) &&
-                is.numeric(resolved_resolution) &&
-                resolved_resolution > 0 &&
-                ncol(spe) > MAX_CELLS_NNSVG
-  nnsvg_assay <- "logcounts"
-  # Cell-level snapshot (used by rasterizeCellType on the same grid as the
-  # gene-expression raster, AND as the source for the random-subsample
-  # fallback below) and slot for the celltype pixel counts that P14/P15
-  # consume.
-  spe_cells <- spe
-  ct_raster <- NULL
-  if (use_raster) {
-    if (!requireNamespace("SEraster", quietly = TRUE)) {
-      cat("\u26A0 nnSVG: dataset has", ncol(spe),
-          "cells but SEraster is not installed.\n",
-          "  Falling back to random subsample (",
-          MAX_CELLS_NNSVG, " cells).\n",
-          "  Install: Rscript Parameters/Install_CCI_dependencies.R seraster\n",
-          sep = "")
-      set.seed(42)
-      keep_idx <- sample(ncol(spe), MAX_CELLS_NNSVG)
-      spe <- spe[, keep_idx]
-      cat("  Cells after downsampling:", ncol(spe), "\n\n")
-    } else {
-      n_cells_in <- ncol(spe)
-      cat("  Rasterizing with SEraster (resolution = ",
-          sprintf("%.2f", resolved_resolution),
-          " coord units, square pixels, fun = mean)...\n", sep = "")
-      spe_raster <- tryCatch(
-        SEraster::rasterizeGeneExpression(
-          spe,
-          assay_name = "logcounts",
-          resolution = resolved_resolution,
-          fun        = "mean",
-          square     = TRUE
-        ),
-        error = function(e) {
-          cat("\u26A0 SEraster::rasterizeGeneExpression failed: ",
-              conditionMessage(e), "\n", sep = "")
-          NULL
-        }
-      )
+  if (!is.null(resolved_resolution) && is.numeric(resolved_resolution) &&
+      resolved_resolution > 0) {
+    cat("  Auto-picked SEraster resolution = ",
+        sprintf("%.2f", resolved_resolution),
+        " coord units (target ", TARGET_CELLS_PER_PIXEL,
+        " cells/pixel)\n",
+        "  Rasterising with SEraster (square pixels, fun = mean)...\n",
+        sep = "")
 
-      reduction <- if (!is.null(spe_raster) && ncol(spe_raster) > 0) {
-        n_cells_in / ncol(spe_raster)
-      } else 0
-      acceptable <- !is.null(spe_raster) &&
-                    ncol(spe_raster) >= 50 &&
-                    reduction >= MIN_REDUCTION_OK
+    spe_cells  <- spe
+    spe_raster <- tryCatch(
+      SEraster::rasterizeGeneExpression(
+        spe,
+        assay_name = "logcounts",
+        resolution = resolved_resolution,
+        fun        = "mean",
+        square     = TRUE
+      ),
+      error = function(e) {
+        cat("\u26A0 SEraster::rasterizeGeneExpression failed: ",
+            conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
 
-      if (!acceptable) {
-        cat("\u26A0 Rasterization rejected: pixels = ",
-            if (is.null(spe_raster)) 0 else ncol(spe_raster),
-            ", reduction = ", sprintf("%.2fx", reduction),
-            " (need pixels >= 50 AND reduction >= ", MIN_REDUCTION_OK,
-            "x).\n",
-            "  Bins are at sub-cellular scale for these coord units.\n",
-            "  Falling back to random subsample (", MAX_CELLS_NNSVG,
-            " cells).\n",
-            "  Override by setting cci.nnsvg_raster_resolution: ",
-            "<larger number> in config.yaml.\n", sep = "")
-        if (exists("spe_raster", inherits = FALSE)) rm(spe_raster)
-        set.seed(42)
-        keep_idx <- sample(ncol(spe_cells), MAX_CELLS_NNSVG)
-        spe <- spe_cells[, keep_idx]
-      } else {
-        cat("  \u2713 Rasterized: ", n_cells_in, " cells \u2192 ",
-            ncol(spe_raster), " pixels (",
-            sprintf("%.1fx", reduction),
-            " reduction)\n", sep = "")
-        spe <- spe_raster
-        # SEraster emits the aggregated assay under the name "pixelval".
-        nnsvg_assay <- "pixelval"
+    n_pixels  <- if (!is.null(spe_raster)) ncol(spe_raster) else 0L
+    reduction <- if (n_pixels > 0L) n_cells_in / n_pixels else 0
 
-        # Rasterize cell-type counts onto the same pixel grid. Pixel IDs
-        # align with spe_raster because both rasterizations use the same
-        # input coordinates + resolution. Required for P14 / P15 overlays.
-        if (!is.null(celltype_col_local)) {
-          ct_raster <- tryCatch(
-            SEraster::rasterizeCellType(
-              spe_cells,
-              col_name   = "celltype",
-              resolution = resolved_resolution,
-              square     = TRUE
+    if (!is.null(spe_raster) && n_pixels >= 50L &&
+        reduction >= MIN_REDUCTION_OK) {
+      cat("  \u2713 Rasterised: ", n_cells_in, " cells \u2192 ",
+          n_pixels, " pixels (",
+          sprintf("%.1fx", reduction),
+          " reduction)\n", sep = "")
+
+      # Rasterise cell-type counts onto the same pixel grid for P14/P15.
+      # Pixel IDs align with spe_raster because both rasterizations share
+      # the same input coordinates and resolution.
+      if (!is.null(celltype_col_local)) {
+        ct_raster <- tryCatch(
+          SEraster::rasterizeCellType(
+            spe_cells,
+            col_name   = "celltype",
+            resolution = resolved_resolution,
+            square     = TRUE
+          ),
+          error = function(e) {
+            cat("\u26A0 SEraster::rasterizeCellType failed: ",
+                conditionMessage(e), "\n", sep = "")
+            NULL
+          }
+        )
+        if (!is.null(ct_raster)) {
+          ct_counts_mat <- as.matrix(
+            SummarizedExperiment::assay(ct_raster, 1)
+          )
+          tryCatch(
+            write.csv(
+              ct_counts_mat,
+              file.path(out_dir,
+                paste0(sample_id, "_celltype_pixel_counts.csv"))
             ),
             error = function(e) {
-              cat("\u26A0 SEraster::rasterizeCellType failed: ",
+              cat("\u26A0 celltype pixel counts CSV write failed: ",
                   conditionMessage(e), "\n", sep = "")
-              NULL
             }
           )
-          if (!is.null(ct_raster)) {
-            ct_counts_mat <- as.matrix(
-              SummarizedExperiment::assay(ct_raster, 1)
-            )
-            tryCatch(
-              write.csv(
-                ct_counts_mat,
-                file.path(out_dir,
-                  paste0(sample_id, "_celltype_pixel_counts.csv"))
-              ),
-              error = function(e) {
-                cat("\u26A0 celltype pixel counts CSV write failed: ",
-                    conditionMessage(e), "\n", sep = "")
-              }
-            )
-            cat("  \u2713 Celltype rasterized: ",
-                nrow(ct_counts_mat), " types \u00D7 ",
-                ncol(ct_counts_mat), " pixels\n", sep = "")
-          }
+          cat("  \u2713 Celltype rasterised: ",
+              nrow(ct_counts_mat), " types \u00D7 ",
+              ncol(ct_counts_mat), " pixels\n", sep = "")
         }
       }
+
+      spe_for_nnsvg <- spe_raster
+      nnsvg_assay   <- "pixelval"
+    } else {
+      cat("  \u26A0 Rasterisation rejected: pixels = ", n_pixels,
+          ", reduction = ", sprintf("%.2fx", reduction),
+          " (need pixels >= 50 AND reduction >= ", MIN_REDUCTION_OK,
+          "x).\n", sep = "")
+      spe_raster <- NULL
     }
+  } else {
+    cat("  \u26A0 Rasterisation skipped: resolution could not be resolved ",
+        "(auto-pick failed or invalid override).\n", sep = "")
   }
 
-  cat("  Genes after filtering:", nrow(spe), "\n")
-  cat("  Spots (",
+  # Fallback: rasterisation didn't produce a usable spe — random-subsample
+  # to ~Visium-spot scale and run nnSVG on raw cells. P14/P15 are skipped
+  # downstream because ct_raster stays NULL.
+  if (is.null(spe_for_nnsvg)) {
+    n_keep <- min(SUBSAMPLE_FALLBACK, n_cells_in)
+    cat("  Falling back to random subsample (", n_keep,
+        " of ", n_cells_in, " cells) so the tissue-wide pass still ",
+        "produces SVG results.\n", sep = "")
+    set.seed(42)
+    keep_idx <- sample(n_cells_in, n_keep)
+    spe_for_nnsvg <- spe[, keep_idx]
+    nnsvg_assay   <- "logcounts"
+  }
+
+  cat("  Genes after filtering: ", nrow(spe_for_nnsvg), "\n",
+      "  Spots (",
       if (nnsvg_assay == "pixelval") "pixels" else "cells",
-      "): ", ncol(spe), "\n\n", sep = "")
+      "): ", ncol(spe_for_nnsvg), "\n\n", sep = "")
 
   set.seed(42)
   nnsvg_res <- tryCatch(
-    nnSVG::nnSVG(spe, assay_name = nnsvg_assay, n_threads = n_cores),
+    nnSVG::nnSVG(spe_for_nnsvg, assay_name = nnsvg_assay,
+                 n_threads = n_cores),
     error = function(e) {
-      cat("\u26A0 nnSVG failed:", conditionMessage(e), "\n")
+      cat("\u26A0 nnSVG failed: ", conditionMessage(e), "\n", sep = "")
       NULL
     }
   )
-  
+
   if (!is.null(nnsvg_res)) {
     result_df <- as.data.frame(
       SummarizedExperiment::rowData(nnsvg_res)
     )
     result_df <- result_df[order(result_df$rank), ]
-    
+
     write.csv(result_df,
               file.path(out_dir,
                         paste0(sample_id, "_nnSVG_results.csv")))
-    
+  }
+
+  if (!is.null(result_df)) {
     # --- P11: rank plot (LR statistic vs rank, label top-20) ---
     tryCatch({
       lr_col <- intersect(c("LR_stat", "stat"), names(result_df))[1]
@@ -4314,10 +4299,9 @@ run_nnsvg <- function(gobj,
     }, error = function(e) {
       cat("\u26A0 nnSVG rank plot failed:", conditionMessage(e), "\n")
     })
-    
+
     # --- P12, P13: B-cell polygon overlays ---
     tryCatch({
-      celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
       bcell_ids <- .resolve_bcell_ids(gobj, celltype_col_local, focus_celltype)
       poly_df   <- .cci_extract_polygon_df(gobj)
       top20 <- utils::head(rownames(result_df), 20L)
@@ -4327,7 +4311,7 @@ run_nnsvg <- function(gobj,
       } else {
         .giotto_get_expression(gobj, values = "normalized", output = "matrix")
       }
-      
+
       # P12: 4x5 grid of top-20 SVGs on polygons, B cells outlined
       if (!is.null(poly_df) && length(top20) > 0) {
         poly_df <- .bcell_polygon_base(poly_df, bcell_ids)
@@ -4342,7 +4326,7 @@ run_nnsvg <- function(gobj,
           title = sprintf("%s - nnSVG top-20 SVGs", sample_id)
         )
       }
-      
+
       # P13: per-SVG B-cell enrichment (mean in B cells / mean overall)
       if (length(bcell_ids) > 5 && length(top20) > 0) {
         genes_present <- intersect(top20, rownames(expr_mat_nnsvg))
@@ -4381,10 +4365,9 @@ run_nnsvg <- function(gobj,
     # --- P14: pixel-level gene x celltype correlation heatmap ---
     # Pearson correlation between each top-20 SVG gene's pixel-mean expression
     # and each celltype's pixel count. High r means that gene's spatial
-    # pattern tracks where that celltype lives. Requires rasterization.
+    # pattern tracks where that celltype lives.
     tryCatch({
-      if (!is.null(ct_raster) && exists("spe_raster", inherits = FALSE) &&
-          nnsvg_assay == "pixelval") {
+      if (!is.null(ct_raster)) {
         top20_p14 <- utils::head(rownames(result_df), 20L)
         expr_mat  <- SummarizedExperiment::assay(spe_raster, "pixelval")
         ct_mat    <- as.matrix(SummarizedExperiment::assay(ct_raster, 1))
@@ -4454,8 +4437,7 @@ run_nnsvg <- function(gobj,
     # For each top-20 SVG gene, render two pixel maps: (a) gene pixel-mean
     # expression; (b) focus-celltype pixel count, both on the same grid.
     tryCatch({
-      if (!is.null(ct_raster) && exists("spe_raster", inherits = FALSE) &&
-          nnsvg_assay == "pixelval") {
+      if (!is.null(ct_raster)) {
         ct_mat    <- as.matrix(SummarizedExperiment::assay(ct_raster, 1))
         expr_mat  <- SummarizedExperiment::assay(spe_raster, "pixelval")
         focus_rows <- grep(focus_celltype, rownames(ct_mat),
@@ -4478,9 +4460,9 @@ run_nnsvg <- function(gobj,
           top20_p15 <- intersect(utils::head(rownames(result_df), 20L),
                                  rownames(expr_mat))
           if (length(top20_p15) > 0) {
-            # SEraster's pixelval assay is a dgCMatrix; reshape2::melt
-            # cannot coerce sparse matrices to data.frame, so densify the
-            # top-20 x n_pixel subset (small; ~100k cells at 437 pixels).
+            # SEraster's pixelval assay is a dgCMatrix; reshape2::melt cannot
+            # coerce sparse matrices to data.frame, so densify the top-20 x
+            # n_pixel subset (small; ~100k cells at 437 pixels).
             expr_mat_p15 <- as.matrix(expr_mat[top20_p15, , drop = FALSE])
             expr_long <- reshape2::melt(
               expr_mat_p15,
@@ -4522,8 +4504,8 @@ run_nnsvg <- function(gobj,
                   "%s \u2014 top-20 SVGs vs %s pixel counts",
                   sample_id, focus_label),
                 subtitle = sprintf(
-                  "Pixel grid at resolution = %s coord units",
-                  raster_resolution),
+                  "Pixel grid at resolution = %.2f coord units",
+                  resolved_resolution),
                 x = NULL, y = NULL
               ) +
               presentation_theme(base_size = 10, legend_position = "right") +
@@ -4554,7 +4536,7 @@ run_nnsvg <- function(gobj,
     cat("\u2713 nnSVG complete.\n")
     cat("  Top 10 SVGs:", paste(head(top_svgs, 10), collapse = ", "), "\n")
     cat("  Results saved to:", out_dir, "\n\n")
-    
+
     attr(result_df, "bcell_nnsvg") <- bcell_nnsvg_df
     invisible(result_df)
   } else {
