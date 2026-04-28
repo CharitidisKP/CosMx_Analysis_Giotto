@@ -1,12 +1,12 @@
 # CosMx / Giotto Analysis Pipeline
 
 Spatially resolved transcriptomic analysis of NanoString CosMx data using the
-[Giotto](https://giottosuite.readthedocs.io) suite.  The pipeline processes
-raw CosMx output directories through QC, normalisation, dimensionality
-reduction, clustering, annotation, cell-cell interaction analysis, and spatial
-differential expression.  All steps are orchestrated by a single R driver
-(`Scripts/CosMx_pipeline.R`) launched via the Apptainer wrapper script
-(`Scripts/Run_Scripts/Run_Giotto_Pipeline.sh`).
+[Giotto](https://giottosuite.readthedocs.io) suite. The pipeline runs raw
+CosMx exports through QC, normalisation, dimensionality reduction,
+clustering, annotation, cell–cell interaction analysis, spatial
+differential expression, and pathway enrichment — orchestrated by a single
+R driver (`CosMx_pipeline.R`) launched through an Apptainer wrapper
+(`Run_Scripts/Run_Giotto_Pipeline.sh`).
 
 ---
 
@@ -15,442 +15,327 @@ differential expression.  All steps are orchestrated by a single R driver
 ```
 CosMx_analysis/
 ├── Scripts/
-│   ├── CosMx_pipeline.R               # Main pipeline driver
-│   ├── 00_Setup.R                     # Environment / library setup
-│   ├── 01_Load_data.R                 # Step 01 – Data loading & FOV subsetting
-│   ├── 02_Quality_Control.R           # Step 02 – QC filtering
-│   ├── 03_Normalisation.R             # Step 03 – Normalisation
-│   ├── 04_Dimensionallity_Reduction.R # Step 04 – PCA / UMAP
-│   ├── 05_Clustering.R                # Step 05 – Leiden clustering
-│   ├── 06_Differential_Expression.R   # Step 06 – Marker genes
-│   ├── 07_Annotation.R                # Step 07 – Cell-type annotation
-│   ├── 08_Visualisation.R             # Step 08 – Plots & feature maps
-│   ├── 09_Spatial_Network.R           # Step 09 – Delaunay spatial network
-│   ├── 10_CCI_Analysis.R              # Step 10 – Cell–cell interaction (CCI)
-│   ├── 11_B_Cell_Analysis.R           # Step 11 – Focused immune microenvironment
-│   ├── 12_Spatial_Differential_Expression.R  # Step 12 – Spatial DE
-│   ├── 13_Pathway_Analysis.R           # Step 13 – Pathway enrichment + GSEA (merged-scope)
+│   ├── CosMx_pipeline.R                       # Pipeline driver / orchestrator
+│   ├── 00_Setup.R                             # Library + Python env bootstrap
+│   ├── 01_Load_data.R                         # CosMx CSVs → Giotto object
+│   ├── 02_Quality_Control.R                   # Per-cell / per-gene QC
+│   ├── 03_Normalisation.R                     # Library-size normalisation
+│   ├── 04_Dimensionallity_Reduction.R         # HVGs, PCA, UMAP
+│   ├── 05_Clustering.R                        # k-NN + Leiden
+│   ├── 06_Differential_Expression.R           # Per-cluster marker genes (scran)
+│   ├── 07_Annotation.R                        # InSituType reference annotation
+│   ├── 08_Visualisation.R                     # Cluster + feature plots
+│   ├── 09_Spatial_Network.R                   # Delaunay network + cell-proximity
+│   ├── 10_CCI_Analysis.R                      # InSituCor / LIANA / NicheNet / MISTy / nnSVG
+│   ├── 11_B_Cell_Analysis.R                   # Focused immune microenvironment
+│   ├── 12_Spatial_Differential_Expression.R   # smiDE niche DE (sample + merged scope)
+│   ├── 13_Pathway_Analysis.R                  # MSigDB / Reactome / GSEA + decoupleR (merged)
 │   ├── Helper_Scripts/
-│   │   ├── Merge_Batch_Correction.R   # Merge + Harmony batch correction
-│   │   ├── Pipeline_Utils.R           # Shared utilities
-│   │   └── ...
+│   │   ├── Pipeline_Utils.R                   # Checkpointing, plotting, safe_run
+│   │   ├── Merge_Batch_Correction.R           # joinGiottoObjects + Harmony
+│   │   ├── Plot_Helpers.R                     # presentation_theme, save_presentation_plot
+│   │   ├── Auto_Detect_Samples.R              # Build sample_sheet.csv from raw_data_dir
+│   │   ├── Split_Raw_CosMx_Slide.R            # Per-FOV physical slide splitter
+│   │   └── ...                                # Smaller utilities
 │   ├── Parameters/
-│   │   ├── config.yaml                # All pipeline parameters
-│   │   └── sample_sheet.csv           # Sample manifest
+│   │   ├── config.yaml                        # All pipeline parameters
+│   │   ├── sample_sheet.csv                   # Sample manifest
+│   │   └── Install_CCI_dependencies.R         # On-demand R-pkg installer
 │   └── Run_Scripts/
-│       └── Run_Giotto_Pipeline.sh     # Apptainer launch wrapper
-├── Data/
-│   └── Raw_data/                      # One subdirectory per physical slide
-└── Output/                            # All results written here
+│       └── Run_Giotto_Pipeline.sh             # Apptainer launch wrapper
+├── Data/Raw_data/                             # One subdirectory per physical slide
+├── Environment/Docker_Image/                  # giotto_rstudio_*.sif
+└── Output/                                    # All results land here
 ```
 
 ---
 
-## Quick-start
+## Quick start
 
 ### Prerequisites
 
 | Requirement | Notes |
 |---|---|
-| Apptainer ≥ 1.2 | Used to run the containerised R environment |
-| `giotto_rstudio_latest.sif` | Singularity image under `Environment/Docker_Image/` |
+| Apptainer ≥ 1.2 | Containerised R environment |
+| `giotto_rstudio_latest.sif` | Place under `Environment/Docker_Image/` |
+| Conda env with `umap`, `igraph`, `leidenalg` | E.g. `giotto_Py_3_11`. Set `COSMX_PYTHON_PATH` to its `python3` |
 | Raw CosMx directories | One per physical slide under `Data/Raw_data/` |
-| Populated `sample_sheet.csv` | See [Sample sheet](#sample-sheet) section |
+| Populated `sample_sheet.csv` | See [Sample sheet](#sample-sheet) |
 
----
-
-## The sample sheet
-
-`Scripts/Parameters/sample_sheet.csv` defines every logical sample the
-pipeline will process.
-
-**Default mode (no `--split`)**: one row per `sample_id` is processed as a
-whole slide.  When multiple rows share the same `sample_id` (composite slides
-with distinct `subsample_id` values), `normalize_sample_table()` deduplicates
-them to a single representative row and clears `fov_min`/`fov_max` so the
-entire slide is loaded.
-
-**Split mode (`--split`)**: each row that has a `subsample_id` is expanded into
-its own independent run — `sample_id` is replaced by `subsample_id`, output is
-written to `Sample_<subsample_id>/`, and the `fov_min`/`fov_max` range is
-applied at load time.
-
-### Columns
-
-| Column | Required | Description |
-|---|---|---|
-| `sample_id` | ✅ | Physical slide / directory identifier; multiple rows may share this value for composite slides |
-| `subsample_id` | — | Logical sub-sample name (e.g. `CART_T0_S1`); used by `--split` to give each biopsy its own run |
-| `directory_name` | ✅ | Name of the raw data folder under `raw_data_dir`; rows sharing a `sample_id` also share their `directory_name` |
-| `slide_num` | ✅ | Physical slide number (integer) |
-| `slide_id` | ✅ | **Run/batch identifier for Harmony batch correction** — samples prepared and sequenced together share the same `slide_id` (see [Batch correction](#batch-correction)) |
-| `patient_id` | — | Patient identifier for paired/repeated-measures analysis |
-| `pair_id` | — | Explicitly links T0/T12 biopsies from the same patient for paired DE |
-| `group_id` | — | Treatment group (`CART`, `Control`, `Conventional`) — used for `--groups` filtering |
-| `treatment` | — | Treatment label passed through to the merged spatial DE step |
-| `timepoint` | — | Biopsy timepoint (`T0`, `T12`) — informational |
-| `include` | — | `TRUE`/`FALSE` — set to `FALSE` to exclude a sample without deleting the row |
-| `fov_min` | — | Minimum FOV number to retain (inclusive). Used when `--split` is active |
-| `fov_max` | — | Maximum FOV number to retain (inclusive). Used when `--split` is active |
-| `notes` | — | Free-text notes |
-
-### Current sample manifest
-
-| sample_id | subsample_id | directory_name | slide_num | slide_id | group_id | timepoint | fov_min | fov_max |
-|---|---|---|---|---|---|---|---|---|
-| 1979_8769_6063_4320 | CART_T0_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 55 | 71 |
-| 1979_8769_6063_4320 | CART_T12_S1 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 42 | 54 |
-| 1979_8769_6063_4320 | CART_T0_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T0 | 29 | 41 |
-| 1979_8769_6063_4320 | CART_T12_S2 | MCFASCIST1250Slide1… | 1 | batch_CART | CART | T12 | 1 | 28 |
-| 1281 | — | MCFASCIST1250Slide2… | 2 | batch_Control | Control | T0 | — | — |
-| 19H28111 | — | MCFASCLST1196Slide31… | 31 | batch_Conv_2 | Conventional | T0 | — | — |
-| 17H13349 | — | MCFASCLST1196_Slide3… | 3 | batch_Conv_1 | Conventional | T0 | — | — |
-| 20H24159 | — | MCFASCLST1196Slide32… | 32 | batch_Conv_2 | Conventional | T12 | — | — |
-| 18H12037 | — | MCFASCLST1196_Slide4… | 4 | batch_Conv_1 | Conventional | T12 | — | — |
-
-> **CART composite slide**: the four CART rows all share `sample_id=1979_8769_6063_4320`
-> (the same physical slide directory).  Without `--split` the pipeline processes
-> it as a single whole-slide sample.  With `--split` it expands to four
-> independent runs: `CART_T0_S1`, `CART_T12_S1`, `CART_T0_S2`, `CART_T12_S2`,
-> each restricted to its FOV range.
-
----
-
-## Configuration (`config.yaml`)
-
-All pipeline behaviour is controlled by `Scripts/Parameters/config.yaml`.
-
-### `paths`
-
-```yaml
-paths:
-  project_dir: "../.."          # Root of the project (relative to config file)
-  scripts_dir: ".."             # Directory containing the *.R scripts
-  raw_data_dir: "../../Data/Raw_data"
-  output_dir: "../../Output"
-  sample_sheet: "sample_sheet.csv"
-  python_path: null             # Override Python path; null = auto-detect
-```
-
-### `pipeline`
-
-```yaml
-pipeline:
-  mode: "all"                   # "all" | "separate" | "merged" | "paired"
-  save_intermediates: true      # Save a Giotto checkpoint after each step
-  overwrite_existing: false     # Re-run steps even if a checkpoint exists
-  skip_on_error: false          # Continue to next sample on failure
-  memory_cleanup: true          # Call gc() between steps
-```
-
-### `merged`
-
-Controls the multi-sample merge and Harmony batch correction step.
-
-```yaml
-merged:
-  input_step: "07_annotate"     # Which per-sample checkpoint to load as merge input
-  join_method: "shift"          # Coordinate shift method for joinGiottoObjects
-  x_padding: 1000               # µm padding between samples in merged space
-  batch_column: "slide_id"      # Column used by Harmony (see Batch correction)
-  dimensions_to_use: "1:30"
-  umap_n_neighbors: 30
-  umap_min_dist: 0.3
-  k_nn: 15
-  resolution: 0.3
-  run_label: null               # Custom label for the merged run; null = timestamp
-```
-
-### `fov_split`
-
-Enables automatic FOV subsetting at load time for composite slides.
-
-```yaml
-fov_split:
-  enabled: true
-  fov_column: "fov"             # Metadata column containing the FOV number
-  fov_min_col: "fov_min"        # sample_sheet column for lower bound
-  fov_max_col: "fov_max"        # sample_sheet column for upper bound
-```
-
-### `spatial_de`
-
-Controls step 12 (spatial differential expression).
-
-```yaml
-spatial_de:
-  sample_backend: "smiDE"       # "smiDE" | "edgeR"
-  annotation_column: "celltype_HCA_Kidney_supervised"
-  smide_radius: 50              # Neighbourhood radius in µm (CosMx coords are µm)
-  smide_overlap_threshold: 0.85 # Max overlap ratio to retain a gene (0–1)
-  smide_min_detection_fraction: 0.01  # Min fraction of cells expressing a gene
-  smide_annotation_subset: ["B.cell"]  # Restrict to these cell types; null = all
-  smide_ncores: 4
-  n_niches: 6
-  min_cells_per_niche: 10
-```
-
-> **`smide_radius` note**: CosMx spatial coordinates are in microns.  The
-> correct value for cell–cell proximity modelling is **50** (50 µm ≈ one cell
-> diameter).  The default `0.05` is a normalised-coordinate value and will
-> produce `No genes passed smiDE filters` for CosMx data.
-
-### `parameters`
-
-Per-step analytical parameters (QC thresholds, clustering resolution, etc.).
-See the full `config.yaml` for all keys and inline comments.
-
----
-
-## Batch correction
-
-Harmony is run during the merged pipeline step using a single metadata column
-as the batch variable (`merged.batch_column`).  The recommended value is
-`"slide_id"`, which encodes the **physical preparation and sequencing run**:
-
-| `slide_id` | Samples | Rationale |
-|---|---|---|
-| `batch_CART` | CART_T0_S1, CART_T12_S1, CART_T0_S2, CART_T12_S2 | All four biopsies on the same physical slide; same library prep and run |
-| `batch_Control` | 1281 | Standalone slide; separate run |
-| `batch_Conv_1` | 17H13349, 18H12037 | Slides 3 + 4 prepared and run together |
-| `batch_Conv_2` | 19H28111, 20H24159 | Slides 31 + 32 prepared and run together |
-
-**Why not `group_id`?**  Harmony would then correct for CART vs Control vs
-Conventional — collapsing the very biological signal you want to study.
-
-**Why not `slide_num`?**  Slides 3 and 4 (and 31 and 32) were run together but
-have different slide numbers; treating them as independent batches
-over-corrects.
-
----
-
-## Pipeline steps
-
-| Step ID | Alias(es) | Script | Description |
-|---|---|---|---|
-| `01_load` | `01_load_data` | `01_Load_data.R` | Load CosMx CSVs → Giotto object; subset by FOV if `fov_min`/`fov_max` set |
-| `02_qc` | `02_quality_control` | `02_Quality_Control.R` | Filter low-quality cells and genes |
-| `03_norm` | `03_normalisation`, `03_normalization` | `03_Normalisation.R` | Library-size normalisation and log-transform |
-| `04_dimred` | `04_dimensionality_reduction` | `04_Dimensionallity_Reduction.R` | HVG selection, PCA, UMAP |
-| `05_cluster` | — | `05_Clustering.R` | k-NN graph + Leiden clustering |
-| `06_markers` | `06_de`, `06_differential_expression` | `06_Differential_Expression.R` | Per-cluster marker genes |
-| `07_annotate` | `07_annotation` | `07_Annotation.R` | Reference-profile cell-type annotation |
-| `08_visualize` | `08_visualisation` | `08_Visualisation.R` | Feature plots, UMAP panels |
-| `09_spatial` | `09_spatial_network` | `09_Spatial_Network.R` | Delaunay spatial network + cell-proximity enrichment |
-| `10_cci` | `10_cci_analysis` | `10_CCI_Analysis.R` | InSituCor, LIANA, MISTy CCI analysis |
-| `11_bcell` | `11_b_cell_analysis` | `11_B_Cell_Analysis.R` | Focused immune-cell microenvironment |
-| `12_spatial_de` | `12_spatial_differential_expression` | `12_Spatial_Differential_Expression.R` | Spatial DE via smiDE or edgeR pseudobulk |
-| **Merged** | | | |
-| `merge` | — | `Merge_Batch_Correction.R` | Join all per-sample Giotto objects |
-| `merge_batch` | `11_batch_correction` | `Merge_Batch_Correction.R` | Harmony batch correction + merged UMAP/clustering |
-| `12_spatial_de` *(merged)* | — | `12_Spatial_Differential_Expression.R` | Cohort-level spatial DE (edgeR pseudobulk) |
-
----
-
-## Running the pipeline
-
-All examples use the Apptainer wrapper:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh [OPTIONS]
-```
-
-### CLI options
-
-| Option | Value | Description |
-|---|---|---|
-| `--config` | path | Override the config file path |
-| `--mode` | `all` \| `separate` \| `merged` \| `paired` | Pipeline mode (default: value in `config.yaml`) |
-| `--samples` | `id1,id2,...` | Comma-separated `sample_id` values to process |
-| `--groups` | `CART,Control,...` | Filter by `group_id` column in sample sheet |
-| `--pairs` | `pair_id,...` | Filter by `pair_id` column in sample sheet |
-| `--sample-steps` | `01_load,02_qc,...` | Which per-sample steps to run |
-| `--merged-steps` | `merge,merge_batch,...` | Which merged steps to run |
-| `--from-step` | `05_cluster` | Start per-sample pipeline from this step (resume) |
-| `--merged-from-step` | `merge_batch` | Start merged pipeline from this step (resume) |
-| `--run-label` | `my_run` | Custom label for the merged output directory |
-| `--dry-run` | *(flag)* | Print what would run without executing |
-| `--split` | *(flag)* | Expand composite-slide rows (those with a `subsample_id`) into per-subsample runs, each with its own `sample_id` and output directory |
-
----
-
-## Use-case examples
-
-### 1 — Run everything for all samples automatically
-
-Processes every `include: TRUE` sample through all 12 steps, then runs the
-full merged pipeline (merge → batch correction → merged spatial DE).
+### Run the default pipeline
 
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh
 ```
 
-Or explicitly:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh --mode all
-```
+This is `--mode all` `--split`: every per-sample step on every included
+sample (composite slides expanded into biopsies), then the merged pipeline
+(merge → batch correction → spatial DE → pathway enrichment).
 
 ---
 
-### 2 — Run one sample through all steps
+## Sample sheet
 
-Process sample `1281` (Control) from loading through spatial DE.
+`Scripts/Parameters/sample_sheet.csv` defines every logical sample.
 
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --samples 1281 \
-  --mode separate
-```
+### Columns
 
----
+| Column | Required | Description |
+|---|---|---|
+| `sample_id` | ✅ | Physical slide / directory identifier |
+| `subsample_id` | — | Logical sub-sample (e.g. `CART_T0_S1`); used by `--split` |
+| `directory_name` | ✅ | Folder name under `paths.raw_data_dir` |
+| `slide_num` | ✅ | Physical slide number |
+| `slide_id` | ✅ | **Harmony batch column** — see [Batch correction](#batch-correction) |
+| `split_role` | — | `composite` \| `split` \| `""` — which view a row belongs to (see below) |
+| `patient_id` | — | Patient identifier for paired analysis |
+| `pair_id` | — | Links T0 / T12 biopsies from the same patient |
+| `group_id` | — | Treatment group (`CART`, `Control`, `Conventional`) |
+| `treatment` | — | Treatment label passed to merged spatial DE |
+| `timepoint` | — | `T0`, `T12` — informational |
+| `include` | — | `FALSE` to exclude without deleting the row |
+| `fov_min`, `fov_max` | — | Inclusive FOV bounds, applied at load time when `--split` is on |
+| `notes` | — | Free-text |
 
-### 3 — Run one sample through selected steps only
+### Split mode (default) vs composite mode
 
-Resume `1281` from clustering onwards (steps 05–12), skipping already-complete
-loading, QC, normalisation, and dimensionality reduction:
+The launcher defaults to `--split`. The pipeline picks rows based on
+`split_role`:
 
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --samples 1281 \
-  --from-step 05_cluster \
-  --mode separate
-```
+- **`--split` (default)** — keeps rows with `split_role` ∈ {`split`, `""`}.
+  Composite slides are expanded into per-biopsy runs, each restricted to
+  its `fov_min`/`fov_max` range and written to `Sample_<subsample_id>/`.
+  All cross-sample pathway comparisons in `config.yaml::pathway.comparisons`
+  require this view (T0/T12 + patient labels at the cell level).
+- **`--no-split`** — keeps rows with `split_role` ∈ {`composite`, `""`}.
+  The CART slide is loaded as one whole-slide sample written to
+  `Sample_<sample_id>/`. Useful for composite-view UMAPs only.
 
-Or run only specific steps explicitly:
+Sample selection rules:
+- `include = FALSE` is the default off switch.
+- `--samples X` always runs `X`, bypassing both `include` and `split_role`.
+- `--pairs` / `--groups` layer additional filters but never resurrect
+  `include = FALSE` rows.
 
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --samples 1281 \
-  --sample-steps 07_annotate,08_visualize,09_spatial \
-  --mode separate
-```
+### Current manifest
 
----
-
-### 4 — Run the CART slide split into its four sub-samples
-
-By default, `1979_8769_6063_4320` is processed as one whole-slide sample.
-To reprocess it as four separate FOV-ranged sub-samples (e.g. to rerun step
-12 per biopsy):
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --samples 1979_8769_6063_4320 \
-  --sample-steps 12_spatial_de \
-  --mode separate \
-  --split
-```
-
-This expands the single `1979_8769_6063_4320` row into four rows:
-`CART_T0_S1`, `CART_T12_S1`, `CART_T0_S2`, `CART_T12_S2`, each loading
-from the same raw directory but restricted to its FOV range, and writing to
-`Output/Sample_CART_T0_S1/` etc.
-
-You can also select by group:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --groups CART \
-  --mode separate \
-  --split
-```
+| sample_id | subsample_id | slide_num | slide_id | group_id | timepoint | fov_min | fov_max |
+|---|---|---|---|---|---|---|---|
+| 1979_8769_6063_4320 | CART_T0_S1 | 1 | batch_CART | CART | T0 | 55 | 71 |
+| 1979_8769_6063_4320 | CART_T12_S1 | 1 | batch_CART | CART | T12 | 42 | 54 |
+| 1979_8769_6063_4320 | CART_T0_S2 | 1 | batch_CART | CART | T0 | 29 | 41 |
+| 1979_8769_6063_4320 | CART_T12_S2 | 1 | batch_CART | CART | T12 | 1 | 28 |
+| 1281 | — | 2 | batch_Control | Control | T0 | — | — |
+| 17H13349 | — | 3 | batch_Conv_1 | Conventional | T0 | — | — |
+| 18H12037 | — | 4 | batch_Conv_1 | Conventional | T12 | — | — |
+| 19H28111 | — | 31 | batch_Conv_2 | Conventional | T0 | — | — |
+| 20H24159 | — | 32 | batch_Conv_2 | Conventional | T12 | — | — |
 
 ---
 
-### 5 — Rerun spatial DE for all CART sub-samples (legacy whole-slide IDs)
+## Pipeline steps
 
-If checkpoints already exist under the old per-subsample output directories
-(`Sample_CART_T0_S1/` etc.), use `--split` to resume from step 12:
+### Per-sample (run in order)
 
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --groups CART \
-  --sample-steps 12_spatial_de \
-  --mode separate \
-  --split
-```
+| Step ID | Aliases | Script | Description |
+|---|---|---|---|
+| `01_load` | `01_load_data` | `01_Load_data.R` | Load CosMx CSVs → Giotto; FOV subset if `--split` |
+| `02_qc` | `02_quality_control` | `02_Quality_Control.R` | Filter low-quality cells + genes |
+| `03_norm` | `03_normalisation` | `03_Normalisation.R` | Library-size normalise + log-transform |
+| `04_dimred` | `04_dimensionality_reduction` | `04_Dimensionallity_Reduction.R` | HVGs, PCA, UMAP |
+| `05_cluster` | — | `05_Clustering.R` | k-NN + Leiden |
+| `06_markers` | `06_de` | `06_Differential_Expression.R` | Per-cluster marker genes |
+| `07_annotate` | `07_annotation` | `07_Annotation.R` | InSituType reference annotation |
+| `08_visualize` | `08_visualisation` | `08_Visualisation.R` | Feature + cluster plots |
+| `09_spatial` | `09_spatial_network` | `09_Spatial_Network.R` | Delaunay network + cell-proximity enrichment |
+| `10_cci` | `10_cci_analysis` | `10_CCI_Analysis.R` | InSituCor / LIANA / NicheNet / MISTy / nnSVG |
+| `11_bcell` | `11_b_cell_analysis` | `11_B_Cell_Analysis.R` | Focused immune microenvironment |
+| `12_spatial_de` | `12_spatial_differential_expression` | `12_Spatial_Differential_Expression.R` | smiDE niche DE (sample scope) |
+
+### Merged (run in order)
+
+| Step ID | Script | Description |
+|---|---|---|
+| `merge` | `Helper_Scripts/Merge_Batch_Correction.R` | `joinGiottoObjects` across samples |
+| `merge_batch` | `Helper_Scripts/Merge_Batch_Correction.R` | Harmony batch correction + merged UMAP/clustering |
+| `12_spatial_de` | `12_Spatial_Differential_Expression.R` | Cohort-level spatial DE (smiDE merged scope) |
+| `13_pathway` | `13_Pathway_Analysis.R` | MSigDB/Reactome over-representation, fgsea, decoupleR |
 
 ---
 
-### 6 — Run the merged pipeline only (all merge steps)
+## CLI options
 
-Assumes per-sample step 07 checkpoints already exist.
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh [OPTIONS]
+```
 
+| Option | Value | Description |
+|---|---|---|
+| `--mode` | `all` \| `separate` \| `merged` \| `paired` | Default: `all` |
+| `--samples` | `id1,id2,...` | Run specific `sample_id` / `subsample_id` rows |
+| `--groups` | `CART,Control,...` | Filter by `group_id` |
+| `--pairs` | `pair_CART_S1,...` | Filter by `pair_id` |
+| `--sample-steps` | `01_load,02_qc,...` | Restrict per-sample steps |
+| `--merged-steps` | `merge,merge_batch,12_spatial_de,13_pathway` | Restrict merged steps |
+| `--from-step` | `05_cluster` | Resume per-sample pipeline from this step |
+| `--merged-from-step` | `merge_batch` | Resume merged pipeline from this step |
+| `--run-label` | `cohort_v2` | Label for merged output dir (defaults to timestamp) |
+| `--split` | flag | Expand composite slides into per-subsample runs (**default**) |
+| `--no-split` | flag | Composite-view: keep CART rows as one whole-slide sample |
+| `--config` | path | Override config file path |
+| `--dry-run` | flag | Print resolved plan without executing |
+
+---
+
+## Configuration (`Parameters/config.yaml`)
+
+Eleven top-level sections. Highlights only — see inline comments in
+`config.yaml` for every key.
+
+### `paths`
+```yaml
+project_dir: "../.."
+scripts_dir: ".."
+raw_data_dir: "../../Data/Raw_data"
+output_dir: "../../Output"
+sample_sheet: "sample_sheet.csv"
+python_path: null              # null = use COSMX_PYTHON_PATH env var
+```
+
+### `pipeline`
+```yaml
+mode: "all"                    # all | separate | merged | paired
+save_intermediates: true       # qs::qsave a Giotto checkpoint after each step
+overwrite_existing: false      # currently advisory only
+skip_on_error: false           # continue to next sample if one fails
+memory_cleanup: true           # gc() between steps
+```
+
+### `merged`
+Joins per-sample objects and runs Harmony.
+```yaml
+input_step: "07_annotate"      # which checkpoint to merge from
+batch_column: "slide_id"       # see Batch correction
+n_pcs: 30
+resolution: 0.3
+run_label: null                # null = timestamped dir
+```
+
+### `cci` — Step 10 sub-section toggles + nnSVG raster
+```yaml
+run_sections:
+  insitucor: true
+  liana: true
+  nichenet: true
+  misty: false                 # disabled pending .sif rebuild with libgsl27
+  nnsvg: true
+nnsvg_raster_resolution: auto  # SEraster pixel side length; auto = pick from extent
+```
+nnSVG flow: tissue-wide pass always tries `SEraster::rasterizeGeneExpression`;
+if it fails (auto-pick failed or bins sub-cellular), falls back to a 5k
+random cell subsample so the pass always produces results. The B-cell-focused
+pass runs per-cell unconditionally.
+
+### `spatial_de` — Step 12 (smiDE)
+```yaml
+sample_backend: "smiDE"        # "smiDE" | "edgeR"
+annotation_column: "celltype_HCA_Kidney_supervised"
+smide_radius: 50               # µm (CosMx coords are µm)
+smide_overlap_threshold: 0.8   # 1.0 = disabled
+smide_min_detection_fraction: 0.01
+smide_predictor_mode: "group"  # "group" | "count" (WTX-guide continuous)
+smide_ncores: 4                # only consumed by smi_de(); pre_de/results are single-threaded
+n_niches: 6
+min_cells_per_niche: 10
+```
+
+### `pathway` — Step 13 (merged-scope only)
+```yaml
+enabled: true
+de_engine: "pseudobulk_deseq2"
+species: "Homo sapiens"
+databases: [hallmark, kegg, reactome, biocarta, go_bp]
+gsea: { ... }
+comparisons:
+  - { name: CART_before_vs_after, ... }
+  - { name: Conv_before_vs_after, ... }
+  - { name: CART_vs_Conv_T0, ... }
+  - { name: CART_vs_Conv_T12, ... }
+```
+
+### Other sections
+
+`reproducibility` (RNG seed), `paired` (pair/patient column names),
+`fov_split` (load-time FOV subsetting), `interaction` (Step 09/11
+focal-cell config), `parameters` (per-step QC + clustering thresholds).
+
+---
+
+## Batch correction
+
+Harmony uses a single metadata column (`merged.batch_column`). Default and
+recommended: **`slide_id`** — encodes the physical preparation + sequencing
+run.
+
+| `slide_id` | Samples |
+|---|---|
+| `batch_CART` | All four CART biopsies (one physical slide) |
+| `batch_Control` | 1281 |
+| `batch_Conv_1` | 17H13349, 18H12037 (slides 3 + 4 prepared together) |
+| `batch_Conv_2` | 19H28111, 20H24159 (slides 31 + 32 prepared together) |
+
+Don't use `group_id` (Harmony would erase the biology) or `slide_num`
+(over-corrects across slides actually run together).
+
+---
+
+## Use-case examples
+
+### Run everything end-to-end
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh
+```
+
+### Run one sample through all per-sample steps
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
+  --samples 1281 --mode separate
+```
+
+### Resume a sample from a specific step
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
+  --samples 1281 --from-step 07_annotate --mode separate
+```
+
+### Re-run only spatial DE for the CART biopsies
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
+  --groups CART --sample-steps 12_spatial_de --mode separate
+```
+(The default `--split` is already in effect, so each biopsy runs
+independently against its FOV range.)
+
+### Composite view (CART as one whole slide)
+```bash
+./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh --no-split
+```
+
+### Run only the merged pipeline (assumes per-sample step 07 checkpoints exist)
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh --mode merged
 ```
 
-With a custom run label:
-
+### Re-run merged batch correction + spatial DE + pathway only
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --mode merged \
-  --run-label cohort_v2
+  --mode merged --merged-from-step merge_batch
 ```
 
----
-
-### 7 — Rerun batch correction and merged spatial DE only (skip re-merging)
-
+### Dry-run preview
 ```bash
 ./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --mode merged \
-  --merged-from-step merge_batch
-```
-
----
-
-### 8 — Paired CART analysis (T0 vs T12)
-
-The CART biopsies are linked by `pair_id`:
-
-- `pair_CART_S1` → `CART_T0_S1` + `CART_T12_S1`
-- `pair_CART_S2` → `CART_T0_S2` + `CART_T12_S2`
-
-Within-slide pairings for longitudinal comparison:
-
-- **Pair A**: `CART_T0_S1` ↔ `CART_T12_S1` (FOV 55–71 and 42–54)
-- **Pair B**: `CART_T0_S2` ↔ `CART_T12_S2` (FOV 29–41 and 1–28)
-
-To process only the CART paired samples through the full per-sample pipeline
-(using `--split` to expand into sub-samples):
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --groups CART \
-  --mode separate \
-  --split
-```
-
-Then run a targeted merged analysis for the CART group only with a dedicated
-run label:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --groups CART \
-  --mode merged \
-  --run-label CART_paired \
-  --split
-```
-
-The merged spatial DE step (`12_spatial_de` in merged mode) will use the
-`treatment` and `patient_id` columns from the sample sheet to test T0 vs T12
-within each CART biopsy pair using edgeR pseudobulk.
-
----
-
-### 9 — Preview any run without executing (`--dry-run`)
-
-Prints the resolved config path, selected samples, and step order without
-running anything:
-
-```bash
-./Scripts/Run_Scripts/Run_Giotto_Pipeline.sh \
-  --groups CART \
-  --sample-steps 12_spatial_de \
-  --mode separate \
-  --dry-run
+  --groups CART --sample-steps 12_spatial_de --dry-run
 ```
 
 ---
@@ -459,44 +344,64 @@ running anything:
 
 ```
 Output/
-├── Sample_1979_8769_6063_4320/     # Default (no --split): whole slide
-├── Sample_CART_T0_S1/              # With --split: per-subsample
-├── Sample_CART_T12_S1/
-├── Sample_CART_T0_S2/
-├── Sample_CART_T12_S2/
-├── Sample_1281/
+├── Sample_CART_T0_S1/                                  # one dir per (sub)sample
 │   ├── 01_Data_Loading/
 │   ├── 02_Quality_Control/
 │   ├── ...
+│   ├── 10_CCI_Analysis/
+│   │   ├── insitucor/
+│   │   ├── liana/
+│   │   ├── nichenet/
+│   │   ├── misty/
+│   │   └── svg/                                        # nnSVG outputs
 │   ├── 12_Spatial_Differential_Expression/
 │   │   ├── tables/
 │   │   └── plots/
-│   ├── Giotto_Object_Annotated/     # Step 07 checkpoint
-│   └── pipeline_checkpoints/        # Per-step checkpoints
-├── Merged/
-│   └── <run_label>/
-│       ├── 10_Merged/
-│       │   └── Batch_Correction/
-│       ├── 12_Spatial_Differential_Expression/
-│       ├── Giotto_Object_Merged/
-│       └── Giotto_Object_BatchCorrected/
-└── pipeline_log_<timestamp>.log
+│   ├── pipeline_checkpoints/                           # per-step Giotto checkpoints
+│   │   └── <step_id>/manifest.json
+│   └── Pipeline_log_<sample>_<timestamp>.log
+├── Sample_CART_T12_S1/
+├── Sample_1281/
+├── ...
+├── Merged/<run_label>/
+│   ├── Batch_Correction/
+│   ├── 12_Spatial_Differential_Expression/
+│   ├── 13_Pathway_Analysis/
+│   ├── Giotto_Object_Merged/
+│   └── Giotto_Object_BatchCorrected/
+└── pipeline_log_<timestamp>.log                        # global log (tee from launcher)
 ```
+
+Per-step checkpoints under `pipeline_checkpoints/<step_id>/manifest.json`
+let you resume mid-pipeline (`--from-step`).
 
 ---
 
 ## Troubleshooting
 
-### `No samples matched the selected filters`
+**`No samples matched the selected filters`**
+`--samples` matches `sample_id` *or* `subsample_id` in `sample_sheet.csv`.
+For all CART biopsies use `--groups CART`.
 
-The `--samples` argument must match `sample_id` values in `sample_sheet.csv`
-Use `--groups CART` to select all four at once.
+**`No genes passed the smiDE filters`**
+- `spatial_de.smide_radius` must be `50` (µm) for CosMx, not `0.05`.
+- For rare cell types (e.g. B cells, ~100–200 cells), set
+  `smide_overlap_threshold: 0.8` and `smide_min_detection_fraction: 0.01`.
 
-### `No genes passed the smiDE filters`
+**nnSVG: `Spots (cells): N` instead of `Spots (pixels): N`**
+The tissue-wide pass fell back to a 5k cell subsample because SEraster
+rasterisation could not produce usable bins (auto-pick failed or pixels
+were sub-cellular). The pass still completes; P14/P15 plots (which require
+rasterised celltype counts) are skipped. To force rasterisation, set
+`cci.nnsvg_raster_resolution` to a numeric value.
 
-Two common causes:
+**MISTy section disabled**
+`cci.run_sections.misty: false` until the Apptainer image is rebuilt with
+`libgsl27` available at startup (`ridge` requires it via dlopen). See the
+note in `config.yaml`.
 
-1. **Wrong radius unit** — `smide_radius` must be `50` (µm) for CosMx data,
-   not `0.05`.
-2. **Filters too strict for small populations** — for B cells (~100–200 cells),
-   set `smide_overlap_threshold: 0.85` and `smide_min_detection_fraction: 0.01`.
+**Step crashes with `Execution halted` and no error message**
+The orchestrator sinks `message`/`stop` output to the per-sample log only
+(`split = FALSE` at `CosMx_pipeline.R:1046`). Check
+`Output/Sample_<id>/Pipeline_log_<sample>_<timestamp>.log` for the actual
+stack trace.
