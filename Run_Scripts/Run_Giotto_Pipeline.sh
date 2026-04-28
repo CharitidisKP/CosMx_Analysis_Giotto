@@ -11,6 +11,16 @@
 #   ./Run_Giotto_Pipeline.sh --pairs pair_CART_S1
 #                                              # T0 + T12 for CART patient 1 (paired contrast)
 #   ./Run_Giotto_Pipeline.sh --dry-run         # preview without running
+#   ./Run_Giotto_Pipeline.sh --overwrite       # regenerate existing checkpoints
+#                                              #  + section outputs (default skips them)
+#
+# Skip-by-default: per-step Giotto checkpoints (steps 01-09, 11) and
+# canonical CCI / smiDE section outputs (CSVs) are detected on disk and
+# skipped on re-run. Pass --overwrite to force regeneration.
+#
+# Server pre-flight (run before launching with multiple workers later):
+#   nproc; free -g; uptime
+# Pick a worker count yourself based on server load.
 #
 # Default set to --split 2026-04-27: all of the cross-sample comparisons in
 # config.yaml::pathway.comparisons (CART/Conv before-vs-after, CART vs Conv

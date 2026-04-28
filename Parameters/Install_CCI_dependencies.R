@@ -201,6 +201,29 @@ cci_dependency_registry <- function() {
         ensure_installer_package("BiocManager")
         BiocManager::install("ComplexHeatmap", ask = FALSE, update = FALSE)
       }
+    ),
+
+    # ------------------------------------------------------------------
+    # Parallelism stack used by sample-level parallelism (CosMx_pipeline.R)
+    # and smiDE per-cell-type parallelism (12_Spatial_Differential_Expression.R).
+    # All three are pure CRAN, no Bioconductor dependency.
+    # Install with: Rscript Parameters/Install_CCI_dependencies.R \
+    #   future,futureapply,progressr
+    # ------------------------------------------------------------------
+    future = list(
+      pkg = "future",
+      source = "cran",
+      install = function() install.packages("future", repos = "https://cloud.r-project.org")
+    ),
+    futureapply = list(
+      pkg = "future.apply",
+      source = "cran",
+      install = function() install.packages("future.apply", repos = "https://cloud.r-project.org")
+    ),
+    progressr = list(
+      pkg = "progressr",
+      source = "cran",
+      install = function() install.packages("progressr", repos = "https://cloud.r-project.org")
     )
   )
 }

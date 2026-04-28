@@ -78,6 +78,18 @@ safe_run <- function(label, expr) {
   invisible(NULL)
 }
 
+# Returns TRUE iff every sentinel file exists in `out_dir` and is non-empty.
+# Used by output-aware section/step skipping: if the canonical final output
+# of a section already exists on disk, skip re-running it (unless --overwrite
+# is active). Empty files are treated as "incomplete" so a crashed half-write
+# doesn't masquerade as a successful run.
+section_outputs_exist <- function(out_dir, sentinels) {
+  if (!dir.exists(out_dir)) return(FALSE)
+  paths <- file.path(out_dir, sentinels)
+  if (!all(file.exists(paths))) return(FALSE)
+  all(file.info(paths)$size > 0)
+}
+
 # Build a human-friendly plot title from a sample_sheet row. Examples:
 #   CART_pt1   T0      -> "CART S1 - Before treatment - <subtitle>"
 #   CART_pt2   T12     -> "CART S2 - After treatment - <subtitle>"

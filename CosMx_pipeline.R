@@ -700,7 +700,26 @@ ensure_runtime <- function(cfg) {
 invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
   sample_id <- sample_row$sample_id
   output_dir <- sample_row$output_dir
-  
+
+  # Output-aware skip: if the per-step Giotto checkpoint already exists and
+  # --overwrite is not set, return the cached gobj instead of re-running.
+  # Steps 10 (CCI) and 12 (smiDE) own their per-section/per-step skip
+  # logic internally and must always enter to evaluate it — exempt them.
+  manifest_skip_steps <- c("01_load", "02_qc", "03_norm", "04_dimred",
+                           "05_cluster", "06_markers", "07_annotate",
+                           "08_visualize", "09_spatial", "11_bcell")
+  if (!isTRUE(cfg$pipeline$overwrite_existing) &&
+      isTRUE(cfg$pipeline$save_intermediates) &&
+      step_id %in% manifest_skip_steps) {
+    ckpt <- checkpoint_dir_for_step(output_dir, step_id)
+    if (dir.exists(ckpt) &&
+        file.exists(file.path(ckpt, "manifest.json"))) {
+      message("  ↻ ", step_id, " skipped: checkpoint exists. ",
+              "Pass --overwrite to regenerate.")
+      return(load_sample_checkpoint(sample_row, step_id))
+    }
+  }
+
   switch(
     step_id,
     ## Changed 01_load after adding the subsampling information to the sample_sheet ##
@@ -912,7 +931,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         nnsvg_raster_resolution = cci_cfg$nnsvg_raster_resolution %||% "auto",
         cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE,
         sample_row                = sample_row,
-        sample_sheet_path         = cfg$paths$sample_sheet
+        sample_sheet_path         = cfg$paths$sample_sheet,
+        overwrite_existing        = isTRUE(cfg$pipeline$overwrite_existing)
       )
       gobj  # CCI is file-based; gobj passes through unchanged
     },
@@ -1007,7 +1027,8 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         smide_include_self_partner = spatial_de_cfg$smide_include_self_partner %||% FALSE,
         smide_predictor_mode = spatial_de_cfg$smide_predictor_mode %||% "group",
         smide_save_raw = spatial_de_cfg$smide_save_raw %||% TRUE,
-        save_object = TRUE
+        save_object = TRUE,
+        overwrite_existing = isTRUE(cfg$pipeline$overwrite_existing)
       )
     },
     stop("Unsupported sample step: ", step_id)
@@ -1317,7 +1338,8 @@ run_merged_pipeline <- function(runtime_env,
           stratifier_columns = sde_strat_cols,
           smide_min_cells_per_stratum = spatial_de_cfg$smide_min_cells_per_stratum %||% 200,
           smide_max_strata_per_comparison = spatial_de_cfg$smide_max_strata_per_comparison %||% 30,
-          save_object = TRUE
+          save_object = TRUE,
+          overwrite_existing = isTRUE(cfg$pipeline$overwrite_existing)
         )
       } else if (step_id == "13_pathway") {
         pathway_cfg <- cfg$pathway %||% list()
@@ -1391,7 +1413,8 @@ parse_cli_args <- function(args) {
     merged_from_step = NULL,
     run_label = NULL,
     dry_run = FALSE,
-    split = FALSE
+    split = FALSE,
+    overwrite = FALSE
   )
   
   i <- 1L
@@ -1413,6 +1436,11 @@ parse_cli_args <- function(args) {
     }
     if (key == "no-split") {
       opts$split <- FALSE
+      i <- i + 1L
+      next
+    }
+    if (key == "overwrite") {
+      opts$overwrite <- TRUE
       i <- i + 1L
       next
     }
@@ -1454,7 +1482,16 @@ run_pipeline <- function(cli_opts) {
   if (is.null(cli_opts$mode) || !nzchar(cli_opts$mode)) {
     cli_opts$mode <- cfg$pipeline$mode %||% "all"
   }
-  
+
+  # CLI flags override YAML defaults (must happen after load_config()).
+  if (isTRUE(cli_opts$overwrite)) {
+    cfg$pipeline$overwrite_existing <- TRUE
+  }
+  if (isTRUE(cfg$pipeline$overwrite_existing)) {
+    cat("⚠ --overwrite active: existing checkpoints / section outputs ",
+        "will be regenerated rather than skipped.\n\n", sep = "")
+  }
+
   sample_table <- load_sample_table(cfg, sample_sheet_override = cli_opts$sample_sheet)
 
   # --samples explicitly names rows; when used, it bypasses both `include` and

@@ -4807,7 +4807,8 @@ run_cci_analysis <- function(gobj,
                              nnsvg_raster_resolution = "auto",
                              cleanup_between_sections = TRUE,
                              sample_row         = NULL,
-                             sample_sheet_path  = NULL) {
+                             sample_sheet_path  = NULL,
+                             overwrite_existing = FALSE) {
   
   cat("\n========================================\n")
   cat("STEP 10: CCI Analysis (Layer 2 & 3)\n")
@@ -4853,35 +4854,61 @@ run_cci_analysis <- function(gobj,
   }
   
   if (isTRUE(run_sections["insitucor"])) {
-    section_out <- .run_cci_section(
-      "InSituCor",
-      function() run_insitucor(gobj, sample_id, output_dir, celltype_col,
-                               expr_cache        = .cci_expr_cache,
-                               sample_row        = sample_row,
-                               sample_sheet_path = sample_sheet_path)
-    )
-    results$insitucor <- section_out$result
-    section_status["insitucor"] <- section_out$status
-    section_messages[["insitucor"]] <- section_out$message
-    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "InSituCor")
+    insitucor_dir <- file.path(output_dir, "10_CCI_Analysis", "insitucor")
+    insitucor_sentinel <- paste0(sample_id, "_insitucor_module_stats.csv")
+    if (!isTRUE(overwrite_existing) &&
+        section_outputs_exist(insitucor_dir, insitucor_sentinel)) {
+      cat("  ↻ InSituCor section skipped: ", insitucor_sentinel,
+          " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      section_status["insitucor"] <- "SKIPPED"
+    } else {
+      section_out <- .run_cci_section(
+        "InSituCor",
+        function() run_insitucor(gobj, sample_id, output_dir, celltype_col,
+                                 expr_cache        = .cci_expr_cache,
+                                 sample_row        = sample_row,
+                                 sample_sheet_path = sample_sheet_path)
+      )
+      results$insitucor <- section_out$result
+      section_status["insitucor"] <- section_out$status
+      section_messages[["insitucor"]] <- section_out$message
+      .maybe_cleanup_between_cci_sections(cleanup_between_sections, "InSituCor")
+    }
   }
-  
+
   if (isTRUE(run_sections["liana"])) {
-    section_out <- .run_cci_section(
-      "LIANA",
-      function() run_liana(gobj, sample_id, output_dir, celltype_col,
-                           expr_cache        = .cci_expr_cache,
-                           focus_celltype    = focus_celltype,
-                           sample_row        = sample_row,
-                           sample_sheet_path = sample_sheet_path)
-    )
-    results$liana <- section_out$result
-    section_status["liana"] <- section_out$status
-    section_messages[["liana"]] <- section_out$message
-    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "LIANA")
+    liana_dir <- file.path(output_dir, "10_CCI_Analysis", "liana")
+    liana_sentinel <- paste0(sample_id, "_liana_aggregate.csv")
+    if (!isTRUE(overwrite_existing) &&
+        section_outputs_exist(liana_dir, liana_sentinel)) {
+      cat("  ↻ LIANA section skipped: ", liana_sentinel,
+          " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      section_status["liana"] <- "SKIPPED"
+    } else {
+      section_out <- .run_cci_section(
+        "LIANA",
+        function() run_liana(gobj, sample_id, output_dir, celltype_col,
+                             expr_cache        = .cci_expr_cache,
+                             focus_celltype    = focus_celltype,
+                             sample_row        = sample_row,
+                             sample_sheet_path = sample_sheet_path)
+      )
+      results$liana <- section_out$result
+      section_status["liana"] <- section_out$status
+      section_messages[["liana"]] <- section_out$message
+      .maybe_cleanup_between_cci_sections(cleanup_between_sections, "LIANA")
+    }
   }
   
   if (isTRUE(run_sections["nichenet"])) {
+    nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
+    nichenet_sentinel <- paste0(sample_id, "_nichenet_comparison_summary.csv")
+    if (!isTRUE(overwrite_existing) &&
+        section_outputs_exist(nichenet_root, nichenet_sentinel)) {
+      cat("  ↻ NicheNet section skipped: ", nichenet_sentinel,
+          " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      section_status["nichenet"] <- "SKIPPED"
+    } else {
     # Auto-wire senders / targets from step 09 proximity and step 06/12 DE
     # when the user leaves the config keys null.
     resolved_celltype_col <- .resolve_celltype_column_auto(gobj, celltype_col)
@@ -4990,9 +5017,18 @@ run_cci_analysis <- function(gobj,
       section_messages[["nichenet"]] <- section_out$message
       .maybe_cleanup_between_cci_sections(cleanup_between_sections, "NicheNet")
     }
+    }
   }
-  
+
   if (isTRUE(run_sections["misty"])) {
+    misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty")
+    misty_sentinel <- paste0(sample_id, "_misty_improvements.csv")
+    if (!isTRUE(overwrite_existing) &&
+        section_outputs_exist(misty_dir, misty_sentinel)) {
+      cat("  ↻ MISTy section skipped: ", misty_sentinel,
+          " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      section_status["misty"] <- "SKIPPED"
+    } else {
     misty_ready <- .misty_runtime_ready()
     if (!isTRUE(misty_ready$ok)) {
       cat("\n", strrep("=", 72), "\n", sep = "")
@@ -5039,21 +5075,31 @@ run_cci_analysis <- function(gobj,
       section_messages[["misty"]] <- section_out$message
       .maybe_cleanup_between_cci_sections(cleanup_between_sections, "MISTy")
     }
+    }
   }
-  
+
   if (isTRUE(run_sections["nnsvg"])) {
-    section_out <- .run_cci_section(
-      "nnSVG",
-      function() run_nnsvg(gobj, sample_id, output_dir,
-                           expr_cache        = .cci_expr_cache,
-                           celltype_col      = celltype_col,
-                           focus_celltype    = focus_celltype,
-                           raster_resolution = nnsvg_raster_resolution)
-    )
-    results$nnsvg <- section_out$result
-    section_status["nnsvg"] <- section_out$status
-    section_messages[["nnsvg"]] <- section_out$message
-    .maybe_cleanup_between_cci_sections(cleanup_between_sections, "nnSVG")
+    nnsvg_dir <- file.path(output_dir, "10_CCI_Analysis", "svg")
+    nnsvg_sentinel <- paste0(sample_id, "_nnSVG_results.csv")
+    if (!isTRUE(overwrite_existing) &&
+        section_outputs_exist(nnsvg_dir, nnsvg_sentinel)) {
+      cat("  ↻ nnSVG section skipped: ", nnsvg_sentinel,
+          " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      section_status["nnsvg"] <- "SKIPPED"
+    } else {
+      section_out <- .run_cci_section(
+        "nnSVG",
+        function() run_nnsvg(gobj, sample_id, output_dir,
+                             expr_cache        = .cci_expr_cache,
+                             celltype_col      = celltype_col,
+                             focus_celltype    = focus_celltype,
+                             raster_resolution = nnsvg_raster_resolution)
+      )
+      results$nnsvg <- section_out$result
+      section_status["nnsvg"] <- section_out$status
+      section_messages[["nnsvg"]] <- section_out$message
+      .maybe_cleanup_between_cci_sections(cleanup_between_sections, "nnSVG")
+    }
   }
   
   # Release the expression cache now that all sections are done.

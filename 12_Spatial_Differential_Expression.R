@@ -1381,6 +1381,21 @@ estimate_dense_matrix_gb <- function(n_genes, n_cells, bytes_per_element = 8) {
   (as.numeric(n_genes) * as.numeric(n_cells) * bytes_per_element) / (1024^3)
 }
 
+# smiDE library API note (audited 2026-04-28):
+# Only smiDE::smi_de(nCores=) accepts a cores argument. pre_de(),
+# overlap_ratio_metric(), and results() are all single-threaded
+# internally. Because of that, `smide_ncores` (passed through to smi_de)
+# only parallelises the GLM fit itself — not the surrounding work.
+#
+# The real parallelism win for this backend is the per-cell-type for-loop
+# below: each cell type's pre_de + smi_de + results triple is independent
+# and could be dispatched to a worker pool. That refactor is intentionally
+# deferred to a follow-up PR (alongside sample-level parallelism in
+# CosMx_pipeline.R) — it requires extracting a ~370-line body into a
+# closure, replacing `next` with early returns, and aggregating per-CT
+# result lists back into the outer-scope vectors. The
+# `spatial_de.smide_inner_workers` config key is reserved now so the
+# follow-up can land without a config change.
 run_smide_sample_backend <- function(expr_mat,
                                      metadata,
                                      run_label,
@@ -2885,15 +2900,34 @@ run_spatial_differential_expression <- function(gobj,
                                                 stratifier_columns = NULL,
                                                 smide_min_cells_per_stratum = 200,
                                                 smide_max_strata_per_comparison = 30,
-                                                save_object = FALSE) {
+                                                save_object = FALSE,
+                                                overwrite_existing = FALSE) {
   analysis_scope <- match.arg(analysis_scope)
   sample_contrast <- match.arg(sample_contrast)
-  
+
   cat("\n========================================\n")
   cat("STEP 12: Spatial Differential Expression\n")
   cat("Run:", run_label, "\n")
   cat("========================================\n\n")
-  
+
+  results_dir <- ensure_dir(file.path(output_dir, "12_Spatial_Differential_Expression"))
+  tables_dir <- ensure_dir(file.path(results_dir, "tables"))
+  plots_dir <- ensure_dir(file.path(results_dir, "plots"))
+
+  # Output-aware skip: the per-comparison aggregator writes the master
+  # results CSV at the end of a successful run. If it exists and is
+  # non-empty, the entire spatial-DE step has run before — skip unless
+  # --overwrite is set. Done BEFORE the giotto load to avoid the I/O.
+  sentinel <- file.path(results_dir,
+                        paste0(run_label, "_all_spatial_de_results.csv"))
+  if (!isTRUE(overwrite_existing) &&
+      file.exists(sentinel) &&
+      file.info(sentinel)$size > 0) {
+    cat("↻ Spatial DE step skipped: ", basename(sentinel),
+        " already exists. Pass --overwrite to regenerate.\n", sep = "")
+    return(invisible(NULL))
+  }
+
   if (is.character(gobj)) {
     manifest_path <- file.path(gobj, "manifest.json")
     if (file.exists(manifest_path)) {
@@ -2902,10 +2936,6 @@ run_spatial_differential_expression <- function(gobj,
       gobj <- .giotto_load(gobj)
     }
   }
-  
-  results_dir <- ensure_dir(file.path(output_dir, "12_Spatial_Differential_Expression"))
-  tables_dir <- ensure_dir(file.path(results_dir, "tables"))
-  plots_dir <- ensure_dir(file.path(results_dir, "plots"))
   
   metadata <- as.data.frame(.giotto_pdata_dt(gobj), stringsAsFactors = FALSE)
   if (!"cell_ID" %in% names(metadata)) {

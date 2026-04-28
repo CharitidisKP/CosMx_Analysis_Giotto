@@ -278,7 +278,17 @@ spatial_de:
   # coordinates to [0,1], 0.05 is appropriate. The script now auto-detects
   # and warns if the value looks inconsistent with the coordinate range.
   smide_radius: 50
+  # smide_ncores: only consumed by smiDE::smi_de(nCores=) — the GLM fit.
+  # smiDE::pre_de(), overlap_ratio_metric(), and results() are all
+  # single-threaded internally and ignore this value. The real parallelism
+  # win is per-cell-type via smide_inner_workers (reserved key, wired in
+  # the follow-up PR alongside sample-level parallelism).
   smide_ncores: 4
+  # Reserved for the per-cell-type parallel refactor (PR 2). Default 1
+  # keeps the loop sequential; setting > 1 will dispatch each cell type's
+  # pre_de + smi_de + results triple to a future worker. No-op until the
+  # backend loop is refactored.
+  smide_inner_workers: 1
   # Having an overlap threshold of 1 means its disabled. Changed from 0.7 to 
   # 0.8 to be more laxed filter genes with high cross-cell transcript 
   # contamination. CosMx has known transcript diffusion
