@@ -218,6 +218,15 @@ dimensionality_reduction <- function(gobj,
   results_folder <- file.path(output_dir, "04_Dimensionality_Reduction")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
 
+  # Embedding floors. Rtsne errors with N < 3*perplexity + 1; UMAP errors when
+  # N <= n_neighbors. Focused subsets (e.g. step 11's bcell subcluster) can
+  # easily fall below either, which used to halt the whole pipeline.
+  n_cells         <- nrow(pDataDT(gobj))
+  tsne_perplexity <- 30L
+  tsne_min_cells  <- 3L * tsne_perplexity + 1L
+  do_umap         <- n_cells >  umap_n_neighbors
+  do_tsne         <- n_cells >= tsne_min_cells
+
   # Dynamic n_hvgs: when NULL or "auto", use min(500, max(100, round(0.1 * n_genes)))
   # to avoid selecting 50% of a 1K panel as "variable". Explicit numeric values
   # are honoured verbatim (still capped at n_genes downstream).
@@ -339,75 +348,94 @@ dimensionality_reduction <- function(gobj,
   })
   
   # UMAP
-  cat("Running UMAP...\n")
-  cat("  Neighbors:", umap_n_neighbors, "\n")
-  cat("  Min distance:", umap_min_dist, "\n")
-  cat("  Seed:", seed, "\n")
+  if (do_umap) {
+    cat("Running UMAP...\n")
+    cat("  Neighbors:", umap_n_neighbors, "\n")
+    cat("  Min distance:", umap_min_dist, "\n")
+    cat("  Seed:", seed, "\n")
 
-  set.seed(seed)
-  gobj <- .run_known_giotto_warning_safe(
-    runUMAP(
-      gobject = gobj,
-      dimensions_to_use = 1:n_pcs,
-      n_neighbors = umap_n_neighbors,
-      min_dist = umap_min_dist
+    set.seed(seed)
+    gobj <- .run_known_giotto_warning_safe(
+      runUMAP(
+        gobject = gobj,
+        dimensions_to_use = 1:n_pcs,
+        n_neighbors = umap_n_neighbors,
+        min_dist = umap_min_dist
+      )
     )
-  )
 
-  cat("✓ UMAP complete\n\n")
+    cat("✓ UMAP complete\n\n")
+  } else {
+    cat(sprintf(
+      "⚠ Skipping UMAP: n_cells (%d) <= n_neighbors (%d). Subset too small.\n\n",
+      n_cells, umap_n_neighbors
+    ))
+  }
 
   # t-SNE
-  cat("Running t-SNE...\n")
-  cat("  Seed:", seed, "\n")
+  if (do_tsne) {
+    cat("Running t-SNE...\n")
+    cat("  Perplexity:", tsne_perplexity, "\n")
+    cat("  Seed:", seed, "\n")
 
-  set.seed(seed)
-  gobj <- .run_known_giotto_warning_safe(
-    runtSNE(
-      gobject = gobj,
-      dimensions_to_use = 1:n_pcs,
-      perplexity = 30
+    set.seed(seed)
+    gobj <- .run_known_giotto_warning_safe(
+      runtSNE(
+        gobject = gobj,
+        dimensions_to_use = 1:n_pcs,
+        perplexity = tsne_perplexity
+      )
     )
-  )
-  
-  cat("✓ t-SNE complete\n\n")
+
+    cat("✓ t-SNE complete\n\n")
+  } else {
+    cat(sprintf(
+      "⚠ Skipping t-SNE: n_cells (%d) < required (%d for perplexity=%d). UMAP still produced.\n\n",
+      n_cells, tsne_min_cells, tsne_perplexity
+    ))
+  }
   
   # Create dimensionality reduction plots
   cat("Creating dimensionality reduction plots...\n")
   
   tryCatch({
-    umap_genes <- .prepare_dim_plot_data(gobj, "umap", "nr_feats")
-    .save_continuous_dim_plot(
-      plot_data = umap_genes,
-      color_column = "nr_feats",
-      reduction_label = "UMAP",
-      value_label = "genes per cell",
-      output_path = file.path(results_folder, paste0(sample_id, "_umap_by_genes.png")),
-      sample_id = sample_id
-    )
-    
-    umap_counts <- .prepare_dim_plot_data(gobj, "umap", "total_expr")
-    .save_continuous_dim_plot(
-      plot_data = umap_counts,
-      color_column = "total_expr",
-      reduction_label = "UMAP",
-      value_label = "total counts",
-      output_path = file.path(results_folder, paste0(sample_id, "_umap_by_counts.png")),
-      sample_id = sample_id
-    )
-    
-    tsne_genes <- .prepare_dim_plot_data(gobj, "tsne", "nr_feats")
-    .save_continuous_dim_plot(
-      plot_data = tsne_genes,
-      color_column = "nr_feats",
-      reduction_label = "t-SNE",
-      value_label = "genes per cell",
-      output_path = file.path(results_folder, paste0(sample_id, "_tsne_by_genes.png")),
-      sample_id = sample_id
-    )
+    if (do_umap) {
+      umap_genes <- .prepare_dim_plot_data(gobj, "umap", "nr_feats")
+      .save_continuous_dim_plot(
+        plot_data = umap_genes,
+        color_column = "nr_feats",
+        reduction_label = "UMAP",
+        value_label = "genes per cell",
+        output_path = file.path(results_folder, paste0(sample_id, "_umap_by_genes.png")),
+        sample_id = sample_id
+      )
+
+      umap_counts <- .prepare_dim_plot_data(gobj, "umap", "total_expr")
+      .save_continuous_dim_plot(
+        plot_data = umap_counts,
+        color_column = "total_expr",
+        reduction_label = "UMAP",
+        value_label = "total counts",
+        output_path = file.path(results_folder, paste0(sample_id, "_umap_by_counts.png")),
+        sample_id = sample_id
+      )
+    }
+
+    if (do_tsne) {
+      tsne_genes <- .prepare_dim_plot_data(gobj, "tsne", "nr_feats")
+      .save_continuous_dim_plot(
+        plot_data = tsne_genes,
+        color_column = "nr_feats",
+        reduction_label = "t-SNE",
+        value_label = "genes per cell",
+        output_path = file.path(results_folder, paste0(sample_id, "_tsne_by_genes.png")),
+        sample_id = sample_id
+      )
+    }
 
     # UMAP coloured by FOV - batch-drift / spatial-batch indicator.
     # Hide legend when there are too many FOVs for a readable key.
-    if ("fov" %in% names(pDataDT(gobj))) {
+    if (do_umap && "fov" %in% names(pDataDT(gobj))) {
       umap_fov <- .prepare_dim_plot_data(gobj, "umap", "fov")
       umap_fov$fov <- factor(umap_fov$fov)
       n_fov <- length(levels(umap_fov$fov))
@@ -435,7 +463,7 @@ dimensionality_reduction <- function(gobj,
     # to the sub-biopsy whose [fov_min, fov_max] range it falls inside. Useful
     # for spotting biopsy-level batch structure inside a merged composite.
     sub_rows <- discover_composite_subsamples(sample_row, sample_sheet_path)
-    if (!is.null(sub_rows) && nrow(sub_rows) > 0 &&
+    if (do_umap && !is.null(sub_rows) && nrow(sub_rows) > 0 &&
         "fov" %in% names(pDataDT(gobj))) {
       umap_sub <- .prepare_dim_plot_data(gobj, "umap", "fov")
       assign_sub <- function(fov_val) {
@@ -490,26 +518,34 @@ dimensionality_reduction <- function(gobj,
   cat("PCs computed:", n_pcs, "\n")
   
   tryCatch({
-    umap_dims <- getDimReduction(
-      gobject = gobj,
-      spat_unit = "cell",
-      feat_type = "rna",
-      reduction = "cells",
-      reduction_method = "umap",
-      name = "umap",
-      output = "matrix"
-    )
-    tsne_dims <- getDimReduction(
-      gobject = gobj,
-      spat_unit = "cell",
-      feat_type = "rna",
-      reduction = "cells",
-      reduction_method = "tsne",
-      name = "tsne",
-      output = "matrix"
-    )
-    cat("UMAP dimensions:", ncol(umap_dims), "\n")
-    cat("t-SNE dimensions:", ncol(tsne_dims), "\n")
+    if (do_umap) {
+      umap_dims <- getDimReduction(
+        gobject = gobj,
+        spat_unit = "cell",
+        feat_type = "rna",
+        reduction = "cells",
+        reduction_method = "umap",
+        name = "umap",
+        output = "matrix"
+      )
+      cat("UMAP dimensions:", ncol(umap_dims), "\n")
+    } else {
+      cat("UMAP dimensions: skipped\n")
+    }
+    if (do_tsne) {
+      tsne_dims <- getDimReduction(
+        gobject = gobj,
+        spat_unit = "cell",
+        feat_type = "rna",
+        reduction = "cells",
+        reduction_method = "tsne",
+        name = "tsne",
+        output = "matrix"
+      )
+      cat("t-SNE dimensions:", ncol(tsne_dims), "\n")
+    } else {
+      cat("t-SNE dimensions: skipped\n")
+    }
   }, error = function(e) {
     cat("Dimension retrieval: info unavailable\n")
   })
