@@ -143,8 +143,20 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
   )
   
   aliases <- if (type == "sample") sample_aliases else merged_aliases
-  normalized <- vapply(step_ids, normalize_id, character(1))
-  unname(ifelse(normalized %in% names(aliases), aliases[normalized], normalized))
+  order   <- if (type == "sample") SAMPLE_STEP_ORDER else MERGED_STEP_ORDER
+
+  resolve_one <- function(raw) {
+    n <- normalize_id(raw)
+    if (n %in% names(aliases)) return(unname(aliases[[n]]))
+    if (n %in% order)          return(n)
+    if (grepl("^[0-9]+$", n)) {
+      hits <- order[startsWith(order, paste0(n, "_"))]
+      if (length(hits) == 1) return(hits)
+    }
+    n
+  }
+
+  unname(vapply(step_ids, resolve_one, character(1)))
 }
 
 SAMPLE_STEP_ORDER <- c(
