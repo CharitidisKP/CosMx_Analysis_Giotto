@@ -1,8 +1,9 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
 # Install_Stage1_Dependencies.R
-# Installs the eight new R packages introduced by Stage 1 of the merged-run
-# enhancement (kBET, lisi, Banksy, speckle, limma, UCell, scran, rmarkdown).
+# Installs the new R packages introduced by Stage 1 of the merged-run
+# enhancement: 8 runtime packages (kBET, lisi, Banksy, speckle, limma,
+# UCell, scran, rmarkdown) + testthat for the unit-test suite.
 #
 # Run from inside the project's Apptainer container so the project's
 # .Rprofile activates the host-mounted renv library (packages persist
@@ -39,11 +40,15 @@ cat("→ Bioconductor: Banksy, speckle, limma, UCell, scran\n")
 BiocManager::install(c("Banksy", "speckle", "limma", "UCell", "scran"),
                      update = FALSE, ask = FALSE)
 
-# CRAN — rmarkdown is needed for the Phase 13 summary report. Likely
-# already in renv; install is idempotent and cheap.
-cat("\n→ CRAN: rmarkdown\n")
+# CRAN — rmarkdown is needed for the Phase 13 summary report; testthat is
+# needed to run the Stage 1 unit-test suite inside the container. Both are
+# idempotent.
+cat("\n→ CRAN: rmarkdown, testthat\n")
 if (!requireNamespace("rmarkdown", quietly = TRUE)) {
   install.packages("rmarkdown")
+}
+if (!requireNamespace("testthat", quietly = TRUE)) {
+  install.packages("testthat")
 }
 
 # GitHub-only — kBET (theislab) and lisi (immunogenomics).
@@ -52,15 +57,29 @@ remotes::install_github("theislab/kBET",       upgrade = "never")
 remotes::install_github("immunogenomics/LISI", upgrade = "never")
 
 # Snapshot to renv.lock so subsequent containers reproduce the install.
+# Non-fatal: pre-existing renv-state issues (e.g. unrelated packages missing
+# or BioC-release skew) should not block the Stage 1 install. The packages
+# are installed regardless; the user can run `renv::status()` and
+# `renv::snapshot()` interactively later to update the lockfile.
 if (requireNamespace("renv", quietly = TRUE)) {
   cat("\n→ renv::snapshot()\n")
-  renv::snapshot(prompt = FALSE)
+  snap_ok <- tryCatch({ renv::snapshot(prompt = FALSE); TRUE },
+                      error = function(e) {
+                        cat("  ⚠ renv::snapshot() aborted:\n    ",
+                            conditionMessage(e), "\n",
+                            "    The install itself succeeded. Run\n",
+                            "    `renv::status()` to inspect, then\n",
+                            "    `renv::snapshot()` interactively when\n",
+                            "    the unrelated issues are resolved.\n",
+                            sep = "")
+                        FALSE
+                      })
 }
 
-# Verify all eight packages load cleanly.
+# Verify all nine packages load cleanly (eight runtime + testthat for tests).
 cat("\n=== Version report ===\n")
 for (pkg in c("Banksy", "speckle", "limma", "UCell", "scran",
-              "rmarkdown", "kBET", "lisi")) {
+              "rmarkdown", "kBET", "lisi", "testthat")) {
   v <- tryCatch(as.character(packageVersion(pkg)),
                 error = function(e) "MISSING")
   cat(sprintf("  %-12s %s\n", pkg, v))

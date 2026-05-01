@@ -15,6 +15,10 @@
 }
 
 # Source a Helper_Scripts file relative to repo root, isolated in `env`.
+# Sets cosmx.disable_cli = TRUE for the duration of the source so that
+# top-level CLI dispatch blocks (which check
+# `!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))`) skip
+# their stop("Usage: ...") branch when sourced under Rscript.
 .source_helper <- function(rel_path, env = new.env(parent = globalenv())) {
   path <- file.path(.repo_dir(), rel_path)
   if (!file.exists(path)) skip(paste0("helper not found: ", rel_path))
@@ -23,6 +27,8 @@
     assign("%||%", function(a, b) if (is.null(a) || length(a) == 0L) b else a,
            envir = env)
   }
+  prev <- options(cosmx.disable_cli = TRUE)
+  on.exit(options(prev), add = TRUE)
   source(path, local = env)
   env
 }
