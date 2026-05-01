@@ -121,6 +121,13 @@ esac
 USER_NAME="${USER:-$(id -un)}"
 LOG_NAME="${LOGNAME:-$USER_NAME}"
 
+# ---- Detect --dry-run so we can skip log-file creation ----------------------
+# Dry-runs are cheap previews; logging them to disk pollutes Output/ fast.
+IS_DRY_RUN=0
+case " $* " in
+  *" --dry-run "*) IS_DRY_RUN=1 ;;
+esac
+
 # ---- Build log filename from date + --samples argument ----------------------
 LOG_TAG="$(date +%Y-%m-%d_%H%M%S)"
 prev=""
@@ -134,7 +141,11 @@ for i in "$@"; do
   prev="$i"
 done
 
-LOG_FILE="$LOG_DIR/pipeline_log_${LOG_TAG}.log"
+if (( IS_DRY_RUN )); then
+  LOG_FILE=""
+else
+  LOG_FILE="$LOG_DIR/pipeline_log_${LOG_TAG}.log"
+fi
 
 echo "================================================"
 echo "CosMx Pipeline"
@@ -145,7 +156,7 @@ echo "  User:    $USER_NAME"
 echo "  R libs:  ${R_LIBS_USER:-<renv via $PROJECT_DIR/renv>}"
 echo "  Python:  $COSMX_PYTHON_PATH"
 echo "  TmpDir:  $TMPDIR_HOST"
-echo "  Log:     $LOG_FILE"
+echo "  Log:     ${LOG_FILE:-<dry-run, not logged>}"
 echo "  Args:    $*"
 echo "================================================"
 echo ""
@@ -163,25 +174,46 @@ export APPTAINERENV_RETICULATE_PYTHON="$COSMX_PYTHON_PATH"
 export APPTAINERENV_VROOM_TEMP_PATH="$TMPDIR_HOST"
 export APPTAINERENV_TMPDIR="$TMPDIR_HOST"
 
-apptainer exec --cleanenv \
-  --pwd "$PROJECT_DIR" \
-  --env USER="$USER_NAME" \
-  --env LOGNAME="$LOG_NAME" \
-  --env R_LIBS_USER="$R_LIBS_USER" \
-  --env R_LIBS= \
-  --env COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH" \
-  --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
-  --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
-  --env TMPDIR="$TMPDIR_HOST" \
-  --bind ~/rs-nss/passwd:/etc/passwd:ro \
-  --bind ~/rs-nss/group:/etc/group:ro \
-  --bind "$HOME":"$HOME" \
-  --bind "$TMPDIR_HOST":/tmp \
-  "$SIF" \
-  Rscript "$PROJECT_DIR/Scripts/CosMx_pipeline.R" \
-    --config "$CONFIG" \
-    "$@" \
-  2>&1 | tee "$LOG_FILE"
+if (( IS_DRY_RUN )); then
+  apptainer exec --cleanenv \
+    --pwd "$PROJECT_DIR" \
+    --env USER="$USER_NAME" \
+    --env LOGNAME="$LOG_NAME" \
+    --env R_LIBS_USER="$R_LIBS_USER" \
+    --env R_LIBS= \
+    --env COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH" \
+    --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
+    --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
+    --env TMPDIR="$TMPDIR_HOST" \
+    --bind ~/rs-nss/passwd:/etc/passwd:ro \
+    --bind ~/rs-nss/group:/etc/group:ro \
+    --bind "$HOME":"$HOME" \
+    --bind "$TMPDIR_HOST":/tmp \
+    "$SIF" \
+    Rscript "$PROJECT_DIR/Scripts/CosMx_pipeline.R" \
+      --config "$CONFIG" \
+      "$@"
+else
+  apptainer exec --cleanenv \
+    --pwd "$PROJECT_DIR" \
+    --env USER="$USER_NAME" \
+    --env LOGNAME="$LOG_NAME" \
+    --env R_LIBS_USER="$R_LIBS_USER" \
+    --env R_LIBS= \
+    --env COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH" \
+    --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
+    --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
+    --env TMPDIR="$TMPDIR_HOST" \
+    --bind ~/rs-nss/passwd:/etc/passwd:ro \
+    --bind ~/rs-nss/group:/etc/group:ro \
+    --bind "$HOME":"$HOME" \
+    --bind "$TMPDIR_HOST":/tmp \
+    "$SIF" \
+    Rscript "$PROJECT_DIR/Scripts/CosMx_pipeline.R" \
+      --config "$CONFIG" \
+      "$@" \
+    2>&1 | tee "$LOG_FILE"
+fi
 
 # Clean up temp files after pipeline completes or fails
 echo "Cleaning up temporary files..."
@@ -190,5 +222,9 @@ echo "✓ Temp files cleared"
 
 echo ""
 echo "================================================"
-echo "Done. Log saved to: $LOG_FILE"
+if (( IS_DRY_RUN )); then
+  echo "Done. Dry-run output not logged to disk."
+else
+  echo "Done. Log saved to: $LOG_FILE"
+fi
 echo "================================================"
