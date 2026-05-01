@@ -1,0 +1,203 @@
+---
+title: "Merged-run Summary: `r params$run_label`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: cosmo
+    df_print: paged
+params:
+  merged_output_dir: ""
+  run_label: ""
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE,
+                      results = "asis")
+out_dir <- params$merged_output_dir
+read_csv_safe <- function(p) {
+  if (!file.exists(p)) return(NULL)
+  tryCatch(utils::read.csv(p, stringsAsFactors = FALSE),
+           error = function(e) NULL)
+}
+read_text_safe <- function(p) {
+  if (!file.exists(p)) return(NULL)
+  paste(readLines(p, warn = FALSE), collapse = "\n")
+}
+```
+
+> **⚠ Slide × arm confound — read first.**
+> All CART biopsies sit on slide 1; CONV samples sit on slides 3, 4, 31, 32;
+> Control on slide 2. Treatment arm therefore cannot be cleanly separated
+> from slide-level technical variation. **Cross-arm comparisons at any
+> single timepoint (e.g. CART vs CONV at T0) are confounded with slide and
+> should be read as suggestive only.** The clean comparisons are
+> within-arm pre/post (paired by patient) and the `arm × timepoint`
+> interaction on per-patient deltas.
+>
+> Secondary note: `sample_id` Harmony also un-pairs Conv slides 3+4 and
+> 31+32 which were technically run together (accepted tradeoff per user
+> direction).
+
+# 1. Run information
+
+```{r run-info}
+manifest <- read_csv_safe(file.path(out_dir, "10_Merged",
+                                    "merged_sample_manifest.csv"))
+if (!is.null(manifest)) {
+  cat("Samples in this merged run:\n\n")
+  knitr::kable(manifest)
+} else {
+  cat("_No `merged_sample_manifest.csv` found._\n")
+}
+```
+
+# 2. Post-Harmony diagnostics
+
+```{r diagnostics}
+diag_md <- read_text_safe(file.path(out_dir, "10_Merged",
+                                    "diagnostics", "summary.md"))
+if (!is.null(diag_md)) {
+  cat(diag_md)
+} else {
+  cat("_No diagnostics output found at `10_Merged/diagnostics/summary.md`. ",
+      "Phase 3 may not have run._\n")
+}
+```
+
+# 3. Cell-type composition (`propeller`)
+
+```{r composition}
+comp_dir <- file.path(out_dir, "15_Composition")
+if (dir.exists(comp_dir)) {
+  files <- list.files(comp_dir, pattern = "\\.csv$", full.names = TRUE)
+  if (length(files) == 0) {
+    cat("_`15_Composition/` exists but contains no CSVs._\n")
+  } else {
+    for (f in files) {
+      cat("\n## ", tools::file_path_sans_ext(basename(f)), "\n\n", sep = "")
+      df <- read_csv_safe(f)
+      if (!is.null(df) && nrow(df) > 0) {
+        df <- df[order(df$padj), , drop = FALSE]
+        knitr::kable(utils::head(df, 20),
+                     caption = "Top 20 cell types by adjusted p")
+      }
+    }
+  }
+} else {
+  cat("_No composition tests output (`15_Composition/`). Phase 6 may not have run._\n")
+}
+```
+
+# 4. BANKSY niches
+
+```{r banksy}
+banksy_csv <- file.path(out_dir, "14_BANKSY", "niche_summary.csv")
+df <- read_csv_safe(banksy_csv)
+if (!is.null(df)) {
+  knitr::kable(df, caption = "Cells per niche per sample")
+} else {
+  cat("_No BANKSY output (`14_BANKSY/niche_summary.csv`). Phase 7 may not have run._\n")
+}
+```
+
+# 5. Pseudobulk DE — top hits per comparison
+
+```{r de-top, results = "asis"}
+pw_dir <- file.path(out_dir, "13_Pathway_Analysis")
+if (dir.exists(pw_dir)) {
+  comps <- list.dirs(pw_dir, recursive = FALSE)
+  comps <- comps[!grepl("(^|/)(_|leading_edge|bcell_focus)", comps)]
+  for (cdir in comps) {
+    cat("\n## ", basename(cdir), "\n\n", sep = "")
+    de_files <- list.files(cdir, pattern = "_de_ranks\\.csv$",
+                           recursive = TRUE, full.names = TRUE)
+    for (f in utils::head(de_files, 5)) {
+      df <- read_csv_safe(f)
+      if (is.null(df) || nrow(df) == 0) next
+      cat("\n### ", basename(dirname(f)), "\n\n", sep = "")
+      df <- df[order(df$padj), , drop = FALSE]
+      print(knitr::kable(utils::head(df[, c("gene", "logFC", "pval", "padj",
+                                             "engine", "design")], 15)))
+    }
+  }
+} else {
+  cat("_No pathway output (`13_Pathway_Analysis/`)._\n")
+}
+```
+
+# 6. Paired GSEA-score sub-step
+
+```{r paired-gsea, results = "asis"}
+pgs <- list.files(pw_dir, pattern = "paired_gsea_scores\\.csv$",
+                  recursive = TRUE, full.names = TRUE)
+if (length(pgs) == 0) {
+  cat("_Paired GSEA-score sub-step did not produce output. ",
+      "Either disabled (`cfg$pathway$paired_gsea_scores$enabled`) or per-sample step 13 hasn't been run yet._\n")
+} else {
+  for (f in pgs) {
+    df <- read_csv_safe(f)
+    if (is.null(df) || nrow(df) == 0) next
+    relpath <- sub(paste0(out_dir, "/?"), "", f)
+    cat("\n## ", relpath, "\n\n", sep = "")
+    df <- df[order(df$padj), , drop = FALSE]
+    print(knitr::kable(utils::head(df, 20),
+                        caption = "Top 20 paired-pathway hits"))
+  }
+}
+```
+
+# 7. Paired CCI (LIANA → paired Wilcoxon)
+
+```{r cci-paired, results = "asis"}
+cci_dir <- file.path(out_dir, "16_CCI_Paired")
+if (dir.exists(cci_dir)) {
+  files <- list.files(cci_dir, pattern = "_paired_lrs\\.csv$", full.names = TRUE)
+  for (f in files) {
+    df <- read_csv_safe(f)
+    if (is.null(df) || nrow(df) == 0) next
+    cat("\n## ", tools::file_path_sans_ext(basename(f)), "\n\n", sep = "")
+    df <- df[order(df$padj), , drop = FALSE]
+    print(knitr::kable(utils::head(df, 20),
+                        caption = "Top 20 paired LR pairs"))
+  }
+} else {
+  cat("_No paired CCI output (`16_CCI_Paired/`). Phase 10 may not have run._\n")
+}
+```
+
+# 8. smiDE paired-blocking audit
+
+```{r smide-audit, results = "asis"}
+sde_dir <- file.path(out_dir, "12_Spatial_Differential_Expression")
+csvs <- list.files(sde_dir, pattern = "_results\\.csv$|_spatial_de\\.csv$",
+                   recursive = TRUE, full.names = TRUE)
+if (length(csvs) > 0) {
+  audit_rows <- list()
+  for (f in csvs) {
+    df <- read_csv_safe(f)
+    if (is.null(df) || !"paired_blocking" %in% names(df)) next
+    pb <- unique(df$paired_blocking)
+    audit_rows[[length(audit_rows) + 1L]] <- data.frame(
+      file = sub(paste0(out_dir, "/?"), "", f),
+      paired_blocking = paste(pb, collapse = " / "),
+      n_rows = nrow(df), stringsAsFactors = FALSE)
+  }
+  if (length(audit_rows) > 0) {
+    audit <- do.call(rbind, audit_rows)
+    knitr::kable(audit,
+                 caption = paste("Per-stratum smiDE blocking — strata flagged",
+                                 "`skipped_single_patient` are unblocked and",
+                                 "should not be over-interpreted as paired."))
+  } else {
+    cat("_smiDE results found but no `paired_blocking` column._\n")
+  }
+} else {
+  cat("_No smiDE output found in `12_Spatial_Differential_Expression/`._\n")
+}
+```
+
+---
+
+_Generated by `Helper_Scripts/Render_Merged_Summary.R` (Stage 1, Phase 13)._

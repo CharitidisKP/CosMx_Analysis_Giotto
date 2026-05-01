@@ -123,9 +123,14 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
     "12_spatial_de" = "12_spatial_de",
     "12_spatial_differential_expression" = "12_spatial_de",
     "13_spatial_de" = "12_spatial_de",
-    "13_spatial_differential_expression" = "12_spatial_de"
+    "13_spatial_differential_expression" = "12_spatial_de",
+    "13_pathway" = "13_pathway",                          # Stage 1 / Phase 9
+    "13_pathway_analysis" = "13_pathway",
+    "13_pathway_sample" = "13_pathway",
+    "pathway" = "13_pathway",
+    "pathway_analysis" = "13_pathway"
   )
-  
+
   merged_aliases <- c(
     "11_batch" = "merge_batch",
     "11_batch_correction" = "merge_batch",
@@ -139,7 +144,24 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
     "14_pathway" = "13_pathway",
     "14_pathway_analysis" = "13_pathway",
     "pathway" = "13_pathway",
-    "pathway_analysis" = "13_pathway"
+    "pathway_analysis" = "13_pathway",
+    # Stage 1, Phase 11 — new merged-only steps:
+    "merged_annotate" = "merged_annotate",
+    "annotate_merged" = "merged_annotate",
+    "global_annotate" = "merged_annotate",
+    "banksy" = "banksy",
+    "banksy_niches" = "banksy",
+    "14_banksy" = "banksy",
+    "composition" = "composition",
+    "composition_tests" = "composition",
+    "propeller" = "composition",
+    "15_composition" = "composition",
+    "cci_paired" = "cci_paired",
+    "paired_cci" = "cci_paired",
+    "16_cci_paired" = "cci_paired",
+    "summary" = "summary",
+    "report" = "summary",
+    "merged_summary" = "summary"
   )
   
   aliases <- if (type == "sample") sample_aliases else merged_aliases
@@ -171,10 +193,27 @@ SAMPLE_STEP_ORDER <- c(
   "09_spatial",
   "10_cci",
   "11_bcell",
-  "12_spatial_de"
+  "12_spatial_de",
+  "13_pathway"      # Stage 1, Phase 9: per-sample cluster + celltype GSEA
 )
 
-MERGED_STEP_ORDER <- c("merge", "merge_batch", "12_spatial_de", "13_pathway")
+# Stage 1 (Phase 11) added five merged-only steps:
+#   merged_annotate — global annotate_cells() on the merged object (Phase 8)
+#   banksy          — BANKSY niche labels (Phase 7)
+#   composition     — propeller paired by patient (Phase 6)
+#   cci_paired      — paired Wilcoxon on per-sample LIANA outputs (Phase 10)
+#   summary         — Quarto/Rmd summary report (Phase 13)
+MERGED_STEP_ORDER <- c(
+  "merge",
+  "merge_batch",
+  "merged_annotate",
+  "banksy",
+  "composition",
+  "12_spatial_de",
+  "cci_paired",
+  "13_pathway",
+  "summary"
+)
 
 step_label <- function(step_id) {
   labels <- c(
@@ -189,9 +228,14 @@ step_label <- function(step_id) {
     "09_spatial" = "09 Spatial network analysis",
     "10_cci" = "10 CCI analysis",
     "merge_batch" = "Merge batch correction",
+    "merged_annotate" = "Merged-mode global annotation",
+    "banksy" = "BANKSY niche labels",
+    "composition" = "Cell-type composition (propeller)",
     "11_bcell" = "11 Focused cell-type microenvironment",
     "12_spatial_de" = "12 Spatial differential expression",
+    "cci_paired" = "Cross-sample paired CCI",
     "13_pathway" = "13 Pathway enrichment + GSEA",
+    "summary" = "Merged-run summary report",
     "merge" = "Merge sample objects"
   )
   labels[[step_id]] %||% step_id
@@ -675,7 +719,17 @@ runtime_script_paths <- function() {
       file.path("Helper_Scripts", "Merge_Batch_Correction.R"),
       "11_B_Cell_Analysis.R",
       "12_Spatial_Differential_Expression.R",
-      "13_Pathway_Analysis.R"
+      "13_Pathway_Analysis.R",
+      # Stage 1 helpers (Phases 3, 6, 7, 8, 10, 13). Each helper wraps its
+      # external-package calls in requireNamespace() with skip-and-log
+      # fallback so phases 1–10 can land before Install_Stage1_Dependencies.R
+      # has run.
+      file.path("Helper_Scripts", "Diagnostics.R"),
+      file.path("Helper_Scripts", "Composition_Tests.R"),
+      file.path("Helper_Scripts", "BANKSY_Niches.R"),
+      file.path("Helper_Scripts", "Cluster_Marker_Review.R"),
+      file.path("Helper_Scripts", "CCI_Paired_Comparison.R"),
+      file.path("Helper_Scripts", "Render_Merged_Summary.R")
     )
   )
 }
@@ -1046,6 +1100,31 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
         overwrite_existing = isTRUE(cfg$pipeline$overwrite_existing)
       )
     },
+    "13_pathway" = {
+      # Stage 1, Phase 9: per-sample pathway analysis (cluster + celltype
+      # one-vs-rest GSEA). Output goes to <output_dir>/13_Pathway_Sample/.
+      # Returning gobj unchanged so the rest of the per-sample loop sees
+      # the same object.
+      pathway_cfg <- cfg$pathway %||% list()
+      if (!isTRUE(pathway_cfg$enabled)) {
+        message("  pathway.enabled is FALSE - skipping per-sample step 13")
+      } else if (!isTRUE(pathway_cfg$sample_scope$enabled %||% TRUE)) {
+        message("  pathway.sample_scope.enabled is FALSE - skipping per-sample step 13")
+      } else {
+        runtime_env$run_pathway_analysis(
+          gobj            = gobj,
+          sample_id       = sample_id,
+          cfg             = cfg,
+          output_dir      = output_dir,
+          sample_table    = sample_row,
+          celltype_column = pathway_cfg$celltype_column %||% NULL,
+          leiden_column   = pathway_cfg$leiden_column %||% "leiden_clust",
+          focus_celltype  = pathway_cfg$focus_celltype %||% "^B cell$",
+          analysis_scope  = "sample"
+        )
+      }
+      gobj
+    },
     stop("Unsupported sample step: ", step_id)
   )
 }
@@ -1372,9 +1451,84 @@ run_merged_pipeline <- function(runtime_env,
             sample_table    = samples,
             celltype_column = pathway_cfg$celltype_column %||% NULL,
             leiden_column   = pathway_cfg$leiden_column %||% "leiden_clust",
-            focus_celltype  = pathway_cfg$focus_celltype %||% "^B cell$"
+            focus_celltype  = pathway_cfg$focus_celltype %||% "^B cell$",
+            analysis_scope  = "merged"
           )
         }
+      } else if (step_id == "merged_annotate") {
+        # Stage 1, Phase 8: global annotation on merged Harmony PCs.
+        # Uses existing annotate_cells() (07_Annotation.R), bypassing the
+        # per-sample select_best_annotation() consensus. Marker review CSV
+        # follows immediately so mis-labeled rare clusters can be recovered.
+        ann_cfg <- cfg$parameters$annotation %||% list()
+        current_gobj <- runtime_env$annotate_cells(
+          gobj              = current_gobj,
+          sample_id         = merged_name,
+          output_dir        = output_dir,
+          profiles          = ann_cfg$profiles,
+          default_profile   = ann_cfg$default_profile,
+          cohort_column     = "leiden_clust",
+          create_plots      = TRUE,
+          save_object       = TRUE,
+          sample_row        = NULL,
+          sample_sheet_path = NULL
+        )
+        runtime_env$write_cluster_marker_review(
+          gobj        = current_gobj,
+          cluster_col = "leiden_clust",
+          output_csv  = file.path(output_dir, "10_Merged",
+                                  "global_annotation",
+                                  "marker_review.csv"),
+          top_n       = 25
+        )
+      } else if (step_id == "banksy") {
+        # Stage 1, Phase 7: BANKSY niche labels.
+        banksy_cfg <- cfg$banksy %||% list()
+        per_sample_gobjs <- load_merge_inputs(samples, cfg)
+        names(per_sample_gobjs) <- as.character(samples$sample_id)
+        aug <- runtime_env$compute_banksy_per_sample(
+          per_sample_gobjs = per_sample_gobjs,
+          k_geom           = banksy_cfg$k_geom %||% 18,
+          lambda           = banksy_cfg$lambda %||% 0.2
+        )
+        current_gobj <- runtime_env$cluster_banksy_niches(
+          merged_gobj     = current_gobj,
+          banksy_aug_list = aug,
+          batch_col       = cfg$merged$batch_column %||% "sample_id",
+          resolution      = banksy_cfg$resolution %||% 0.4,
+          lambda          = banksy_cfg$lambda %||% 0.2,
+          output_dir      = output_dir
+        ) %||% current_gobj
+      } else if (step_id == "composition") {
+        # Stage 1, Phase 6: cell-type composition tests via propeller.
+        runtime_env$run_composition_tests(
+          gobj        = current_gobj,
+          comparisons = cfg$pathway$comparisons %||% list(),
+          output_dir  = output_dir,
+          cfg         = cfg
+        )
+        # Niche-id composition follows when niche_id is on the object
+        # (i.e. BANKSY ran in Phase 7 before this step).
+        runtime_env$run_niche_composition_tests(
+          gobj        = current_gobj,
+          comparisons = cfg$pathway$comparisons %||% list(),
+          output_dir  = output_dir,
+          cfg         = cfg
+        )
+      } else if (step_id == "cci_paired") {
+        # Stage 1, Phase 10: paired Wilcoxon on per-sample LIANA outputs.
+        runtime_env$run_cci_paired_comparison(
+          sample_table = samples,
+          comparisons  = cfg$pathway$comparisons %||% list(),
+          output_dir   = output_dir,
+          cfg          = cfg
+        )
+      } else if (step_id == "summary") {
+        # Stage 1, Phase 13: render the merged-run summary report.
+        runtime_env$render_merged_summary(
+          merged_output_dir = output_dir,
+          run_label         = merged_name
+        )
       } else {
         stop("Unsupported merged step: ", step_id)
       }
@@ -1560,7 +1714,29 @@ run_pipeline <- function(cli_opts) {
     }
     selected_samples <- expand_split_samples(selected_samples, cfg)
   }
-  
+
+  # Merged-side sample selection. When the user explicitly named samples via
+  # --samples, honor that selection verbatim (Control IS allowed in the
+  # merged run if listed). Otherwise apply the default-treatments filter
+  # from cfg$merged$default_treatments (typically CART + Conventional) so a
+  # default `--merged` run excludes Control automatically. Per-sample mode
+  # is unaffected — it always uses the unfiltered `selected_samples`.
+  default_merged_treatments <- cfg$merged$default_treatments %||%
+                                c("CART", "Conventional")
+  merged_samples <- if (isTRUE(explicit_samples)) {
+    selected_samples
+  } else {
+    keep <- selected_samples$treatment %in% default_merged_treatments
+    if (!any(keep)) {
+      # No row matches the default — fall back to the full selection so the
+      # auto-skip-when-<2 guard further down produces a meaningful message
+      # rather than a zero-row data.frame.
+      selected_samples
+    } else {
+      selected_samples[keep, , drop = FALSE]
+    }
+  }
+
   sample_steps <- compute_steps(
     SAMPLE_STEP_ORDER,
     canonical_step_ids(cli_opts$sample_steps, type = "sample"),
@@ -1571,13 +1747,15 @@ run_pipeline <- function(cli_opts) {
     canonical_step_ids(cli_opts$merged_steps, type = "merged"),
     canonical_step_ids(cli_opts$merged_from_step, type = "merged")
   )
-  
+
   if (isTRUE(cli_opts$dry_run)) {
     return(list(
       config = cfg$config_path,
       mode = cli_opts$mode,
       sample_count = nrow(selected_samples),
       sample_ids = selected_samples$sample_id,
+      merged_sample_count = nrow(merged_samples),
+      merged_sample_ids = merged_samples$sample_id,
       sample_steps = sample_steps,
       merged_steps = merged_steps,
       run_label = cli_opts$run_label %||% cfg$merged$run_label %||% NULL
@@ -1606,10 +1784,10 @@ run_pipeline <- function(cli_opts) {
     write_results_csv(sample_results, file.path(run_dir, "sample_pipeline_results.csv"))
   }
   
-  if (cli_opts$mode %in% c("all", "merged") && nrow(selected_samples) < 2L) {
+  if (cli_opts$mode %in% c("all", "merged") && nrow(merged_samples) < 2L) {
     message(sprintf(
-      "[Merge] Skipping merged pipeline: only %d sample selected. ",
-      nrow(selected_samples)),
+      "[Merge] Skipping merged pipeline: only %d sample selected for merge. ",
+      nrow(merged_samples)),
       "Merge / batch-correct / cross-sample DE require >=2 samples.")
     cli_opts$mode <- if (cli_opts$mode == "merged") "merged_skipped" else "separate"
   }
@@ -1618,8 +1796,10 @@ run_pipeline <- function(cli_opts) {
     # Consensus annotation column across samples - each per-sample run writes
     # annotation_selection.json in step 07, but run_sample_pipeline's cfg
     # mutation is local; we re-resolve here so the merged object uses the
-    # same column the per-sample pipeline chose.
-    ann_sel <- resolve_merged_annotation_column(selected_samples)
+    # same column the per-sample pipeline chose. Operates on merged_samples
+    # so Control's per-sample annotation choice doesn't influence the
+    # merged-mode consensus.
+    ann_sel <- resolve_merged_annotation_column(merged_samples)
     if (!is.null(ann_sel)) {
       cfg$interaction$annotation_column <- ann_sel$consensus
       cfg$spatial_de$annotation_column  <- ann_sel$consensus
@@ -1649,7 +1829,7 @@ run_pipeline <- function(cli_opts) {
 
     merged_results <- run_merged_pipeline(
       runtime_env = runtime_env,
-      samples = selected_samples,
+      samples = merged_samples,
       cfg = cfg,
       selected_steps = merged_steps,
       from_step = cli_opts$merged_from_step,

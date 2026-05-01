@@ -307,11 +307,18 @@ if ((!exists("presentation_theme") ||
 #
 # Default engine = pseudobulk + DESeq2 with per-comparison design taken from
 # the `design:` field of each pathway.comparisons entry in config.yaml:
-#   - "paired"      → ~ patient_id + de_group (CART/Conv before-vs-after)
+#   - "paired"      → ~ <block_col> + de_group  (block_col defaults to
+#                     patient_id; CART/Conv before-vs-after)
 #   - "unpaired"    → ~ de_group              (CART vs Conv at each timepoint)
 #   - "descriptive" → no model; emit log2FC of pseudobulk means + flag
 #                     inference="none"  (CART vs Control - n=1 Control side,
 #                     no estimable Control variance)
+#
+# Per-comparison overrides (Stage 1):
+#   - pseudobulk_backend: "pseudobulk_deseq2" (default) | "pseudobulk_edger"
+#     | "pseudobulk_limma_voom" | "presto_wilcox"
+#   - block:              column name used as the paired-design fixed effect
+#                         (default "patient_id")
 #
 # Auto-degrade: if either side has fewer than `de_min_pseudobulk_per_group`
 # biological replicates (default 2), the comparison degrades to descriptive
@@ -335,7 +342,13 @@ if ((!exists("presentation_theme") ||
                             ids_a, ids_b,
                             comparison_spec,
                             cfg_pathway) {
-  engine <- cfg_pathway$de_engine %||% "pseudobulk_deseq2"
+  # Per-comparison overrides take priority over the global cfg defaults.
+  # Stage 1 added two optional per-comparison fields:
+  #   - pseudobulk_backend: pseudobulk_deseq2 | pseudobulk_edger | pseudobulk_limma_voom | presto_wilcox
+  #   - block: column name used as the paired-design fixed effect (default "patient_id")
+  engine <- comparison_spec$pseudobulk_backend %||%
+            cfg_pathway$de_engine %||% "pseudobulk_deseq2"
+  block_col <- comparison_spec$block %||% "patient_id"
   design_kind <- comparison_spec$design %||% "unpaired"
   min_reps <- cfg_pathway$de_min_pseudobulk_per_group %||% 2L
 
@@ -350,7 +363,8 @@ if ((!exists("presentation_theme") ||
     ids_b = ids_b,
     design_kind = design_kind,
     min_reps = min_reps,
-    engine = engine
+    engine = engine,
+    block_col = block_col
   )
 }
 
@@ -359,7 +373,8 @@ if ((!exists("presentation_theme") ||
 .pathway_run_de_pseudobulk <- function(raw_mat, cell_meta,
                                        ids_a, ids_b,
                                        design_kind, min_reps,
-                                       engine) {
+                                       engine,
+                                       block_col = "patient_id") {
   both_ids <- c(ids_a, ids_b)
   both_ids <- intersect(both_ids, colnames(raw_mat))
   ids_a <- intersect(ids_a, both_ids)
@@ -409,46 +424,52 @@ if ((!exists("presentation_theme") ||
     return(.pathway_descriptive_de(pb_counts, pb_meta, raw_sub, cell_group))
   }
 
-  # Paired design needs a usable patient_id with at least 2 distinct levels
-  # AND each patient appearing on both sides of the contrast.
+  # Paired design needs a usable block column (default patient_id) with at
+  # least 2 distinct levels AND each block appearing on both sides of the
+  # contrast.
   if (design_kind == "paired") {
-    has_patient <- "patient_id" %in% colnames(pb_meta) &&
-                   !any(is.na(pb_meta$patient_id)) &&
-                   length(unique(pb_meta$patient_id)) >= 2L
-    if (has_patient) {
-      tab <- table(pb_meta$patient_id, pb_meta$de_group)
+    has_block <- block_col %in% colnames(pb_meta) &&
+                 !any(is.na(pb_meta[[block_col]])) &&
+                 length(unique(pb_meta[[block_col]])) >= 2L
+    if (has_block) {
+      tab <- table(pb_meta[[block_col]], pb_meta$de_group)
       if (any(tab[, "A"] == 0) || any(tab[, "B"] == 0)) {
-        has_patient <- FALSE
+        has_block <- FALSE
       }
     }
-    if (!has_patient) {
-      cat("    ⚠ paired design requested but patient_id is unusable; ",
-          "falling back to unpaired ~ de_group\n", sep = "")
+    if (!has_block) {
+      cat("    ⚠ paired design requested but block column '", block_col,
+          "' is unusable; falling back to unpaired ~ de_group\n", sep = "")
       design_kind <- "unpaired"
     }
   }
 
   if (engine == "pseudobulk_deseq2") {
     return(.pathway_de_deseq2(pb_counts, pb_meta, raw_sub, cell_group,
-                              design_kind, n_a, n_b))
+                              design_kind, n_a, n_b, block_col))
   }
   if (engine == "pseudobulk_edger") {
     return(.pathway_de_edger(pb_counts, pb_meta, raw_sub, cell_group,
-                             design_kind, n_a, n_b))
+                             design_kind, n_a, n_b, block_col))
+  }
+  if (engine == "pseudobulk_limma_voom") {
+    return(.pathway_de_limma_voom(pb_counts, pb_meta, raw_sub, cell_group,
+                                  design_kind, n_a, n_b, block_col))
   }
   stop("Unknown pathway.de_engine: '", engine, "' ",
-       "(expected pseudobulk_deseq2, pseudobulk_edger, or presto_wilcox)")
+       "(expected pseudobulk_deseq2, pseudobulk_edger, pseudobulk_limma_voom, or presto_wilcox)")
 }
 
 .pathway_de_deseq2 <- function(pb_counts, pb_meta, raw_sub, cell_group,
-                               design_kind, n_a, n_b) {
+                               design_kind, n_a, n_b,
+                               block_col = "patient_id") {
   if (!requireNamespace("DESeq2", quietly = TRUE)) {
     stop("DESeq2 is required for pseudobulk_deseq2. ",
          "BiocManager::install('DESeq2').")
   }
   design_formula <- if (design_kind == "paired") {
-    pb_meta$patient_id <- factor(pb_meta$patient_id)
-    stats::as.formula("~ patient_id + de_group")
+    pb_meta[[block_col]] <- factor(pb_meta[[block_col]])
+    stats::as.formula(paste0("~ ", block_col, " + de_group"))
   } else {
     stats::as.formula("~ de_group")
   }
@@ -504,14 +525,16 @@ if ((!exists("presentation_theme") ||
 }
 
 .pathway_de_edger <- function(pb_counts, pb_meta, raw_sub, cell_group,
-                              design_kind, n_a, n_b) {
+                              design_kind, n_a, n_b,
+                              block_col = "patient_id") {
   if (!requireNamespace("edgeR", quietly = TRUE)) {
     stop("edgeR is required for pseudobulk_edger. ",
          "BiocManager::install('edgeR').")
   }
   design_formula <- if (design_kind == "paired") {
-    pb_meta$patient_id <- factor(pb_meta$patient_id)
-    stats::model.matrix(~ patient_id + de_group, data = pb_meta)
+    pb_meta[[block_col]] <- factor(pb_meta[[block_col]])
+    stats::model.matrix(stats::as.formula(paste0("~ ", block_col, " + de_group")),
+                        data = pb_meta)
   } else {
     stats::model.matrix(~ de_group, data = pb_meta)
   }
@@ -539,6 +562,152 @@ if ((!exists("presentation_theme") ||
                               collapse = " ")
   attr(de, "n_pseudobulk") <- list(A = n_a, B = n_b)
   de
+}
+
+# limma-voom backend. Squair et al. 2021 (Nat Commun) showed that voom +
+# limma is roughly interchangeable with edgeR-QLF / DESeq2 on pseudobulk
+# count data, with a small edge for low-library-size samples thanks to
+# voomWithQualityWeights. Returns the same canonical schema as the other
+# pseudobulk backends.
+.pathway_de_limma_voom <- function(pb_counts, pb_meta, raw_sub, cell_group,
+                                   design_kind, n_a, n_b,
+                                   block_col = "patient_id") {
+  if (!requireNamespace("edgeR", quietly = TRUE)) {
+    stop("edgeR is required for pseudobulk_limma_voom (filterByExpr / TMM). ",
+         "BiocManager::install('edgeR').")
+  }
+  if (!requireNamespace("limma", quietly = TRUE)) {
+    stop("limma is required for pseudobulk_limma_voom. ",
+         "BiocManager::install('limma').")
+  }
+  design_formula <- if (design_kind == "paired") {
+    pb_meta[[block_col]] <- factor(pb_meta[[block_col]])
+    stats::model.matrix(stats::as.formula(paste0("~ ", block_col, " + de_group")),
+                        data = pb_meta)
+  } else {
+    stats::model.matrix(~ de_group, data = pb_meta)
+  }
+
+  y <- edgeR::DGEList(counts = pb_counts, samples = pb_meta)
+  keep_genes <- edgeR::filterByExpr(y, design = design_formula)
+  y <- y[keep_genes, , keep.lib.sizes = FALSE]
+  y <- edgeR::calcNormFactors(y, method = "TMM")
+
+  # voomWithQualityWeights handles low-library-size samples better than
+  # plain voom; matters at n=2 per side.
+  v <- tryCatch(
+    limma::voomWithQualityWeights(y, design = design_formula, plot = FALSE),
+    error = function(e) {
+      cat("    ⚠ voomWithQualityWeights failed (",
+          conditionMessage(e), "); falling back to plain voom.\n", sep = "")
+      limma::voom(y, design = design_formula, plot = FALSE)
+    }
+  )
+  fit <- limma::lmFit(v, design = design_formula)
+  fit <- limma::eBayes(fit, robust = TRUE)
+  tt <- tryCatch(
+    limma::topTable(fit, coef = "de_groupA", number = Inf, sort.by = "none"),
+    error = function(e) {
+      coef_names <- colnames(fit$coefficients)
+      grp_coef <- grep("de_group", coef_names, value = TRUE)[1]
+      if (is.na(grp_coef)) {
+        cat("    ⚠ no de_group coefficient in limma fit: ",
+            paste(coef_names, collapse = ", "), "\n", sep = "")
+        return(NULL)
+      }
+      limma::topTable(fit, coef = grp_coef, number = Inf, sort.by = "none")
+    }
+  )
+  if (is.null(tt) || nrow(tt) == 0) return(NULL)
+
+  pcts <- .pathway_pct_expressed(raw_sub, cell_group, rownames(tt))
+  de <- .pathway_finalise_de(
+    gene  = rownames(tt),
+    logFC = tt$logFC,
+    pval  = tt$P.Value,
+    padj  = tt$adj.P.Val,
+    pct_a = pcts$a,
+    pct_b = pcts$b
+  )
+  attr(de, "engine") <- "pseudobulk_limma_voom"
+  attr(de, "design") <- paste(deparse(stats::formula(design_formula)),
+                              collapse = " ")
+  attr(de, "n_pseudobulk") <- list(A = n_a, B = n_b)
+  de
+}
+
+# 3-backend sensitivity check (Stage 1, Phase 5). Runs the named comparison ×
+# stratum through every pseudobulk backend listed in `backends`, builds a
+# wide table `gene | logFC_<backend>`, computes pairwise Spearman on logFC,
+# and writes the table to `output_path`. Logs a warning when any pairwise
+# Spearman drops below `spearman_threshold` (default 0.9). Non-blocking.
+#
+# Useful as a one-time check that DESeq2 / edgeR-QLF / limma-voom agree on
+# the ranking — Squair et al. 2021 reported they should agree closely on
+# pseudobulk count data; large deviations indicate a borderline stratum or
+# implementation bug worth investigating offline.
+.pathway_run_de_sensitivity_check <- function(raw_mat, norm_mat, cell_meta,
+                                              ids_a, ids_b, comparison_spec,
+                                              cfg_pathway, output_path,
+                                              backends = c("pseudobulk_deseq2",
+                                                           "pseudobulk_edger",
+                                                           "pseudobulk_limma_voom"),
+                                              spearman_threshold = 0.9) {
+  cat("\n  [sensitivity check] Running ", paste(backends, collapse = " / "),
+      "\n", sep = "")
+  per_backend <- list()
+  for (be in backends) {
+    cfg_clone <- cfg_pathway
+    cfg_clone$de_engine <- be
+    spec_clone <- comparison_spec
+    spec_clone$pseudobulk_backend <- be
+    de <- tryCatch(
+      .pathway_run_de(raw_mat, norm_mat, cell_meta,
+                      ids_a, ids_b, spec_clone, cfg_clone),
+      error = function(e) {
+        cat("    ⚠ ", be, " failed: ", conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
+    if (!is.null(de) && nrow(de) > 0) {
+      per_backend[[be]] <- de[, c("gene", "logFC")]
+      names(per_backend[[be]]) <- c("gene", paste0("logFC_", be))
+    }
+  }
+  if (length(per_backend) < 2L) {
+    cat("    ⚠ sensitivity check needs ≥ 2 successful backends; only ",
+        length(per_backend), " produced output.\n", sep = "")
+    return(invisible(NULL))
+  }
+
+  # Outer-join all per-backend tables on `gene`.
+  wide <- per_backend[[1]]
+  for (i in seq_along(per_backend)[-1]) {
+    wide <- merge(wide, per_backend[[i]], by = "gene", all = TRUE)
+  }
+  utils::write.csv(wide, output_path, row.names = FALSE)
+  cat("    ✓ wrote ", output_path, "\n", sep = "")
+
+  # Pairwise Spearman.
+  bk_cols <- grep("^logFC_", names(wide), value = TRUE)
+  if (length(bk_cols) >= 2L) {
+    cor_mat <- stats::cor(wide[, bk_cols, drop = FALSE],
+                          use = "pairwise.complete.obs",
+                          method = "spearman")
+    cat("    Spearman matrix:\n")
+    cat("      ", paste(bk_cols, collapse = "  "), "\n")
+    for (r in seq_len(nrow(cor_mat))) {
+      cat("      ", rownames(cor_mat)[r], "  ",
+          paste(sprintf("%.3f", cor_mat[r, ]), collapse = "  "), "\n", sep = "")
+    }
+    off_diag <- cor_mat[lower.tri(cor_mat)]
+    if (any(off_diag < spearman_threshold, na.rm = TRUE)) {
+      cat("    ⚠ at least one pairwise Spearman < ", spearman_threshold,
+          " — backends disagree on this stratum. ",
+          "Inspect ", output_path, " offline.\n", sep = "")
+    }
+  }
+  invisible(wide)
 }
 
 # Descriptive: log2(meanA / meanB) over size-factor-normalized pseudobulk
@@ -1334,6 +1503,337 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
+# Per-sample scope (Stage 1, Phase 9)
+# ==============================================================================
+# Runs cluster + celltype one-vs-rest GSEA on a single per-sample Giotto
+# object. Inline scran::findMarkers is used unconditionally for the ranked
+# gene list — step 06's cluster_markers.csv writes only top-N and is
+# insufficient for GSEA.
+#
+# Output structure:
+#   <output_dir>/13_Pathway_Sample/cluster/<cluster_id>/{de_ranks.csv,
+#     gsea_all.csv, ora_*.csv, gsea_top20_bar.png, gsea_volcano.png}
+#   <output_dir>/13_Pathway_Sample/celltype/<celltype>/{de_ranks.csv,
+#     gsea_all.csv, ora_*.csv, gsea_top20_bar.png, gsea_volcano.png}
+#
+# Toggle: cfg$pathway$sample_scope$enabled (default true), and
+#         cfg$pathway$sample_scope$stratifications (default ["cluster", "celltype"]).
+# Cluster GSEA is per-sample only; cluster IDs are not comparable across
+# samples so the merged paired-GSEA sub-step does NOT consume them.
+.pathway_run_sample_scope <- function(gobj, sample_id, cfg, cfg_p,
+                                      output_dir, sample_table = NULL,
+                                      celltype_column = NULL,
+                                      leiden_column = "leiden_clust") {
+  scope_cfg <- cfg_p$sample_scope %||% list()
+  if (!isTRUE(scope_cfg$enabled %||% TRUE)) {
+    cat("  pathway.sample_scope.enabled is FALSE — skipping sample-scope step 13.\n")
+    return(invisible(list(status = "disabled")))
+  }
+  if (!requireNamespace("scran", quietly = TRUE)) {
+    cat("  ⚠ scran not installed — skipping sample-scope GSEA.\n")
+    return(invisible(NULL))
+  }
+
+  meta <- as.data.frame(.pathway_pdata_dt(gobj))
+  raw_mat  <- tryCatch(.pathway_get_expression(gobj, values = "raw"),
+                       error = function(e) NULL)
+  norm_mat <- tryCatch(.pathway_get_expression(gobj, values = "normalized"),
+                       error = function(e) NULL)
+  if (is.null(norm_mat)) {
+    cat("  ⚠ No normalized expression — skipping sample-scope GSEA.\n")
+    return(invisible(NULL))
+  }
+  cell_ids <- as.character(meta$cell_ID)
+  norm_mat <- norm_mat[, cell_ids, drop = FALSE]
+
+  if (is.null(celltype_column) || !nzchar(celltype_column)) {
+    celltype_column <- cfg_p$celltype_column %||%
+                        .pathway_resolve_celltype_column(meta)
+  }
+  leiden_column <- leiden_column %||% cfg_p$leiden_column %||% "leiden_clust"
+
+  strats <- scope_cfg$stratifications %||% c("cluster", "celltype")
+  out_root <- file.path(output_dir, "13_Pathway_Sample")
+  dir.create(out_root, recursive = TRUE, showWarnings = FALSE)
+
+  cat("Loading MSigDB gene sets...\n")
+  genesets_by_db <- .pathway_load_genesets(cfg_p)
+
+  written <- list()
+  for (st in strats) {
+    strat_col <- switch(st,
+                        cluster  = leiden_column,
+                        celltype = celltype_column,
+                        NA_character_)
+    if (is.na(strat_col) || !strat_col %in% names(meta)) {
+      cat("  [", st, "] stratifier column missing — skipped.\n", sep = "")
+      next
+    }
+    grp <- as.factor(meta[[strat_col]])
+    if (nlevels(grp) < 2L) {
+      cat("  [", st, "] only ", nlevels(grp),
+          " level(s) — skipped.\n", sep = "")
+      next
+    }
+    cat("  [", st, "] running scran::findMarkers on ", nlevels(grp),
+        " levels (", strat_col, ")...\n", sep = "")
+    markers <- tryCatch(
+      scran::findMarkers(
+        x = norm_mat, groups = grp,
+        direction = "up", pval.type = "any"
+      ),
+      error = function(e) {
+        cat("    ⚠ findMarkers failed: ", conditionMessage(e), "\n", sep = "")
+        NULL
+      }
+    )
+    if (is.null(markers)) next
+
+    strat_dir <- file.path(out_root, st)
+    dir.create(strat_dir, recursive = TRUE, showWarnings = FALSE)
+
+    for (lvl in names(markers)) {
+      df <- as.data.frame(markers[[lvl]])
+      logfc_col <- intersect(c("summary.logFC", "logFC"), names(df))[1]
+      if (is.na(logfc_col)) next
+      lvl_dir <- file.path(strat_dir, .pathway_safe_name(lvl))
+      dir.create(lvl_dir, recursive = TRUE, showWarnings = FALSE)
+
+      pval <- if ("p.value" %in% names(df)) df$p.value else rep(1, nrow(df))
+      padj <- if ("FDR" %in% names(df)) df$FDR else stats::p.adjust(pval, "BH")
+      de <- data.frame(
+        gene  = rownames(df),
+        logFC = df[[logfc_col]],
+        auc   = if ("summary.AUC" %in% names(df)) df$summary.AUC else NA_real_,
+        pval  = pval,
+        padj  = padj,
+        pct_a = NA_real_,
+        pct_b = NA_real_,
+        stringsAsFactors = FALSE
+      )
+      de$stat <- sign(de$logFC) * -log10(pmax(de$pval, 1e-300))
+      de <- de[order(-abs(de$stat)), , drop = FALSE]
+      utils::write.csv(de, file.path(lvl_dir, "de_ranks.csv"),
+                        row.names = FALSE)
+
+      gsea_df <- tryCatch(
+        .pathway_run_gsea(de, genesets_by_db, cfg_p),
+        error = function(e) {
+          cat("    ⚠ GSEA failed for ", lvl, ": ",
+              conditionMessage(e), "\n", sep = "")
+          NULL
+        }
+      )
+      if (!is.null(gsea_df) && nrow(gsea_df) > 0) {
+        gsea_df$comparison   <- "one_vs_rest"
+        gsea_df$stratum_type <- st
+        gsea_df$stratum      <- lvl
+        gsea_df$sample_id    <- sample_id
+        utils::write.csv(gsea_df,
+                         file.path(lvl_dir, "gsea_all.csv"),
+                         row.names = FALSE)
+        title_main <- sprintf("%s | %s | %s", sample_id, st, lvl)
+        tryCatch(
+          .pathway_plot_gsea_top_bar(gsea_df,
+            file.path(lvl_dir, "gsea_top20_bar.png"), title_main),
+          error = function(e) NULL
+        )
+        tryCatch(
+          .pathway_plot_gsea_volcano(gsea_df,
+            file.path(lvl_dir, "gsea_volcano.png"), title_main),
+          error = function(e) NULL
+        )
+      }
+
+      ora_df <- tryCatch(
+        .pathway_run_ora(de, genesets_by_db, cfg_p),
+        error = function(e) NULL
+      )
+      if (!is.null(ora_df) && nrow(ora_df) > 0) {
+        utils::write.csv(ora_df,
+                         file.path(lvl_dir, "ora_all.csv"),
+                         row.names = FALSE)
+      }
+
+      written[[length(written) + 1L]] <- list(
+        stratification = st, stratum = lvl,
+        n_de = nrow(de),
+        n_gsea = if (is.null(gsea_df)) 0L else nrow(gsea_df)
+      )
+    }
+  }
+
+  cat("✓ Per-sample pathway scope complete (",
+      length(written), " strata × pathways tables).\n", sep = "")
+  invisible(list(status = "ok", written = written, output = out_root))
+}
+
+# ==============================================================================
+# Merged paired-GSEA sub-step (Stage 1, Phase 9)
+# ==============================================================================
+# Consumes per-sample celltype GSEA outputs and runs paired Wilcoxon
+# (or limma for interaction terms) per (pathway × celltype × comparison)
+# on per-patient NES deltas. Cluster stratification is intentionally NOT
+# supported here — cluster IDs aren't comparable across samples.
+#
+# Toggle: cfg$pathway$paired_gsea_scores$enabled (default false).
+.pathway_paired_gsea_scores <- function(merged_output_dir, output_root,
+                                        comparisons, cfg, sample_table) {
+  pgs_cfg <- cfg$pathway$paired_gsea_scores %||% list()
+  if (!isTRUE(pgs_cfg$enabled %||% FALSE)) return(invisible(NULL))
+
+  per_sample_dir_template <- pgs_cfg$per_sample_dir_template %||%
+    file.path(cfg$paths$output_dir, "Sample_{sample_id}", "13_Pathway_Sample",
+              "celltype")
+  if (is.null(sample_table) || nrow(sample_table) == 0L) {
+    cat("  [paired GSEA] sample_table missing — sub-step skipped.\n")
+    return(invisible(NULL))
+  }
+
+  cat("\n========================================\n")
+  cat("Merged paired-GSEA sub-step (celltype only)\n")
+  cat("========================================\n\n")
+
+  for (cp in comparisons) {
+    label <- cp$label %||% "<unnamed>"
+    design_kind <- cp$design %||% "unpaired"
+    if (design_kind == "descriptive") {
+      cat("  [", label, "] descriptive — skipped.\n", sep = "")
+      next
+    }
+    block_col <- cp$block %||% "patient_id"
+    out_dir <- file.path(output_root, label, "celltype")
+    dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+    # Resolve sample sets per group from sample_table.
+    pick <- function(spec) {
+      if (length(spec) == 0L) return(character(0))
+      keep <- rep(TRUE, nrow(sample_table))
+      for (col in names(spec)) {
+        if (!col %in% names(sample_table)) return(character(0))
+        keep <- keep & as.character(sample_table[[col]]) ==
+                       as.character(spec[[col]])
+      }
+      as.character(sample_table$sample_id[keep])
+    }
+    sa <- pick(cp$group_a)
+    sb <- pick(cp$group_b)
+    samples <- c(sa, sb)
+    if (length(sa) == 0L || length(sb) == 0L) {
+      cat("  [", label, "] group_a/group_b empty — skipped.\n", sep = "")
+      next
+    }
+
+    # Build pathway × sample_id NES matrix per celltype by reading each
+    # sample's gsea_all.csv. Skip celltypes missing for any sample.
+    nes_per_celltype <- list()
+    for (sid in samples) {
+      sample_dir <- gsub("\\{sample_id\\}", sid, per_sample_dir_template)
+      if (!dir.exists(sample_dir)) {
+        cat("    sample dir missing for ", sid, ": ", sample_dir, "\n",
+            sep = "")
+        next
+      }
+      ct_dirs <- list.dirs(sample_dir, recursive = FALSE)
+      for (ctd in ct_dirs) {
+        ct <- basename(ctd)
+        gpath <- file.path(ctd, "gsea_all.csv")
+        if (!file.exists(gpath)) next
+        df <- tryCatch(utils::read.csv(gpath, stringsAsFactors = FALSE),
+                       error = function(e) NULL)
+        if (is.null(df) || !"NES" %in% names(df)) next
+        nes_per_celltype[[ct]][[sid]] <- df[, c("pathway", "NES")]
+      }
+    }
+    if (length(nes_per_celltype) == 0L) {
+      cat("  [", label, "] no per-sample celltype outputs found — skipped.\n",
+          sep = "")
+      next
+    }
+
+    rows <- list()
+    for (ct in names(nes_per_celltype)) {
+      tabs <- nes_per_celltype[[ct]]
+      sids <- intersect(samples, names(tabs))
+      if (length(sids) < length(samples)) next  # require all samples present
+      pathways <- Reduce(intersect, lapply(tabs[sids], `[[`, "pathway"))
+      if (length(pathways) == 0L) next
+      mat <- do.call(cbind, lapply(sids, function(sid) {
+        d <- tabs[[sid]]; d <- d[match(pathways, d$pathway), ]; d$NES
+      }))
+      colnames(mat) <- sids; rownames(mat) <- pathways
+
+      # Per-sample group + block info from sample_table.
+      st_match <- as.data.frame(sample_table)[match(sids, sample_table$sample_id), ]
+      group <- ifelse(sids %in% sa, "A", "B")
+
+      if (design_kind == "paired" && block_col %in% names(st_match) &&
+          length(unique(st_match[[block_col]])) >= 2L) {
+        # Per-block delta NES_A − NES_B and one-sample test deltas != 0.
+        blocks <- unique(st_match[[block_col]])
+        delta_mat <- vapply(blocks, function(b) {
+          a_id <- sids[group == "A" & st_match[[block_col]] == b]
+          b_id <- sids[group == "B" & st_match[[block_col]] == b]
+          if (length(a_id) != 1L || length(b_id) != 1L) {
+            return(rep(NA_real_, length(pathways)))
+          }
+          mat[, a_id] - mat[, b_id]
+        }, numeric(length(pathways)))
+        for (p in seq_len(nrow(delta_mat))) {
+          v <- delta_mat[p, ]
+          v <- v[is.finite(v)]
+          if (length(v) < 2L) next
+          tt <- tryCatch(stats::wilcox.test(v, mu = 0, exact = FALSE),
+                         error = function(e) NULL)
+          if (is.null(tt)) next
+          rows[[length(rows) + 1L]] <- data.frame(
+            comparison = label, celltype = ct, pathway = rownames(mat)[p],
+            delta_NES = mean(v, na.rm = TRUE),
+            tstat = NA_real_, p = tt$p.value, padj = NA_real_,
+            n_per_side = sprintf("%d / %d", sum(group == "A"), sum(group == "B")),
+            note = if (length(v) < 3L) "low_power" else "",
+            design_used = "paired",
+            stringsAsFactors = FALSE
+          )
+        }
+      } else {
+        # Unpaired Wilcoxon on raw NES.
+        for (p in seq_len(nrow(mat))) {
+          a_v <- mat[p, group == "A"]; b_v <- mat[p, group == "B"]
+          a_v <- a_v[is.finite(a_v)]; b_v <- b_v[is.finite(b_v)]
+          if (length(a_v) == 0L || length(b_v) == 0L) next
+          tt <- tryCatch(stats::wilcox.test(a_v, b_v, exact = FALSE),
+                         error = function(e) NULL)
+          if (is.null(tt)) next
+          rows[[length(rows) + 1L]] <- data.frame(
+            comparison = label, celltype = ct, pathway = rownames(mat)[p],
+            delta_NES = mean(a_v) - mean(b_v),
+            tstat = NA_real_, p = tt$p.value, padj = NA_real_,
+            n_per_side = sprintf("%d / %d", length(a_v), length(b_v)),
+            note = if (min(length(a_v), length(b_v)) < 3L) "low_power" else "",
+            design_used = "unpaired",
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+    }
+
+    if (length(rows) == 0L) {
+      cat("  [", label, "] no testable pathways — sub-step skipped.\n",
+          sep = "")
+      next
+    }
+    out_df <- do.call(rbind, rows)
+    out_df$padj <- stats::p.adjust(out_df$p, method = "BH")
+    out_path <- file.path(out_dir, "paired_gsea_scores.csv")
+    utils::write.csv(out_df, out_path, row.names = FALSE)
+    cat("  ✓ [", label, "] wrote ", nrow(out_df), " rows: ",
+        out_path, "\n", sep = "")
+  }
+  invisible(NULL)
+}
+
+# ==============================================================================
 # Orchestrator
 # ==============================================================================
 
@@ -1346,10 +1846,13 @@ run_pathway_analysis <- function(gobj,
                                  sample_table = NULL,
                                  celltype_column = NULL,
                                  leiden_column   = "leiden_clust",
-                                 focus_celltype  = "^B cell$") {
+                                 focus_celltype  = "^B cell$",
+                                 analysis_scope  = c("merged", "sample")) {
+  analysis_scope <- match.arg(analysis_scope)
   cat("\n========================================\n")
   cat("STEP 13: Pathway Enrichment + GSEA\n")
-  cat("Run label:", sample_id, "\n")
+  cat("Run label   :", sample_id, "\n")
+  cat("Analysis    :", analysis_scope, "\n")
   cat("========================================\n\n")
 
   cfg_p <- cfg$pathway
@@ -1357,6 +1860,17 @@ run_pathway_analysis <- function(gobj,
     cat("⚠ pathway.enabled is FALSE or the pathway: block is missing. ",
         "Nothing to run.\n", sep = "")
     return(invisible(list(status = "disabled")))
+  }
+
+  # Per-sample scope (Stage 1, Phase 9): runs cluster + celltype one-vs-rest
+  # GSEA on the per-sample Giotto object, skipping the cross-sample
+  # comparisons block. Output goes to <output_dir>/13_Pathway_Sample/.
+  if (analysis_scope == "sample") {
+    return(.pathway_run_sample_scope(
+      gobj = gobj, sample_id = sample_id, cfg = cfg, cfg_p = cfg_p,
+      output_dir = output_dir, sample_table = sample_table,
+      celltype_column = celltype_column, leiden_column = leiden_column
+    ))
   }
 
   out_root <- file.path(output_dir, "13_Pathway_Analysis")
@@ -1525,6 +2039,26 @@ run_pathway_analysis <- function(gobj,
         cat("      engine=", de_engine, " design=", de_design,
             if (!is.null(de_npb)) sprintf(" pb=%d/%d", de_npb$A, de_npb$B) else "",
             "\n", sep = "")
+
+        # 3-backend Spearman sensitivity check (Stage 1, Phase 5). Fires
+        # only when the configured (comparison, stratum) matches the one
+        # we just ran. Output goes to a single file under out_root so it
+        # doesn't get buried under per-stratum subdirs.
+        sens_cfg <- cfg_p$de_sensitivity_check
+        if (isTRUE(sens_cfg$enabled) &&
+            identical(cp$label, sens_cfg$comparison_label %||% "") &&
+            identical(lvl,      sens_cfg$stratum %||% "")) {
+          sens_path <- file.path(out_root,
+                                 sens_cfg$output %||% "sensitivity_check.csv")
+          .pathway_run_de_sensitivity_check(
+            raw_mat = raw_mat, norm_mat = expr_mat, cell_meta = meta,
+            ids_a = ids_a_s, ids_b = ids_b_s, comparison_spec = cp,
+            cfg_pathway = cfg_p, output_path = sens_path,
+            backends = sens_cfg$backends %||%
+                        c("pseudobulk_deseq2", "pseudobulk_edger", "pseudobulk_limma_voom"),
+            spearman_threshold = sens_cfg$spearman_threshold %||% 0.9
+          )
+        }
 
         gsea_df <- .pathway_run_gsea(de, genesets_by_db, cfg_p)
         if (!is.null(gsea_df) && nrow(gsea_df) > 0) {
@@ -1745,6 +2279,25 @@ run_pathway_analysis <- function(gobj,
                        title = "B-cell pathway summary")
     cat("✓ Wrote B-cell PDF: ", pdf_out, "\n", sep = "")
   }
+
+  # ---------- Paired GSEA-score sub-step (Stage 1, Phase 9; default off) ----
+  # Consumes per-sample celltype GSEA outputs and runs paired Wilcoxon
+  # per (pathway × celltype × comparison). Fires only when
+  # cfg$pathway$paired_gsea_scores$enabled is TRUE AND per-sample step 13
+  # has already been run for at least one sample on each side of the
+  # comparison.
+  tryCatch({
+    .pathway_paired_gsea_scores(
+      merged_output_dir = output_dir,
+      output_root       = out_root,
+      comparisons       = valid_comparisons,
+      cfg               = cfg,
+      sample_table      = sample_table
+    )
+  }, error = function(e) {
+    cat("⚠ Paired GSEA-score sub-step failed (non-fatal): ",
+        conditionMessage(e), "\n", sep = "")
+  })
 
   cat("\n=== Step 13 summary ===\n")
   for (cp in valid_comparisons) {

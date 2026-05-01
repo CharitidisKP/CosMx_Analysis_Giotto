@@ -643,6 +643,30 @@ batch_correct_merged_object <- function(gobj,
     file.path(results_dir, paste0(sample_id, "_batch_corrected_metadata.csv"))
   )
 
+  # \u2500\u2500 Stage 4b: post-Harmony diagnostics (non-gating) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  # kBET / iLISI / cLISI / cross-sample-edge audit. Wrapped in tryCatch so a
+  # failure here cannot stop the pipeline \u2014 diagnostics are advisory only.
+  diagnostics_helper <- file.path(current_script_dir(), "Diagnostics.R")
+  tryCatch({
+    if (file.exists(diagnostics_helper) && !exists("run_merge_diagnostics")) {
+      source(diagnostics_helper)
+    }
+    if (exists("run_merge_diagnostics")) {
+      cat("Running post-Harmony diagnostics (kBET / LISI / edge audit)...\n")
+      run_merge_diagnostics(
+        gobj         = gobj,
+        batch_col    = batch_column,
+        biology_cols = c("treatment", "timepoint"),
+        output_dir   = output_dir
+      )
+      cat("\u2713 Diagnostics written to ",
+          file.path(output_dir, "10_Merged", "diagnostics"), "\n\n", sep = "")
+    }
+  }, error = function(e) {
+    cat("\u26a0 Diagnostics failed (non-fatal): ", conditionMessage(e), "\n\n",
+        sep = "")
+  })
+
   if (create_plots) {
     batch_plot_cols <- c(batch_column, "leiden_clust")
 

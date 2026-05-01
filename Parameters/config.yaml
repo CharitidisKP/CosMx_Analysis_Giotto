@@ -37,7 +37,18 @@ paired:
 merged:
   input_step: "07_annotate"
   join_method: "shift"
-  x_padding: 1000
+  # x_padding shifts each sample's coordinates along x by this many microns
+  # so cells from different samples can never sit on top of each other.
+  # 5000 is cheap insurance for any code that uses Euclidean distance on
+  # merged coordinates (neighborhood enrichment, smiDE radius, future plots).
+  x_padding: 5000
+  # Default treatments included in the merged run when --samples is NOT
+  # explicitly set. Control samples (treatment="Control") are excluded by
+  # default because n=1 Control has no estimable variance for any paired
+  # test; Control still runs in the per-sample pipeline. Override:
+  # `--merged --samples 1281,CART_T0_S1,...` runs merged on exactly those
+  # samples regardless of treatment.
+  default_treatments: ["CART", "Conventional"]
   # Re-normalize the merged object on its joined raw counts (recommended).
   # Per-sample normalization (step 03) uses each sample's own scale factor;
   # carrying those values straight into HVG / PCA / Harmony lets per-sample
@@ -52,16 +63,17 @@ merged:
   normalization_scalefactor: null
   normalization_log_transform: true
   # batch_column controls what Harmony corrects for.
-  # "slide_id" = the physical run/preparation batch:
-  #   batch_CART     → all 4 CART sub-samples (same slide, same run)
-  #   batch_Control  → the single Control slide
-  #   batch_Conv_1   → Conventional Slides 3 + 4 (run together)
-  #   batch_Conv_2   → Conventional Slides 31 + 32 (run together)
-  # This is preferred over "group_id" (which would risk Harmony collapsing
-  # real biological treatment differences) and over "slide_num" (which
-  # would over-correct by treating slides 3 and 4 as independent batches
-  # when they were prepared and run simultaneously).
-  batch_column: "slide_id"
+  # "sample_id" = one Harmony batch per sample. Explicitly accounts for
+  # sample-level wet-lab preparation variation (each biopsy / each slide
+  # cut / each prep gets its own batch).
+  # NOTE: Conv slides 3+4 (samples 17H13349 / 18H12037) and Conv slides
+  # 31+32 (samples 19H28111 / 20H24159) were technically run together but
+  # are no longer paired in batch correction under this setting — accepted
+  # tradeoff per user direction. The hard guard in
+  # Merge_Batch_Correction.R::batch_correct_merged_object() still rejects
+  # any biological column (group_id / treatment / group / arm) with
+  # batch_column, so we cannot accidentally regress out arm here.
+  batch_column: "sample_id"
   n_hvgs: 500
   n_pcs: 30
   dimensions_to_use: "1:30"
@@ -72,6 +84,14 @@ merged:
   auto_prepare_samples: true
   cohort_column: "leiden_clust"
   run_label: null
+
+# BANKSY (Singhal et al., Nat Genet 2024) spatial-domain niches. Phase 7
+# of Stage 1 reads these. Defaults follow the BANKSY multi-sample vignette;
+# override here without touching code if niche granularity needs tuning.
+banksy:
+  k_geom: 18      # spatial-neighborhood size for BANKSY augmentation
+  lambda: 0.2     # spatial weight (0=no spatial; 1=spatial only)
+  resolution: 0.4 # Leiden resolution on the BANKSY+Harmony embedding
 
 # FOV subsetting for composite slides (multiple biopsies on one raw slide).
 # Each sample_id listed here will have its Giotto object subset to cells
@@ -165,6 +185,55 @@ pathway:
   # Pseudobulk + DESeq2 design is selected per-comparison by the DE engine in
   # 13_Pathway_Analysis.R; descriptive contrasts skip the model and emit
   # log2FC only (de_min_pseudobulk_per_group guard, see below).
+  #
+  # Optional per-comparison keys (Stage 1, all default to the global cfg):
+  #   pseudobulk_backend: "pseudobulk_deseq2" (default) | "pseudobulk_edger"
+  #                       | "pseudobulk_limma_voom" | "presto_wilcox"
+  #                       — overrides cfg$pathway$de_engine for this entry.
+  #   block:              column name used as the paired-design fixed effect.
+  #                       Defaults to "patient_id". Honored only when
+  #                       design: "paired" and the column has ≥ 2 distinct
+  #                       values per side; otherwise auto-degrades to unpaired.
+  #   niche_split:        reserved for future use (split paired analysis by a
+  #                       niche stratifier such as BANKSY niche_id). Currently
+  #                       unused; safe to leave unset.
+  # Per-sample pathway analysis (Stage 1, Phase 9). When enabled, the new
+  # 13_pathway step in SAMPLE_STEP_ORDER runs cluster + celltype one-vs-rest
+  # GSEA for each sample. Cluster GSEA is per-sample only (cluster IDs are
+  # not comparable across samples); celltype GSEA feeds the merged
+  # paired-GSEA sub-step below.
+  sample_scope:
+    enabled: true
+    stratifications: ["cluster", "celltype"]   # subset of: cluster, celltype
+
+  # Merged paired-GSEA-score sub-step (Stage 1, Phase 9). Consumes
+  # per-sample celltype GSEA outputs and runs paired Wilcoxon (or limma
+  # for interaction terms) per (pathway × celltype × comparison) on
+  # per-patient NES deltas. Default OFF — enable after the first merged
+  # run validates per-sample outputs are well-formed.
+  paired_gsea_scores:
+    enabled: false
+    # Template for resolving per-sample directories. {sample_id} is the
+    # only placeholder. Defaults to the existing per-sample output layout
+    # (Output/Sample_<sample_id>/13_Pathway_Sample/celltype/).
+    per_sample_dir_template: null   # null = auto from cfg$paths$output_dir
+
+  # 3-backend Spearman sensitivity check (Stage 1, Phase 5). When enabled,
+  # `13_Pathway_Analysis.R::run_pathway_analysis()` re-runs the named
+  # comparison × stratum through every backend in `backends`, writes a
+  # gene-level wide table (one logFC column per backend) to `output`, and
+  # logs a warning when any pairwise Spearman drops below `spearman_threshold`.
+  # Disabled by default; flip on after the first merged run validates the
+  # main DE path. Squair et al. 2021 reported all three backends agree
+  # closely on pseudobulk count data; large deviations indicate a borderline
+  # stratum or implementation bug worth investigating offline.
+  de_sensitivity_check:
+    enabled: false
+    comparison_label: "CART_before_vs_after"
+    stratum: "B cell"
+    backends: ["pseudobulk_deseq2", "pseudobulk_edger", "pseudobulk_limma_voom"]
+    output: "sensitivity_check.csv"
+    spearman_threshold: 0.9
   comparisons:
     - label: "CART_before_vs_after"
       group_a: { treatment: "CART",         timepoint: "T0" }

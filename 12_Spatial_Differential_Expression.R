@@ -61,6 +61,60 @@ if (!exists("RankNorm")) {
   }
 }
 
+# Builds a smiDE model formula with an optional paired-blocking fixed effect.
+# Decides per-stratum whether the block can be applied: if `block_col` is
+# missing from `metadata`, NA-only, or has < 2 distinct values in the
+# current stratum, blocking is skipped and the unblocked formula is
+# returned with paired_blocking ∈ {"skipped_single_patient",
+# "skipped_block_col_missing", "disabled"}. When applied, paired_blocking
+# carries the literal block column name (default "patient_id") so
+# downstream consumers can filter / report on it.
+#
+# `base_terms` is a character vector of formula RHS terms BEFORE the block
+# and BEFORE the library-size offset:
+#   sample backend : c("RankNorm(otherct_expr)", predictor_var)
+#   merged backend : c("RankNorm(otherct_expr)", "smide_niche_treatment", sample_column)
+#
+# Per-sample analysis (single-patient strata) will always fall through to
+# "skipped_single_patient" by construction; the audit value is still
+# attached to result rows so it's visible downstream.
+build_smide_formula <- function(base_terms,
+                                metadata,
+                                block_col = "patient_id",
+                                enable_blocking = TRUE,
+                                cell_type = NULL,
+                                predictor_label = NULL,
+                                quiet = FALSE) {
+  paired_blocking <- if (!isTRUE(enable_blocking)) {
+    "disabled"
+  } else if (!block_col %in% names(metadata)) {
+    "skipped_block_col_missing"
+  } else {
+    n_distinct <- length(unique(stats::na.omit(metadata[[block_col]])))
+    if (n_distinct >= 2L) block_col else "skipped_single_patient"
+  }
+
+  rhs <- if (paired_blocking == block_col) {
+    c(base_terms, block_col, "offset(log(nCount_RNA))")
+  } else {
+    c(base_terms, "offset(log(nCount_RNA))")
+  }
+  formula_str <- paste("~", paste(rhs, collapse = " + "))
+
+  if (!isTRUE(quiet) && paired_blocking == "skipped_single_patient") {
+    ctx <- paste(Filter(nzchar, c(cell_type, predictor_label)), collapse = " / ")
+    if (!nzchar(ctx)) ctx <- "<unknown stratum>"
+    cat("  paired blocking skipped for ", ctx,
+        " (only 1 distinct ", block_col, ")\n", sep = "")
+  }
+
+  list(
+    formula = stats::as.formula(formula_str),
+    formula_str = formula_str,
+    paired_blocking = paired_blocking
+  )
+}
+
 .giotto_get_expression <- function(gobj, values, output = "matrix") {
   accessor <- NULL
   
@@ -1771,6 +1825,13 @@ run_smide_sample_backend <- function(expr_mat,
       fit_log <- file.path(tables_dir, paste0(file_stub, "_smide_fit.log"))
 
       smide_targets_submitted <- model_inputs$targets
+      smide_fb <- build_smide_formula(
+        base_terms = c("RankNorm(otherct_expr)", predictor_var),
+        metadata = predictor_meta,
+        block_col = "patient_id",
+        cell_type = cell_type,
+        predictor_label = predictor_label
+      )
       fit <- tryCatch(
         withCallingHandlers(
           {
@@ -1778,10 +1839,7 @@ run_smide_sample_backend <- function(expr_mat,
               res <- smiDE::smi_de(
                 assay_matrix = predictor_counts,
                 metadata = predictor_meta,
-                formula = stats::as.formula(paste(
-                  "~ RankNorm(otherct_expr) +", predictor_var,
-                  "+ offset(log(nCount_RNA))"
-                )),
+                formula = smide_fb$formula,
                 pre_de_obj = pre_obj,
                 groupVar = predictor_var,
                 groupVar_levels = predictor_levels,
@@ -1874,6 +1932,7 @@ run_smide_sample_backend <- function(expr_mat,
           predictor = predictor_label,
           comparison = result_mode,
           replicate_column = if (is.null(split_col)) "<none>" else split_col,
+          paired_blocking = smide_fb$paired_blocking,
           n_cells = nrow(predictor_meta),
           n_genes_tested = model_inputs$n_genes,
           n_fdr_005 = NA_integer_,
@@ -1890,6 +1949,7 @@ run_smide_sample_backend <- function(expr_mat,
       result_df$annotation <- cell_type
       result_df$predictor <- predictor_label
       result_df$replicate_column <- if (is.null(split_col)) "<none>" else split_col
+      result_df$paired_blocking <- smide_fb$paired_blocking
       all_results[[idx]] <- result_df
       
       utils::write.csv(
@@ -1916,6 +1976,7 @@ run_smide_sample_backend <- function(expr_mat,
         predictor = predictor_label,
         comparison = result_mode,
         replicate_column = if (is.null(split_col)) "<none>" else split_col,
+        paired_blocking = smide_fb$paired_blocking,
         n_cells = nrow(predictor_meta),
         n_genes_tested = model_inputs$n_genes,
         n_fdr_005 = n_sig,
@@ -2207,16 +2268,21 @@ run_smide_merged_backend <- function(expr_mat,
     predictor_counts <- model_inputs$counts[, cell_meta_valid$cell_ID, drop = FALSE]
 
     # Formula: ~ RankNorm(otherct_expr) + smide_niche_treatment + sample_id
-    #          + offset(log(nCount_RNA))
+    #          [+ patient_id]  + offset(log(nCount_RNA))
     # - RankNorm(otherct_expr): per-gene neighbour-of-other-celltype covariate
     #   (WTX-guide segmentation/diffusion control).
     # - smide_niche_treatment: niche × treatment interaction term being tested.
     # - sample_id (sample_column): absorbs sample-level batch effects.
+    # - patient_id (block): paired-blocking fixed effect, injected by
+    #   build_smide_formula() when the stratum has ≥ 2 distinct patients.
     # - offset(log(nCount_RNA)): library-size offset for the nbinom2 GLM.
-    formula_str <- paste(
-      "~ RankNorm(otherct_expr) + smide_niche_treatment +", sample_column,
-      "+ offset(log(nCount_RNA))"
+    smide_fb <- build_smide_formula(
+      base_terms = c("RankNorm(otherct_expr)", "smide_niche_treatment", sample_column),
+      metadata = cell_meta_valid,
+      block_col = "patient_id",
+      cell_type = cell_type
     )
+    formula_str <- smide_fb$formula_str
     cat("  Formula:", formula_str, "\n")
     cat("  smiDE workload:", nrow(cell_meta_valid), "cells x", model_inputs$n_genes, "genes\n")
 
@@ -2230,7 +2296,7 @@ run_smide_merged_backend <- function(expr_mat,
             res <- smiDE::smi_de(
               assay_matrix = predictor_counts,
               metadata = cell_meta_valid,
-              formula = stats::as.formula(formula_str),
+              formula = smide_fb$formula,
               pre_de_obj = pre_obj,
               groupVar = "smide_niche_treatment",
               groupVar_levels = valid_groups,
@@ -2301,8 +2367,9 @@ run_smide_merged_backend <- function(expr_mat,
     )
 
     if (!is.null(result_df) && nrow(result_df) > 0) {
-      result_df$backend        <- "smiDE"
-      result_df$analysis_scope <- "merged"
+      result_df$backend         <- "smiDE"
+      result_df$analysis_scope  <- "merged"
+      result_df$paired_blocking <- smide_fb$paired_blocking
       utils::write.csv(result_df,
                        file.path(tables_dir, paste0(file_stub_base, "_results.csv")),
                        row.names = FALSE)
@@ -2327,6 +2394,7 @@ run_smide_merged_backend <- function(expr_mat,
       annotation             = cell_type,
       treatment_column       = treatment_column,
       niche_treatment_groups = paste(valid_groups, collapse = " / "),
+      paired_blocking        = smide_fb$paired_blocking,
       n_cells                = nrow(cell_meta_valid),
       n_genes_tested         = model_inputs$n_genes,
       n_fdr_005              = n_sig,
