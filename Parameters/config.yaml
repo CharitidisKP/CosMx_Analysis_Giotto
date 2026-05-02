@@ -287,7 +287,11 @@ pathway:
   # every subcollection within the collection.
   databases:
     - { collection: "H",  subcollections: null }
-    - { collection: "C2", subcollections: ["CP:KEGG", "CP:REACTOME", "CP:WIKIPATHWAYS", "CP:BIOCARTA", "CP:PID"] }
+    # MSigDB v2024.1+ split CP:KEGG into CP:KEGG_LEGACY (the classic curated
+    # KEGG sets) and CP:KEGG_MEDICUS (the newer KEGG MEDICUS expansion).
+    # Use both for full KEGG coverage; CP:KEGG alone now resolves to "Unknown
+    # subcollection." in current msigdbr.
+    - { collection: "C2", subcollections: ["CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME", "CP:WIKIPATHWAYS", "CP:BIOCARTA", "CP:PID"] }
     - { collection: "C5", subcollections: ["GO:BP", "GO:MF", "GO:CC"] }
     - { collection: "C7", subcollections: null }
     - { collection: "C8", subcollections: null }

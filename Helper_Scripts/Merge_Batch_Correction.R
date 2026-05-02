@@ -263,28 +263,57 @@ parse_dimension_vector <- function(x) {
   eval(parse(text = x))
 }
 
-embedding_to_tibble <- function(gobj, reduction_method, name = NULL, color_columns = character()) {
-  coords <- .giotto_get_dim_reduction(
-    gobj = gobj,
+embedding_to_tibble <- function(gobj, reduction_method, name = NULL,
+                                color_columns = character()) {
+  # Pull as a numeric matrix (cells × dims). Other consumers in the codebase
+  # (Diagnostics.R, 04_Dimensionallity_Reduction.R, 07_Annotation.R, etc.)
+  # all use output = "matrix"; the prior output = "data.table" path returned
+  # the embedding wrapped as a single matrix-column inside a data.table,
+  # which tibble::as_tibble flattened down to one column and the second-dim
+  # rename was silently dropped.
+  mat <- .giotto_get_dim_reduction(
+    gobj             = gobj,
     reduction_method = reduction_method,
-    name = name,
-    output = "data.table"
+    name             = name %||% reduction_method,
+    output           = "matrix"
   )
-  
-  coord_df <- tibble::as_tibble(coords)
-  if (!"cell_ID" %in% names(coord_df)) {
-    names(coord_df)[1] <- "cell_ID"
+  if (is.null(mat) || nrow(mat) == 0L || ncol(mat) == 0L) {
+    stop(sprintf(
+      "embedding_to_tibble: no '%s' embedding (name=%s) on merged object.",
+      reduction_method, name %||% reduction_method
+    ))
   }
-  dim_cols <- setdiff(names(coord_df), "cell_ID")
-  dim_cols <- dim_cols[seq_len(min(2, length(dim_cols)))]
-  coord_df <- dplyr::select(coord_df, cell_ID, dplyr::all_of(dim_cols))
-  names(coord_df)[2:ncol(coord_df)] <- c("dim_1", "dim_2")[seq_len(ncol(coord_df) - 1)]
-  
-  metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
-  metadata <- dplyr::select(metadata, dplyr::any_of(c("cell_ID", color_columns)))
+  if (ncol(mat) < 2L) {
+    stop(sprintf(
+      "embedding_to_tibble: '%s' embedding has only %d column(s); need >= 2.",
+      reduction_method, ncol(mat)
+    ))
+  }
 
-  coord_df$cell_ID <- as.character(coord_df$cell_ID)
+  metadata <- tibble::as_tibble(.giotto_pdata_dt(gobj))
+  metadata <- dplyr::select(metadata,
+                            dplyr::any_of(c("cell_ID", color_columns)))
   metadata$cell_ID <- as.character(metadata$cell_ID)
+
+  # Some Giotto/GiottoClass releases return the embedding matrix without
+  # rownames; fall back to the metadata cell_ID order in that case (same
+  # defensive pattern as 08_Visualisation.R:694-695).
+  ids <- rownames(mat)
+  if (is.null(ids) || !length(ids)) {
+    if (nrow(metadata) != nrow(mat)) {
+      stop(sprintf(
+        "embedding_to_tibble: '%s' embedding has no rownames and metadata row count (%d) does not match embedding row count (%d).",
+        reduction_method, nrow(metadata), nrow(mat)
+      ))
+    }
+    ids <- metadata$cell_ID[seq_len(nrow(mat))]
+  }
+
+  coord_df <- tibble::tibble(
+    cell_ID = as.character(ids),
+    dim_1   = unname(mat[, 1L]),
+    dim_2   = unname(mat[, 2L])
+  )
 
   dplyr::left_join(coord_df, metadata, by = "cell_ID")
 }

@@ -1254,9 +1254,22 @@ run_sample_pipeline <- function(runtime_env,
   do.call(rbind, results)
 }
 
-merged_output_dir <- function(cfg, run_label = NULL) {
-  label <- run_label %||% cfg$merged$run_label %||% format(Sys.time(), "%Y%m%d_%H%M%S")
+merged_output_dir <- function(cfg, run_label = NULL, samples = NULL) {
+  label <- run_label %||% cfg$merged$run_label
+  if (is.null(label) && !is.null(samples) && nrow(samples) > 0L) {
+    label <- paste0("Merged_", paste(samples$sample_id, collapse = "_"))
+  }
+  if (is.null(label)) {
+    label <- format(Sys.time(), "%Y%m%d_%H%M%S")
+  }
   label <- gsub("[^A-Za-z0-9._-]+", "_", label)
+  # POSIX path-component cap is 255 bytes; keep a safety margin for downstream
+  # file names appended underneath this directory. Truncate + append a short
+  # timestamp suffix when a long sample-id list would exceed the cap.
+  if (nchar(label) > 200L) {
+    label <- paste0(substr(label, 1L, 180L), "_",
+                    format(Sys.time(), "%Y%m%d_%H%M%S"))
+  }
   ensure_dir(file.path(cfg$paths$output_dir, "Merged", label))
 }
 
@@ -1333,7 +1346,7 @@ run_merged_pipeline <- function(runtime_env,
                                 from_step = NULL,
                                 run_label = NULL) {
   steps_to_run <- compute_steps(MERGED_STEP_ORDER, selected_steps, from_step)
-  output_dir <- merged_output_dir(cfg, run_label = run_label)
+  output_dir <- merged_output_dir(cfg, run_label = run_label, samples = samples)
   merged_name <- basename(output_dir)
   
   status <- "SUCCESS"
@@ -1581,6 +1594,8 @@ parse_cli_args <- function(args) {
     from_step = NULL,
     merged_from_step = NULL,
     run_label = NULL,
+    run_tag = NULL,
+    run_parent = NULL,
     dry_run = FALSE,
     split = FALSE,
     overwrite = FALSE,
@@ -1633,13 +1648,15 @@ parse_cli_args <- function(args) {
         key
       )
       opts[[target_name]] <- parse_cli_csv(value)
-    } else if (key %in% c("sample-sheet", "from-step", "merged-from-step", "run-label")) {
+    } else if (key %in% c("sample-sheet", "from-step", "merged-from-step", "run-label", "run-tag", "run-parent")) {
       target_name <- switch(
         key,
         "sample-sheet" = "sample_sheet",
         "from-step" = "from_step",
         "merged-from-step" = "merged_from_step",
-        "run-label" = "run_label"
+        "run-label" = "run_label",
+        "run-tag" = "run_tag",
+        "run-parent" = "run_parent"
       )
       opts[[target_name]] <- value
     } else if (key %in% c("config", "mode")) {
@@ -1764,11 +1781,19 @@ run_pipeline <- function(cli_opts) {
   
   runtime_env <- ensure_runtime(cfg)
   
-  run_dir <- ensure_dir(file.path(
-    cfg$paths$output_dir,
-    "pipeline_runs",
-    format(Sys.time(), "%Y%m%d_%H%M%S")
-  ))
+  # Run-summary directory: holds sample_pipeline_results.csv,
+  # merged_pipeline_results.csv, annotation_selection_merged.csv, and the
+  # bash-launcher log. Per-sample-only invocations land under Single_Runs/;
+  # any merged-touching invocation (--merged, mode=merged, mode=all) lands
+  # under Merged_Runs/ so the two are visibly separated. Bash launcher
+  # passes --run-parent + --run-tag to keep the dir consistent with the
+  # log file path it tee's into.
+  run_tag <- cli_opts$run_tag %||% format(Sys.time(), "%Y%m%d_%H%M%S")
+  run_parent <- cli_opts$run_parent %||% (
+    if (isTRUE(cli_opts$merged) || cli_opts$mode %in% c("merged", "all"))
+      "Merged_Runs" else "Single_Runs"
+  )
+  run_dir <- ensure_dir(file.path(cfg$paths$output_dir, run_parent, run_tag))
   
   sample_results <- NULL
   merged_results <- NULL

@@ -71,7 +71,6 @@ PROJECT_DIR="${PROJECT_DIR:-$HOME/P_lab/CosMx_analysis}"
 SIF="${SIF:-$PROJECT_DIR/Environment/Docker_Image/giotto_rstudio_latest.sif}"
 CONFIG="${CONFIG:-$PROJECT_DIR/Scripts/Parameters/config.yaml}"
 TMPDIR_HOST="${TMPDIR_HOST:-$PROJECT_DIR/tmp}"
-LOG_DIR="$PROJECT_DIR/Output"
 # renv (in $PROJECT_DIR/renv) handles the library path via .Rprofile when
 # Rscript is started from $PROJECT_DIR. Only honour an externally-set
 # R_LIBS_USER (advanced override); do NOT default to one — that bypasses renv.
@@ -107,7 +106,7 @@ if [[ "$COSMX_PYTHON_PATH" == "/usr/bin/python3" ]]; then
   echo "  clustering will fail. Check 'env | grep -i python' and your shell rc." >&2
 fi
 
-mkdir -p "$TMPDIR_HOST" "$LOG_DIR"
+mkdir -p "$TMPDIR_HOST"
 [[ -n "$R_LIBS_USER" ]] && mkdir -p "$R_LIBS_USER"
 
 # Default to --split unless the user explicitly opted in/out. Padding with
@@ -128,23 +127,61 @@ case " $* " in
   *" --dry-run "*) IS_DRY_RUN=1 ;;
 esac
 
-# ---- Build log filename from date + --samples argument ----------------------
-LOG_TAG="$(date +%Y-%m-%d_%H%M%S)"
+# ---- Detect merged-mode so we can pick the right parent directory -----------
+# Per-sample-only runs go under Output/Single_Runs/<RUN_TAG>/.
+# Merged runs (--merged, --mode merged, --mode all) go under
+# Output/Merged_Runs/<RUN_TAG>/ — keeps the two layouts visibly separate so
+# you never have to open a dir to tell whether it was a per-sample or
+# merged invocation.
+IS_MERGED=0
+case " $* " in
+  *" --merged "*) IS_MERGED=1 ;;
+esac
+prev=""
+for i in "$@"; do
+  if [[ "$prev" == "--mode" ]]; then
+    if [[ "$i" == "merged" || "$i" == "all" ]]; then
+      IS_MERGED=1
+    fi
+    break
+  fi
+  prev="$i"
+done
+
+if (( IS_MERGED )); then
+  RUN_PARENT="Merged_Runs"
+else
+  RUN_PARENT="Single_Runs"
+fi
+
+# ---- Build run tag from date + --samples argument ---------------------------
+# RUN_TAG identifies this invocation. The tag is used as:
+#   1. The orchestrator-summary directory name:
+#      Output/<Single|Merged>_Runs/<RUN_TAG>/
+#      (holds sample_pipeline_results.csv, merged_pipeline_results.csv,
+#       annotation_selection_merged.csv).
+#   2. The log file path: <run_dir>/pipeline.log.
+# Bash decides the tag and parent here and passes both to R so R writes its
+# CSVs to the same directory the launcher tees the log into.
+RUN_TAG="$(date +%Y-%m-%d_%H%M%S)"
 prev=""
 for i in "$@"; do
   if [[ "$prev" == "--samples" ]]; then
     # Sanitise special characters that could break the filename.
     SAMPLE_TAG="$(echo "$i" | sed 's/[^A-Za-z0-9_,-]/_/g')"
-    LOG_TAG="${SAMPLE_TAG}_${LOG_TAG}"
+    RUN_TAG="${SAMPLE_TAG}_${RUN_TAG}"
     break
   fi
   prev="$i"
 done
 
 if (( IS_DRY_RUN )); then
+  RUN_DIR=""
   LOG_FILE=""
 else
-  LOG_FILE="$LOG_DIR/pipeline_log_${LOG_TAG}.log"
+  RUN_DIR="$PROJECT_DIR/Output/$RUN_PARENT/$RUN_TAG"
+  LOG_FILE="$RUN_DIR/pipeline.log"
+  mkdir -p "$RUN_DIR"
 fi
 
 echo "================================================"
@@ -211,6 +248,8 @@ else
     "$SIF" \
     Rscript "$PROJECT_DIR/Scripts/CosMx_pipeline.R" \
       --config "$CONFIG" \
+      --run-tag "$RUN_TAG" \
+      --run-parent "$RUN_PARENT" \
       "$@" \
     2>&1 | tee "$LOG_FILE"
 fi
