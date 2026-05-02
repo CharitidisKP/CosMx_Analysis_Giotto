@@ -127,12 +127,7 @@ case " $* " in
   *" --dry-run "*) IS_DRY_RUN=1 ;;
 esac
 
-# ---- Detect merged-mode so we can pick the right parent directory -----------
-# Per-sample-only runs go under Output/Single_Runs/<RUN_TAG>/.
-# Merged runs (--merged, --mode merged, --mode all) go under
-# Output/Merged_Runs/<RUN_TAG>/ — keeps the two layouts visibly separate so
-# you never have to open a dir to tell whether it was a per-sample or
-# merged invocation.
+# ---- Detect merged-mode so we can pick the right run directory --------------
 IS_MERGED=0
 case " $* " in
   *" --merged "*) IS_MERGED=1 ;;
@@ -148,39 +143,63 @@ for i in "$@"; do
   prev="$i"
 done
 
-if (( IS_MERGED )); then
-  RUN_PARENT="Merged_Runs"
-else
-  RUN_PARENT="Single_Runs"
-fi
-
-# ---- Build run tag from date + --samples argument ---------------------------
-# RUN_TAG identifies this invocation. The tag is used as:
-#   1. The orchestrator-summary directory name:
-#      Output/<Single|Merged>_Runs/<RUN_TAG>/
-#      (holds sample_pipeline_results.csv, merged_pipeline_results.csv,
-#       annotation_selection_merged.csv).
-#   2. The log file path: <run_dir>/pipeline.log.
-# Bash decides the tag and parent here and passes both to R so R writes its
-# CSVs to the same directory the launcher tees the log into.
-RUN_TAG="$(date +%Y-%m-%d_%H%M%S)"
+# ---- Extract --samples list (comma-separated, may be empty) -----------------
+SAMPLE_LIST=""
 prev=""
 for i in "$@"; do
   if [[ "$prev" == "--samples" ]]; then
-    # Sanitise special characters that could break the filename.
-    SAMPLE_TAG="$(echo "$i" | sed 's/[^A-Za-z0-9_,-]/_/g')"
-    RUN_TAG="${SAMPLE_TAG}_${RUN_TAG}"
+    SAMPLE_LIST="$i"
     break
   fi
   prev="$i"
 done
 
+# ---- Pick RUN_DIR and LOG_FILE ----------------------------------------------
+# Run output layout (everything for one run lives in one directory; logs
+# overwrite on re-run with the same sample selection):
+#
+#   Merged run    Output/Merged/Merged_<sample_ids_underscored>/
+#                   ├─ Pipeline_log_merged_<sample_ids_underscored>.log
+#                   ├─ sample_pipeline_results.csv
+#                   ├─ merged_pipeline_results.csv
+#                   ├─ annotation_selection_merged.csv
+#                   └─ <merged analysis subdirs: 10_Merged, 13_Pathway, ...>
+#
+#   Single sample Output/Sample_<sample_id>/
+#                   ├─ Pipeline_log_<sample_id>.log
+#                   ├─ sample_pipeline_results.csv
+#                   └─ <per-sample analysis subdirs: 01_Data_Loading, ...>
+#
+#   Multi-sample non-merged or default full run
+#                 Output/Pipeline_runs/<tag>_<timestamp>/
+#                   ├─ Pipeline_log_<tag>.log
+#                   └─ sample_pipeline_results.csv
+#
+# Bash sanitisation matches R's merged_output_dir() (replaces commas with
+# underscores) so the bash-created dir matches what R would compute.
 if (( IS_DRY_RUN )); then
   RUN_DIR=""
   LOG_FILE=""
+elif (( IS_MERGED )) && [[ -n "$SAMPLE_LIST" ]]; then
+  IDS_TAG="${SAMPLE_LIST//,/_}"
+  IDS_TAG="$(echo "$IDS_TAG" | sed 's/[^A-Za-z0-9._-]/_/g')"
+  RUN_DIR="$PROJECT_DIR/Output/Merged/Merged_${IDS_TAG}"
+  LOG_FILE="$RUN_DIR/Pipeline_log_merged_${IDS_TAG}.log"
+elif (( IS_MERGED )); then
+  RUN_DIR="$PROJECT_DIR/Output/Merged/Merged_default_$(date +%Y-%m-%d_%H%M%S)"
+  LOG_FILE="$RUN_DIR/Pipeline_log_merged.log"
+elif [[ -n "$SAMPLE_LIST" && "$SAMPLE_LIST" != *,* ]]; then
+  ID_TAG="$(echo "$SAMPLE_LIST" | sed 's/[^A-Za-z0-9._-]/_/g')"
+  RUN_DIR="$PROJECT_DIR/Output/Sample_${ID_TAG}"
+  LOG_FILE="$RUN_DIR/Pipeline_log_${ID_TAG}.log"
 else
-  RUN_DIR="$PROJECT_DIR/Output/$RUN_PARENT/$RUN_TAG"
-  LOG_FILE="$RUN_DIR/pipeline.log"
+  TAG="${SAMPLE_LIST//,/_}"
+  TAG="$(echo "${TAG:-full}" | sed 's/[^A-Za-z0-9._-]/_/g')"
+  RUN_DIR="$PROJECT_DIR/Output/Pipeline_runs/${TAG}_$(date +%Y-%m-%d_%H%M%S)"
+  LOG_FILE="$RUN_DIR/Pipeline_log_${TAG}.log"
+fi
+
+if [[ -n "$RUN_DIR" ]]; then
   mkdir -p "$RUN_DIR"
 fi
 
@@ -193,6 +212,7 @@ echo "  User:    $USER_NAME"
 echo "  R libs:  ${R_LIBS_USER:-<renv via $PROJECT_DIR/renv>}"
 echo "  Python:  $COSMX_PYTHON_PATH"
 echo "  TmpDir:  $TMPDIR_HOST"
+echo "  RunDir:  ${RUN_DIR:-<dry-run, none>}"
 echo "  Log:     ${LOG_FILE:-<dry-run, not logged>}"
 echo "  Args:    $*"
 echo "================================================"
@@ -248,8 +268,7 @@ else
     "$SIF" \
     Rscript "$PROJECT_DIR/Scripts/CosMx_pipeline.R" \
       --config "$CONFIG" \
-      --run-tag "$RUN_TAG" \
-      --run-parent "$RUN_PARENT" \
+      --run-dir "$RUN_DIR" \
       "$@" \
     2>&1 | tee "$LOG_FILE"
 fi

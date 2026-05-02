@@ -1594,8 +1594,7 @@ parse_cli_args <- function(args) {
     from_step = NULL,
     merged_from_step = NULL,
     run_label = NULL,
-    run_tag = NULL,
-    run_parent = NULL,
+    run_dir = NULL,
     dry_run = FALSE,
     split = FALSE,
     overwrite = FALSE,
@@ -1648,15 +1647,14 @@ parse_cli_args <- function(args) {
         key
       )
       opts[[target_name]] <- parse_cli_csv(value)
-    } else if (key %in% c("sample-sheet", "from-step", "merged-from-step", "run-label", "run-tag", "run-parent")) {
+    } else if (key %in% c("sample-sheet", "from-step", "merged-from-step", "run-label", "run-dir")) {
       target_name <- switch(
         key,
         "sample-sheet" = "sample_sheet",
         "from-step" = "from_step",
         "merged-from-step" = "merged_from_step",
         "run-label" = "run_label",
-        "run-tag" = "run_tag",
-        "run-parent" = "run_parent"
+        "run-dir" = "run_dir"
       )
       opts[[target_name]] <- value
     } else if (key %in% c("config", "mode")) {
@@ -1781,19 +1779,23 @@ run_pipeline <- function(cli_opts) {
   
   runtime_env <- ensure_runtime(cfg)
   
-  # Run-summary directory: holds sample_pipeline_results.csv,
-  # merged_pipeline_results.csv, annotation_selection_merged.csv, and the
-  # bash-launcher log. Per-sample-only invocations land under Single_Runs/;
-  # any merged-touching invocation (--merged, mode=merged, mode=all) lands
-  # under Merged_Runs/ so the two are visibly separated. Bash launcher
-  # passes --run-parent + --run-tag to keep the dir consistent with the
-  # log file path it tee's into.
-  run_tag <- cli_opts$run_tag %||% format(Sys.time(), "%Y%m%d_%H%M%S")
-  run_parent <- cli_opts$run_parent %||% (
-    if (isTRUE(cli_opts$merged) || cli_opts$mode %in% c("merged", "all"))
-      "Merged_Runs" else "Single_Runs"
-  )
-  run_dir <- ensure_dir(file.path(cfg$paths$output_dir, run_parent, run_tag))
+  # Run directory: holds the orchestrator scoreboard CSVs
+  # (sample_pipeline_results.csv, merged_pipeline_results.csv,
+  # annotation_selection_merged.csv) co-located with the bash-launcher log
+  # and the analysis output for this run. The bash launcher chooses the
+  # path and passes it via --run-dir so all artifacts of one invocation
+  # live in one place:
+  #   Merged   →  Output/Merged/Merged_<sample_ids>/
+  #   Single   →  Output/Sample_<sample_id>/
+  #   Multi    →  Output/Pipeline_runs/<tag>_<ts>/
+  # If --run-dir is missing (direct Rscript invocation, not through the
+  # launcher) fall back to a timestamp under Output/Pipeline_runs/.
+  run_dir <- if (!is.null(cli_opts$run_dir) && nzchar(cli_opts$run_dir)) {
+    ensure_dir(cli_opts$run_dir)
+  } else {
+    ensure_dir(file.path(cfg$paths$output_dir, "Pipeline_runs",
+                         format(Sys.time(), "%Y%m%d_%H%M%S")))
+  }
   
   sample_results <- NULL
   merged_results <- NULL
@@ -1852,13 +1854,23 @@ run_pipeline <- function(cli_opts) {
               cfg$interaction$annotation_column %||% "<unset>")
     }
 
+    # Force the merged analysis output into the same dir the launcher tees
+    # the log into. cli_opts$run_dir is set by the bash launcher to
+    # Output/Merged/Merged_<sample_ids>/ for merged invocations; passing
+    # basename(run_dir) as run_label makes merged_output_dir() reconstruct
+    # the same path. Falls back to cli_opts$run_label / sample-derived
+    # naming when --run-dir wasn't passed (direct Rscript invocation).
+    merged_run_label <- cli_opts$run_label %||% (
+      if (!is.null(cli_opts$run_dir) && nzchar(cli_opts$run_dir))
+        basename(cli_opts$run_dir) else NULL
+    )
     merged_results <- run_merged_pipeline(
       runtime_env = runtime_env,
       samples = merged_samples,
       cfg = cfg,
       selected_steps = merged_steps,
       from_step = cli_opts$merged_from_step,
-      run_label = cli_opts$run_label
+      run_label = merged_run_label
     )
     write_results_csv(merged_results, file.path(run_dir, "merged_pipeline_results.csv"))
   }
