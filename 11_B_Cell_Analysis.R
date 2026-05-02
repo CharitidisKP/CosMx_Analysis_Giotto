@@ -221,8 +221,8 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
   if (length(bcell_cols) >= 2) {
     return(dplyr::filter(
       tbl,
-      .matches_bcell_label(rlang::.data[[bcell_cols[1]]], bcell_regex) |
-        .matches_bcell_label(rlang::.data[[bcell_cols[2]]], bcell_regex)
+      .matches_bcell_label(.data[[bcell_cols[1]]], bcell_regex) |
+        .matches_bcell_label(.data[[bcell_cols[2]]], bcell_regex)
     ))
   }
   

@@ -290,7 +290,12 @@ embedding_to_tibble <- function(gobj, reduction_method, name = NULL, color_colum
 }
 
 save_embedding_plot <- function(df, color_column, title, output_file) {
-  p <- ggplot2::ggplot(df, ggplot2::aes(x = dim_1, y = dim_2, color = rlang::.data[[color_column]])) +
+  p <- ggplot2::ggplot(
+        df,
+        ggplot2::aes(x = .data[["dim_1"]],
+                     y = .data[["dim_2"]],
+                     color = .data[[color_column]])
+      ) +
     ggplot2::geom_point(size = 0.4, alpha = 0.8) +
     ggplot2::labs(
       title = title,
@@ -302,7 +307,7 @@ save_embedding_plot <- function(df, color_column, title, output_file) {
     ggplot2::theme(
       legend.key.height = grid::unit(0.45, "cm")
     )
-  
+
   save_presentation_plot(p, output_file, width = 10, height = 8)
 }
 
