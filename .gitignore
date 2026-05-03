@@ -52,3 +52,6 @@ Pipeline_log_edited_CART_run_1.txt
 
 # Quarantined legacy DE backend (kept for reproducibility, not tracked)
 Helper_Scripts/Legacy_EdgeR_DE.R
+
+# Local-only consolidated dependency installer (replaces per-stage Install_*.R)
+Install_Dependencies_Local.R
