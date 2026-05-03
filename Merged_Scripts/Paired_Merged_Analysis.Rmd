@@ -68,14 +68,11 @@ samples %>%
 
 ## Load raw CosMx data per sample
 
-Loads each sample's flat-file CosMx output via `createGiottoCosMxObject()`,
-restricting to the FOV range from `sample_sheet.csv`. Norm / dim reduction /
-clustering / annotation are derived jointly on the merged object below.
+`createGiottoCosMxObject()` with explicit `load_*` flags (defaults trip aggregate-only dirs).
 
 ```{r load_raw_per_sample}
-raw_root <- normalizePath(
-  file.path(scripts_dir, cfg$paths$raw_data_dir), mustWork = TRUE
-)
+raw_root <- file.path(project_dir, "Data", "Raw_data")
+stopifnot(dir.exists(raw_root))
 
 per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
   s <- samples[i, ]
@@ -84,9 +81,14 @@ per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
     seq(s$fov_min, s$fov_max)
   } else NULL
   g <- Giotto::createGiottoCosMxObject(
-    cosmx_dir   = file.path(raw_root, s$directory_name),
-    data_to_use = "aggregate",
-    FOVs        = fov_range
+    cosmx_dir        = file.path(raw_root, s$directory_name),
+    FOVs             = fov_range,
+    load_expression  = TRUE,
+    load_cellmeta    = TRUE,
+    load_transcripts = FALSE,
+    load_images      = list(),
+    feat_type        = c("rna", "negprobes"),
+    split_keyword    = list("NegPrb")
   )
   if (!is.null(fov_range)) {
     meta <- GiottoClass::pDataDT(g)
@@ -109,10 +111,7 @@ tibble::tibble(
 
 ## Per-sample cell QC
 
-Three layered passes per sample: (A) `filterGiotto` floor on
-features/cell, (B) `subsetGiotto` for `min_count` floor + `cell_max_genes`
-ceiling, (C) WTx outlier filter (mean ± 2.5 SD on `log10(total_expr)` and
-`log10(nr_feats)`). Genes are filtered post-merge, not here.
+Per sample: features-floor → min_count + cell_max_genes → WTx ±2.5 SD log10 outlier → SplitRatioToLocal border.
 
 ```{r qc_per_sample}
 qc <- cfg$parameters$qc
@@ -146,6 +145,15 @@ per_sample_gobjs <- lapply(seq_along(per_sample_gobjs), function(i) {
     meta <- meta[lv >= lo & lv <= hi, ]
   }
   g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID)
+
+  # Pass D — SplitRatioToLocal border filter (Area / mean(Area | fov) < 0.5)
+  meta <- GiottoClass::pDataDT(g)
+  area_col <- intersect(c("Area", "Area.um2", "cell_area"), names(meta))[1]
+  if (!is.na(area_col)) {
+    ratio <- meta[[area_col]] / ave(meta[[area_col]], meta$fov,
+                                     FUN = function(x) mean(x, na.rm = TRUE))
+    g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID[ratio >= 0.5])
+  }
 
   n_after <- nrow(GiottoClass::pDataDT(g))
   message(sprintf("  %s: %d → %d cells (%.1f%% retained)",
@@ -182,6 +190,54 @@ diag_negprb <- lapply(seq_along(per_sample_gobjs), function(i) {
 dplyr::bind_rows(diag_negprb)
 ```
 
+## FOV QC (Nanostring scratch-space)
+
+Per-FOV bias + signal-loss flagging via `runFOVQC`; "flag-and-monitor", no auto-filter.
+
+```{r fov_qc}
+fovqc_cache <- tools::R_user_dir("CosMxNotebook", which = "cache")
+dir.create(fovqc_cache, recursive = TRUE, showWarnings = FALSE)
+
+utils_path    <- file.path(fovqc_cache, "FOV_QC_utils.R")
+barcodes_path <- file.path(fovqc_cache, "barcodes_by_panel.RDS")
+if (!file.exists(utils_path)) {
+  download.file(
+    "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Analysis-Scratch-Space/Main/_code/FOV%20QC/FOV%20QC%20utils.R",
+    utils_path
+  )
+}
+if (!file.exists(barcodes_path)) {
+  download.file(
+    "https://github.com/Nanostring-Biostats/CosMx-Analysis-Scratch-Space/raw/Main/_code/FOV%20QC/barcodes_by_panel.RDS",
+    barcodes_path, mode = "wb"
+  )
+}
+source(utils_path)
+barcodemap <- readRDS(barcodes_path)$Hs_6k
+
+fov_qc <- lapply(seq_along(per_sample_gobjs), function(i) {
+  g      <- per_sample_gobjs[[i]]
+  raw    <- Giotto::getExpression(g, values = "raw", output = "matrix")
+  meta   <- GiottoClass::pDataDT(g)
+  coords <- GiottoClass::getSpatialLocations(g, output = "data.table")
+  ord    <- match(colnames(raw), meta$cell_ID)
+  res <- runFOVQC(
+    counts               = Matrix::t(raw),
+    xy                   = as.matrix(coords[ord, .(sdimx, sdimy)]),
+    fov                  = meta$fov[ord],
+    barcodemap           = barcodemap,
+    max_prop_loss        = 0.4,
+    max_totalcounts_loss = 0.3
+  )
+  tibble::tibble(
+    sample_id    = names(per_sample_gobjs)[i],
+    n_flagged    = length(res$flaggedfovs),
+    flagged_fovs = paste(res$flaggedfovs, collapse = ",")
+  )
+})
+dplyr::bind_rows(fov_qc)
+```
+
 ## Merge
 
 ```{r merge_paths}
@@ -202,8 +258,7 @@ merged_gobj
 
 ## Cohort-level gene QC
 
-Single threshold across the joined cohort. Toggleable via `qc$apply_gene_filter`
-(set FALSE to follow WTx guide's no-gene-filter recommendation).
+Single cohort threshold; toggle off via `qc$apply_gene_filter: false` to follow WTx guide.
 
 ```{r qc_post_merge_genes}
 if (isTRUE(qc$apply_gene_filter %||% TRUE)) {
