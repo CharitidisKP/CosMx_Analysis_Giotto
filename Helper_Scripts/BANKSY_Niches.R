@@ -84,9 +84,17 @@ if (!exists("%||%")) {
   locs_dt <- locs_dt[match(cell_ids, locs_dt$cell_ID), , drop = FALSE]
   coords <- as.matrix(locs_dt[, c("sdimx", "sdimy")])
   rownames(coords) <- cell_ids
-  meta <- as.data.frame(.giotto_pdata_dt(gobj))
-  meta <- meta[match(cell_ids, as.character(meta$cell_ID)), , drop = FALSE]
-  meta$sample_id <- sample_id
+  # Keep colData minimal — only cell_ID + sample_id. Per-sample Giotto
+  # checkpoints carry independent metadata columns (annotation/cluster
+  # outputs differ between samples), and SummarizedExperiment::cbind
+  # requires identical colData column names across samples. Rich metadata
+  # is re-attached from the merged Giotto object after clustering.
+  meta <- data.frame(
+    cell_ID   = cell_ids,
+    sample_id = sample_id,
+    stringsAsFactors = FALSE
+  )
+  rownames(meta) <- cell_ids
   SpatialExperiment::SpatialExperiment(
     assays      = list(counts = counts),
     colData     = S4Vectors::DataFrame(meta),
