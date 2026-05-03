@@ -25,7 +25,6 @@ project_dir <- Sys.getenv("COSMX_PROJECT_DIR",
 scripts_dir <- file.path(project_dir, "Scripts")
 
 source(file.path(scripts_dir, "Merged_Scripts", "Merged_Functions.R"))
-source(file.path(scripts_dir, "CosMx_pipeline.R"), chdir = TRUE)
 ```
 
 ```{r libs}
@@ -69,16 +68,16 @@ samples %>%
 
 ## Load post-QC checkpoints
 
-Loads each sample's `Giotto_Object_Filtered` (step 02). Norm / dim reduction /
+Loads each sample's `Giotto_Object_Filtered` (post-QC). Norm / dim reduction /
 clustering / annotation are redone jointly on the merged object below.
 
 ```{r load_checkpoints}
-input_step <- "02_qc"
+checkpoint_subdir <- "Giotto_Object_Filtered"
 
 per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
-  message("Loading ", samples$sample_id[i], " @ ", input_step)
+  message("Loading ", samples$sample_id[i])
   .strip_polygon_centroids(
-    load_sample_checkpoint(samples[i, , drop = FALSE], input_step)
+    Giotto::loadGiotto(file.path(samples$output_dir[i], checkpoint_subdir))
   )
 })
 names(per_sample_gobjs) <- samples$sample_id
@@ -86,7 +85,7 @@ names(per_sample_gobjs) <- samples$sample_id
 tibble::tibble(
   sample_id = names(per_sample_gobjs),
   n_cells   = vapply(per_sample_gobjs,
-                     function(g) nrow(.giotto_pdata_dt(g)), integer(1))
+                     function(g) nrow(GiottoClass::pDataDT(g)), integer(1))
 )
 ```
 
@@ -109,8 +108,8 @@ merged_gobj
 ```
 
 ```{r merged_summary}
-merged_meta <- tibble::as_tibble(.giotto_pdata_dt(merged_gobj))
-raw_counts  <- .gobj_raw_counts(merged_gobj)
+merged_meta <- tibble::as_tibble(GiottoClass::pDataDT(merged_gobj))
+raw_counts  <- Giotto::getExpression(merged_gobj, values = "raw", output = "matrix")
 cat("Merged cells:", nrow(merged_meta),
     "| Genes:", nrow(raw_counts), "\n")
 merged_meta %>% dplyr::count(sample_id, name = "n_cells")
@@ -212,13 +211,17 @@ leiden_part <- igraph::cluster_leiden(
 )
 merged_meta$leiden_clust <- factor(igraph::membership(leiden_part))
 
-merged_gobj <- .gobj_add_meta(
+merged_gobj <- Giotto::addCellMetadata(
   merged_gobj,
-  data.frame(cell_ID      = merged_meta$cell_ID,
-             leiden_clust = merged_meta$leiden_clust,
-             UMAP_1       = merged_meta$UMAP_1,
-             UMAP_2       = merged_meta$UMAP_2,
-             stringsAsFactors = FALSE)
+  new_metadata    = data.frame(
+    cell_ID      = merged_meta$cell_ID,
+    leiden_clust = merged_meta$leiden_clust,
+    UMAP_1       = merged_meta$UMAP_1,
+    UMAP_2       = merged_meta$UMAP_2,
+    stringsAsFactors = FALSE
+  ),
+  by_column       = TRUE,
+  column_cell_ID  = "cell_ID"
 )
 ```
 
