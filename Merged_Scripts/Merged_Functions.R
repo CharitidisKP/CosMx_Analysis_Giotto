@@ -32,3 +32,18 @@
   }
   acc(gobj, new_metadata = df, by_column = TRUE, column_cell_ID = by)
 }
+
+# Mirrors 03_Normalisation.R:40 — Merge_Batch_Correction.R needs this in scope.
+if (!exists(".run_known_giotto_warning_safe", inherits = FALSE)) {
+  .run_known_giotto_warning_safe <- function(expr) {
+    withCallingHandlers(
+      expr,
+      warning = function(w) {
+        if (grepl("Not all expression matrices share the same cell_IDs",
+                  conditionMessage(w), fixed = TRUE)) {
+          invokeRestart("muffleWarning")
+        }
+      }
+    )
+  }
+}
