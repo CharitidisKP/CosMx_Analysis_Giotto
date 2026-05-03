@@ -48,6 +48,11 @@ quality_control <- function(gobj,
                             cell_max_genes = NULL,
                             min_count = 100,
                             max_mito_pct = NULL,
+                            apply_wtx_outlier      = FALSE,
+                            wtx_sd_threshold       = 2.5,
+                            apply_split_ratio      = FALSE,
+                            split_ratio_threshold  = 0.5,
+                            negprb_ratio_threshold = NULL,
                             sample_row = NULL,
                             sample_sheet_path = NULL) {
   
@@ -63,9 +68,11 @@ quality_control <- function(gobj,
     cat("✓ Loaded\n\n")
   }
 
-  # Create output directory
+  # Create output directory; CSVs land in a sibling subfolder.
   results_folder <- file.path(output_dir, "02_QC")
+  tables_folder  <- file.path(results_folder, "tables")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
+  dir.create(tables_folder,  recursive = TRUE, showWarnings = FALSE)
 
   # Drop SystemControl probes before any stats or filtering. These are QC
   # probes, not real genes - keeping them pollutes downstream InSituType gene
@@ -134,6 +141,84 @@ quality_control <- function(gobj,
     cat("  (Adjust the MT regex in 02_Quality_Control.R if your panel uses a different convention.)\n\n")
   }
   
+  # Build per-cell QC flag table (WTx-style flag-then-filter; one subsetGiotto at the end).
+  qc_flags <- as.data.frame(pDataDT(gobj))
+  sl  <- as.data.frame(getSpatialLocations(gobj, output = "data.table"))
+  ord <- match(qc_flags$cell_ID, sl$cell_ID)
+  qc_flags$sdimx <- sl$sdimx[ord]
+  qc_flags$sdimy <- sl$sdimy[ord]
+
+  # NegPrb ratio per cell (SBR-equivalent diagnostic; SystemControl already removed above).
+  neg_feats <- grep("^(NegPrb|Negative)", fDataDT(gobj)$feat_ID,
+                    value = TRUE, ignore.case = TRUE)
+  if (length(neg_feats) > 0) {
+    raw     <- getExpression(gobj, values = "raw", output = "matrix")
+    neg_sum <- Matrix::colSums(raw[neg_feats, , drop = FALSE])
+    tot_sum <- Matrix::colSums(raw)
+    qc_flags$negprb_ratio <- unname(
+      neg_sum[match(qc_flags$cell_ID, names(neg_sum))] /
+        pmax(tot_sum[match(qc_flags$cell_ID, names(tot_sum))], 1)
+    )
+  } else {
+    qc_flags$negprb_ratio <- NA_real_
+  }
+
+  qc_flags$flag_low_features  <- qc_flags$nr_feats   <  cell_min_genes
+  qc_flags$flag_low_counts    <- qc_flags$total_expr <  min_count
+  qc_flags$flag_high_features <- if (!is.null(cell_max_genes)) qc_flags$nr_feats > cell_max_genes else FALSE
+  qc_flags$flag_mito          <- if (!is.null(max_mito_pct) && "mito_pct" %in% names(qc_flags)) qc_flags$mito_pct > max_mito_pct else FALSE
+
+  # WTx +/- sd-threshold log10 outlier on cells passing the floor + window (matches WTx guide).
+  qc_flags$flag_count_outlier <- FALSE
+  qc_flags$flag_feat_outlier  <- FALSE
+  if (isTRUE(apply_wtx_outlier)) {
+    prefilt <- !qc_flags$flag_low_features & !qc_flags$flag_low_counts &
+               !qc_flags$flag_high_features
+    for (col in c("total_expr", "nr_feats")) {
+      flag_col <- if (col == "total_expr") "flag_count_outlier" else "flag_feat_outlier"
+      if (sum(prefilt) > 1L) {
+        lv  <- log10(qc_flags[[col]][prefilt])
+        lo  <- mean(lv) - wtx_sd_threshold * sd(lv)
+        hi  <- mean(lv) + wtx_sd_threshold * sd(lv)
+        lvf <- log10(qc_flags[[col]])
+        qc_flags[[flag_col]] <- (lvf < lo | lvf > hi)
+      }
+    }
+  }
+
+  # SplitRatioToLocal border (Area / mean(Area | fov) < threshold).
+  qc_flags$flag_border <- FALSE
+  if (isTRUE(apply_split_ratio)) {
+    area_col <- intersect(c("Area", "Area.um2", "cell_area"), names(qc_flags))[1]
+    if (!is.na(area_col) && "fov" %in% names(qc_flags)) {
+      ratio <- qc_flags[[area_col]] /
+               ave(qc_flags[[area_col]], qc_flags$fov,
+                   FUN = function(x) mean(x, na.rm = TRUE))
+      qc_flags$flag_border <- ratio < split_ratio_threshold
+    }
+  }
+
+  qc_flags$flag_negprb <- if (!is.null(negprb_ratio_threshold) && all(!is.na(qc_flags$negprb_ratio))) {
+    qc_flags$negprb_ratio > negprb_ratio_threshold
+  } else FALSE
+
+  qc_flags$qc_pass <- !qc_flags$flag_low_features &
+                      !qc_flags$flag_low_counts   &
+                      !qc_flags$flag_high_features &
+                      !qc_flags$flag_count_outlier &
+                      !qc_flags$flag_feat_outlier  &
+                      !qc_flags$flag_mito          &
+                      !qc_flags$flag_border        &
+                      !qc_flags$flag_negprb
+
+  # Attach qc_pass + negprb_ratio to gobj so plot_cells_polygon can render them.
+  gobj <- addCellMetadata(
+    gobj,
+    new_metadata    = qc_flags[, c("cell_ID", "qc_pass", "negprb_ratio")],
+    by_column       = TRUE,
+    column_cell_ID  = "cell_ID"
+  )
+
   # Get cell metadata for QC plots
   metadata <- pDataDT(gobj) %>%
     as_tibble() %>%
@@ -175,10 +260,6 @@ quality_control <- function(gobj,
       y        = "Number of cells"
     ) +
     presentation_theme(base_size = 12)
-
-  if (!is.null(cell_max_genes)) {
-    p1 <- p1 + geom_vline(xintercept = cell_max_genes, color = "black", linetype = "dotted", linewidth = 0.9)
-  }
 
   p2 <- ggplot(metadata, aes(x = total_expr_plot)) +
     geom_histogram(bins = 50, fill = "darkgreen", color = "white") +
@@ -289,14 +370,21 @@ quality_control <- function(gobj,
   cat("Creating spatial QC plots (polygon rendering)...\n")
 
   has_mito <- "mito_pct" %in% names(metadata)
+  has_neg  <- "negprb_ratio" %in% names(metadata) && any(!is.na(metadata$negprb_ratio))
   spatial_metrics <- list(
-    list(column = "nr_feats",   label = "Detected genes per cell",    slug = "genes_per_cell"),
-    list(column = "total_expr", label = "Total counts per cell",      slug = "total_counts")
+    list(column = "nr_feats",   label = "Detected genes per cell",     slug = "genes_per_cell", as_factor = FALSE),
+    list(column = "total_expr", label = "Total counts per cell",       slug = "total_counts",   as_factor = FALSE)
   )
   if (has_mito) {
     spatial_metrics[[length(spatial_metrics) + 1]] <-
-      list(column = "mito_pct", label = "Mitochondrial fraction (%)", slug = "mito_pct")
+      list(column = "mito_pct", label = "Mitochondrial fraction (%)",  slug = "mito_pct",       as_factor = FALSE)
   }
+  if (has_neg) {
+    spatial_metrics[[length(spatial_metrics) + 1]] <-
+      list(column = "negprb_ratio", label = "NegPrb ratio (per cell)", slug = "negprb_ratio",   as_factor = FALSE)
+  }
+  spatial_metrics[[length(spatial_metrics) + 1]] <-
+    list(column = "qc_pass",   label = "QC pass",                      slug = "qc_pass",        as_factor = TRUE)
 
   # Render one polygon panel per metric (per-sample context: linewidth stays
   # at the existing project default rather than PER_FOV_LINEWIDTH).
@@ -305,7 +393,7 @@ quality_control <- function(gobj,
       plot_cells_polygon(
         gobject        = gobject_local,
         fill_column    = metric$column,
-        fill_as_factor = FALSE,
+        fill_as_factor = isTRUE(metric$as_factor),
         context        = "sample",
         polygon_alpha  = 0.9,
         save_plot      = FALSE,
@@ -440,7 +528,63 @@ quality_control <- function(gobj,
   }, error = function(e) {
     cat("⚠ Spatial plotting warning:", conditionMessage(e), "\n\n")
   })
-  
+
+  # Joint nFeature x nCount scatter (WTx 3.2.1) coloured by qc_pass.
+  cat("Creating joint count/feature scatter and UpSet plots...\n")
+  pass_pal <- c(`TRUE` = "dodgerblue", `FALSE` = "darkorange")
+  qc_flags_plot <- qc_flags %>%
+    dplyr::mutate(total_expr_plot = pmax(total_expr, 1))
+
+  p_joint <- ggplot(qc_flags_plot,
+                    aes(x = nr_feats, y = total_expr_plot, colour = qc_pass)) +
+    geom_point(size = 0.4, alpha = 0.55) +
+    geom_vline(xintercept = cell_min_genes, linetype = "dotted", linewidth = 0.9) +
+    geom_hline(yintercept = min_count,      linetype = "dotted", linewidth = 0.9) +
+    scale_x_log10() + scale_y_log10() +
+    scale_colour_manual(values = pass_pal, name = "QC pass") +
+    labs(
+      title    = sample_plot_title(sample_id, "Joint count/feature distribution"),
+      subtitle = NULL,
+      x        = log10_axis_label("Detected genes"),
+      y        = log10_axis_label("Total counts per cell")
+    ) +
+    presentation_theme(base_size = 12)
+
+  save_presentation_plot(
+    plot     = p_joint,
+    filename = file.path(results_folder, paste0(sample_id, "_qc_joint_scatter.png")),
+    width    = 9,  height = 7, dpi = 300, bg = "white"
+  )
+
+  # UpSet of QC-flag intersections (WTx 3.4); skipped if UpSetR is unavailable.
+  flag_cols <- c("flag_low_features", "flag_low_counts", "flag_high_features",
+                 "flag_count_outlier", "flag_feat_outlier",
+                 "flag_mito", "flag_border", "flag_negprb")
+  flag_labels <- c("Low features", "Low counts", "High features",
+                   "Count outlier", "Feature outlier",
+                   "High mito", "Border (low SplitRatio)", "High NegPrb")
+  flag_present <- vapply(flag_cols, function(c) any(qc_flags[[c]]), logical(1))
+  if (requireNamespace("UpSetR", quietly = TRUE) && sum(flag_present) >= 1L) {
+    upset_input           <- as.data.frame(qc_flags[, flag_cols[flag_present], drop = FALSE])
+    upset_input[]         <- lapply(upset_input, as.integer)
+    colnames(upset_input) <- flag_labels[flag_present]
+    upset_path <- file.path(results_folder, paste0(sample_id, "_qc_flag_upset.png"))
+    grDevices::png(upset_path, width = 10, height = 6, units = "in", res = 300, bg = "white")
+    print(UpSetR::upset(
+      upset_input,
+      sets             = colnames(upset_input),
+      order.by         = "freq",
+      nintersects      = 10,
+      mainbar.y.label  = "Cells with flag combination",
+      sets.x.label     = "Cells flagged"
+    ))
+    grDevices::dev.off()
+  } else {
+    cat("  UpSet skipped (UpSetR not installed or no cells flagged)\n")
+  }
+
+  cat("✓ Joint scatter + UpSet saved\n\n")
+
   # Filter genes
   cat("Filtering genes...\n")
   cat("  Minimum cells per gene:", gene_min_cells, "\n")
@@ -457,46 +601,23 @@ quality_control <- function(gobj,
   cat("✓ Genes after filtering:", n_genes_after, 
       "(removed", n_genes_initial - n_genes_after, ")\n\n")
   
-  # Filter cells
+  # Filter cells - single subsetGiotto using the precomputed qc_flags$qc_pass.
   cat("Filtering cells...\n")
   cat("  Minimum genes per cell:", cell_min_genes, "\n")
-  if (!is.null(cell_max_genes)) {
-    cat("  Maximum genes per cell:", cell_max_genes, "\n")
-  }
-  cat("  Minimum total counts:", min_count, "\n")
-  if (!is.null(max_mito_pct)) {
-    cat("  Maximum mitochondrial %:", max_mito_pct, "\n")
-  }
-  
-  # Build cell filter criteria
-  cell_metadata <- pDataDT(gobj)
-  
-  cells_to_keep <- cell_metadata$cell_ID[
-    cell_metadata$nr_feats >= cell_min_genes &
-      cell_metadata$total_expr >= min_count
-  ]
-  
-  if (!is.null(cell_max_genes)) {
-    cells_to_keep <- intersect(
-      cells_to_keep,
-      cell_metadata$cell_ID[cell_metadata$nr_feats <= cell_max_genes]
-    )
-  }
-  
-  if (!is.null(max_mito_pct) && "mito_pct" %in% names(cell_metadata)) {
-    cells_to_keep <- intersect(
-      cells_to_keep,
-      cell_metadata$cell_ID[cell_metadata$mito_pct <= max_mito_pct]
-    )
-  }
-  
+  if (!is.null(cell_max_genes)) cat("  Maximum genes per cell:", cell_max_genes, "\n")
+  cat("  Minimum total counts:",  min_count, "\n")
+  if (!is.null(max_mito_pct))    cat("  Maximum mitochondrial %:", max_mito_pct, "\n")
+  if (isTRUE(apply_wtx_outlier)) cat("  WTx +/- ", wtx_sd_threshold, " SD log10 outlier: enabled\n", sep = "")
+  if (isTRUE(apply_split_ratio)) cat("  SplitRatioToLocal threshold: ", split_ratio_threshold, "\n", sep = "")
+  if (!is.null(negprb_ratio_threshold)) cat("  NegPrb ratio threshold: ", negprb_ratio_threshold, "\n", sep = "")
+
+  cells_to_keep <- qc_flags$cell_ID[qc_flags$qc_pass]
   if (length(cells_to_keep) == 0) {
     stop("All cells were removed by QC thresholds. Relax the QC parameters for this sample.")
   }
-  
-  # Apply cell filter
+
   gobj <- subsetGiotto(
-    gobject = gobj,
+    gobject  = gobj,
     cell_ids = cells_to_keep
   )
   
@@ -612,13 +733,15 @@ quality_control <- function(gobj,
               median(metadata_post$total_expr, na.rm = TRUE))
   )
   
-  write_csv(qc_summary, file.path(results_folder, paste0(sample_id, "_qc_summary.csv")))
+  write_csv(qc_summary, file.path(tables_folder, paste0(sample_id, "_qc_summary.csv")))
 
-  # Audit trail: record the exact thresholds used for this run so downstream
-  # analysts can reproduce filtering decisions without re-running the pipeline.
+  # Audit trail: thresholds + flag-pass toggles + per-flag cell counts.
   qc_parameters <- tibble(
     parameter = c("gene_min_cells", "cell_min_genes", "cell_max_genes",
                   "min_count", "max_mito_pct",
+                  "apply_wtx_outlier", "wtx_sd_threshold",
+                  "apply_split_ratio", "split_ratio_threshold",
+                  "negprb_ratio_threshold",
                   "n_mt_genes_detected",
                   "n_control_probes_removed",
                   "n_cells_initial", "n_cells_final",
@@ -629,6 +752,11 @@ quality_control <- function(gobj,
               ifelse(is.null(cell_max_genes), "NULL", as.character(cell_max_genes)),
               as.character(min_count),
               ifelse(is.null(max_mito_pct), "NULL", as.character(max_mito_pct)),
+              as.character(apply_wtx_outlier),
+              as.character(wtx_sd_threshold),
+              as.character(apply_split_ratio),
+              as.character(split_ratio_threshold),
+              ifelse(is.null(negprb_ratio_threshold), "NULL", as.character(negprb_ratio_threshold)),
               as.character(length(mt_genes)),
               as.character(n_controls_removed),
               as.character(n_cells_initial),
@@ -639,7 +767,25 @@ quality_control <- function(gobj,
   )
   write_csv(
     qc_parameters,
-    file.path(results_folder, paste0(sample_id, "_qc_parameters.csv"))
+    file.path(tables_folder, paste0(sample_id, "_qc_parameters.csv"))
+  )
+
+  # Per-cell flag table (lets a downstream analyst regenerate joint/UpSet/spatial plots without re-running QC).
+  write_csv(
+    qc_flags,
+    file.path(tables_folder, paste0(sample_id, "_qc_flags.csv"))
+  )
+
+  # Per-flag cell counts (compact summary of what each pass removed).
+  flag_counts <- tibble(
+    flag        = flag_cols,
+    label       = flag_labels,
+    n_flagged   = vapply(flag_cols, function(c) sum(qc_flags[[c]]), integer(1)),
+    pct_flagged = round(100 * vapply(flag_cols, function(c) mean(qc_flags[[c]]), numeric(1)), 2)
+  )
+  write_csv(
+    flag_counts,
+    file.path(tables_folder, paste0(sample_id, "_qc_flag_counts.csv"))
   )
   
   cat("=== Final Statistics ===\n")

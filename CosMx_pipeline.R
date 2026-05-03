@@ -866,6 +866,11 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
                          cfg$parameters$qc$min_count %||% 100),
         max_mito_pct   = .sample_qc_override("qc_max_mito_pct",
                          cfg$parameters$qc$max_mito_pct %||% NULL),
+        apply_wtx_outlier      = isTRUE(cfg$parameters$qc$apply_wtx_outlier),
+        wtx_sd_threshold       = cfg$parameters$qc$wtx_sd_threshold %||% 2.5,
+        apply_split_ratio      = isTRUE(cfg$parameters$qc$apply_split_ratio),
+        split_ratio_threshold  = cfg$parameters$qc$split_ratio_threshold %||% 0.5,
+        negprb_ratio_threshold = cfg$parameters$qc$negprb_ratio_threshold,
         sample_row        = sample_row,
         sample_sheet_path = cfg$paths$sample_sheet
       )

@@ -420,6 +420,12 @@ parameters:
     cell_max_genes: 5000
     min_count: 100
     max_mito_pct: null
+    # WTx-style optional passes (off by default; turn on per cohort).
+    apply_wtx_outlier: false        # +/- N SD log10 outlier on cells passing the floor + window
+    wtx_sd_threshold: 2.5
+    apply_split_ratio: false        # SplitRatioToLocal border filter (Area / mean(Area | fov))
+    split_ratio_threshold: 0.5
+    negprb_ratio_threshold: null    # null = compute and plot only, do not flag
     # Notebook-only (Paired_Merged_Analysis.Rmd): set false to skip the
     # post-merge gene filter and align with WTx guide's "no gene filtering"
     # stance (preserves rare-cell expression). Default true matches the
