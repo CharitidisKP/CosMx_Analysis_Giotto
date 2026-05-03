@@ -120,7 +120,8 @@ per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
     sdimy   = as.numeric(meta[[y_col]])
   )
 
-  meta$cell_ID <- meta$gid
+  meta$cell_ID   <- meta$gid
+  meta$sample_id <- s$sample_id
   g <- Giotto::createGiottoObject(expression = counts, spatial_locs = spatial_locs)
   Giotto::addCellMetadata(g, new_metadata = meta,
                           by_column = TRUE, column_cell_ID = "cell_ID")
