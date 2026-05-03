@@ -26,7 +26,6 @@ scripts_dir <- file.path(project_dir, "Scripts")
 
 source(file.path(scripts_dir, "Merged_Scripts", "Merged_Functions.R"))
 source(file.path(scripts_dir, "CosMx_pipeline.R"), chdir = TRUE)
-source(file.path(scripts_dir, "Helper_Scripts", "Merge_Batch_Correction.R"), chdir = TRUE)
 ```
 
 ```{r libs}
@@ -100,17 +99,13 @@ dir.create(merged_dir, recursive = TRUE, showWarnings = FALSE)
 ```
 
 ```{r merge}
-merged_gobj <- merge_giotto_samples(
+merged_gobj <- Giotto::joinGiottoObjects(
   gobject_list  = per_sample_gobjs,
-  sample_table  = samples,
-  output_dir    = merged_dir,
+  gobject_names = samples$sample_id,
   join_method   = cfg$merged$join_method %||% "shift",
-  x_padding     = cfg$merged$x_padding %||% 5000,
-  renormalize   = TRUE,
-  scalefactor   = cfg$merged$normalization_scalefactor %||% NULL,
-  log_transform = TRUE,
-  save_object   = FALSE
+  x_padding     = cfg$merged$x_padding   %||% 5000
 )
+merged_gobj
 ```
 
 ```{r merged_summary}
