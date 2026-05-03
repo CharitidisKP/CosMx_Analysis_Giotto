@@ -142,57 +142,145 @@ Per sample: features-floor -> min_count + cell_max_genes -> WTx +/-2.5 SD log10 
 ```{r qc_per_sample}
 qc <- cfg$parameters$qc
 
-per_sample_gobjs <- lapply(seq_along(per_sample_gobjs), function(i) {
+# Compute all flags on the raw object, capture for plotting, apply final pass once.
+qc_results <- lapply(seq_along(per_sample_gobjs), function(i) {
   g  <- per_sample_gobjs[[i]]
   id <- names(per_sample_gobjs)[i]
-  n_before <- nrow(GiottoClass::pDataDT(g))
 
-  g <- Giotto::filterGiotto(
-    gobject                = g,
-    expression_threshold   = 1,
-    feat_det_in_min_cells  = 0,
-    min_det_feats_per_cell = qc$cell_min_genes,
-    expression_values      = "raw"
-  )
+  g      <- Giotto::addStatistics(g, expression_values = "raw")
+  meta   <- as.data.frame(GiottoClass::pDataDT(g))
+  raw    <- Giotto::getExpression(g, values = "raw", output = "matrix")
+  coords <- as.data.frame(GiottoClass::getSpatialLocations(g, output = "data.table"))
+  ord    <- match(meta$cell_ID, coords$cell_ID)
+  meta$sdimx <- coords$sdimx[ord]
+  meta$sdimy <- coords$sdimy[ord]
 
-  g    <- Giotto::addStatistics(g, expression_values = "raw")
-  meta <- GiottoClass::pDataDT(g)
-  keep <- meta$cell_ID[
-    meta$total_expr >= qc$min_count &
-    meta$nr_feats   <= qc$cell_max_genes
-  ]
-  g <- Giotto::subsetGiotto(g, cell_ids = keep)
+  is_neg <- grepl("^(NegPrb|SystemControl)", rownames(raw))
+  meta$negprb_ratio <- if (any(is_neg)) {
+    nr <- Matrix::colSums(raw[is_neg, , drop = FALSE]) / Matrix::colSums(raw)
+    unname(nr[match(meta$cell_ID, names(nr))])
+  } else NA_real_
 
-  meta <- GiottoClass::pDataDT(g)
+  meta$flag_low_features  <- meta$nr_feats   <  qc$cell_min_genes
+  meta$flag_low_counts    <- meta$total_expr <  qc$min_count
+  meta$flag_high_features <- meta$nr_feats   >  qc$cell_max_genes
+
+  # WTx +/-2.5 SD log10 outlier on the cells passing the floor + window (matches sequential WTx logic).
+  prefilt <- !meta$flag_low_features & !meta$flag_low_counts & !meta$flag_high_features
   for (col in c("total_expr", "nr_feats")) {
-    lv <- log10(meta[[col]])
-    lo <- mean(lv) - 2.5 * sd(lv)
-    hi <- mean(lv) + 2.5 * sd(lv)
-    meta <- meta[lv >= lo & lv <= hi, ]
+    flag_col <- if (col == "total_expr") "flag_count_outlier" else "flag_feat_outlier"
+    meta[[flag_col]] <- FALSE
+    if (sum(prefilt) > 1L) {
+      lv  <- log10(meta[[col]][prefilt])
+      lo  <- mean(lv) - 2.5 * sd(lv)
+      hi  <- mean(lv) + 2.5 * sd(lv)
+      lvf <- log10(meta[[col]])
+      meta[[flag_col]] <- (lvf < lo | lvf > hi)
+    }
   }
-  g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID)
 
-  # Pass D - SplitRatioToLocal border filter (Area / mean(Area | fov) < 0.5)
-  meta <- GiottoClass::pDataDT(g)
+  # SplitRatioToLocal border flag (Area / mean(Area | fov) < 0.5).
   area_col <- intersect(c("Area", "Area.um2", "cell_area"), names(meta))[1]
+  meta$flag_border <- FALSE
   if (!is.na(area_col)) {
     ratio <- meta[[area_col]] / ave(meta[[area_col]], meta$fov,
                                      FUN = function(x) mean(x, na.rm = TRUE))
-    g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID[ratio >= 0.5])
+    meta$flag_border <- ratio < 0.5
   }
 
-  n_after <- nrow(GiottoClass::pDataDT(g))
+  meta$qc_pass <- !meta$flag_low_features & !meta$flag_low_counts &
+                  !meta$flag_high_features & !meta$flag_count_outlier &
+                  !meta$flag_feat_outlier  & !meta$flag_border
+
+  n_before <- nrow(meta)
+  n_after  <- sum(meta$qc_pass)
   message(sprintf("  %s: %d -> %d cells (%.1f%% retained)",
                   id, n_before, n_after, 100 * n_after / n_before))
-  g
+
+  list(
+    gobj  = Giotto::subsetGiotto(g, cell_ids = meta$cell_ID[meta$qc_pass]),
+    flags = meta
+  )
 })
-names(per_sample_gobjs) <- samples$sample_id
+
+per_sample_gobjs    <- lapply(qc_results, `[[`, "gobj")
+qc_flags_per_sample <- lapply(qc_results, `[[`, "flags")
+names(per_sample_gobjs)    <- samples$sample_id
+names(qc_flags_per_sample) <- samples$sample_id
 
 tibble::tibble(
   sample_id = names(per_sample_gobjs),
   n_cells   = vapply(per_sample_gobjs,
                      function(g) nrow(GiottoClass::pDataDT(g)), integer(1))
 )
+```
+
+## QC visualisations
+
+Pre-filter views per sample using `qc_flags_per_sample`; thresholds drawn as dashed lines.
+
+```{r qc_viz, fig.width=11, fig.height=5}
+qc_all <- dplyr::bind_rows(qc_flags_per_sample)
+flag_cols   <- c("flag_low_features", "flag_low_counts", "flag_high_features",
+                 "flag_count_outlier", "flag_feat_outlier", "flag_border")
+flag_labels <- c("Low features", "Low counts", "High features",
+                 "Count outlier", "Feature outlier", "Border (low SplitRatio)")
+pass_pal    <- c(`TRUE` = "dodgerblue", `FALSE` = "darkorange")
+
+print(ggplot(qc_all, aes(total_expr)) +
+  geom_density(fill = "grey80", colour = NA) +
+  geom_vline(xintercept = qc$min_count, linetype = "dashed") +
+  scale_x_log10() +
+  facet_wrap(~ sample_id, scales = "free_y") +
+  labs(x = "nCount_RNA (log10)", y = "Density",
+       title = "Transcripts per cell"))
+
+print(ggplot(qc_all, aes(nr_feats)) +
+  geom_density(fill = "grey80", colour = NA) +
+  geom_vline(xintercept = c(qc$cell_min_genes, qc$cell_max_genes),
+             linetype = "dashed") +
+  scale_x_log10() +
+  facet_wrap(~ sample_id, scales = "free_y") +
+  labs(x = "nFeature_RNA (log10)", y = "Density",
+       title = "Features per cell"))
+
+print(ggplot(qc_all, aes(nr_feats, total_expr, colour = qc_pass)) +
+  geom_point(size = 0.3, alpha = 0.5) +
+  geom_vline(xintercept = c(qc$cell_min_genes, qc$cell_max_genes),
+             linetype = "dashed") +
+  geom_hline(yintercept = qc$min_count, linetype = "dashed") +
+  scale_x_log10() + scale_y_log10() +
+  scale_colour_manual(values = pass_pal) +
+  facet_wrap(~ sample_id) +
+  labs(x = "nFeature_RNA (log10)", y = "nCount_RNA (log10)",
+       colour = "QC pass", title = "Joint count/feature distribution"))
+
+print(ggplot(qc_all, aes(sdimx, sdimy, colour = qc_pass)) +
+  geom_point(size = 0.2, alpha = 0.5) +
+  scale_colour_manual(values = pass_pal) +
+  coord_fixed() +
+  facet_grid(qc_pass ~ sample_id, switch = "y") +
+  labs(title = "Spatial arrangement of flagged cells"))
+
+qc_neg <- qc_all %>% dplyr::filter(!is.na(negprb_ratio))
+if (nrow(qc_neg) > 0L) {
+  print(ggplot(qc_neg,
+               aes(sdimx, sdimy, colour = log2(pmax(negprb_ratio, 1e-4)))) +
+    geom_point(size = 0.2, alpha = 0.6) +
+    scale_colour_viridis_c(option = "magma") +
+    coord_fixed() +
+    facet_wrap(~ sample_id) +
+    labs(colour = "log2(NegPrb / Total)",
+         title = "Negative-probe ratio per cell"))
+}
+
+upset_input           <- as.data.frame(qc_all[, flag_cols])
+upset_input[]         <- lapply(upset_input, as.integer)
+colnames(upset_input) <- flag_labels
+UpSetR::upset(upset_input, sets = flag_labels,
+              order.by = "freq", nintersects = 10,
+              mainbar.y.label = "Cells with flag combination",
+              sets.x.label    = "Cells flagged")
 ```
 
 ## QC diagnostic - negative-probe ratio
@@ -389,17 +477,21 @@ merged_meta <- merged_meta %>%
 
 ## Leiden clustering
 
+Jaccard SNN graph (bluster) + modularity-objective Leiden; matches the scanpy/Seurat default.
+
 ```{r leiden}
-edge_list <- do.call(rbind, lapply(seq_len(nrow(knn$index)), function(i) {
-  cbind(i, knn$index[i, ])
-}))
-g <- igraph::graph_from_edgelist(edge_list, directed = FALSE) %>%
-  igraph::simplify()
+snn <- bluster::makeSNNGraph(
+  harmony_pcs,
+  k    = .wtx(cfg, "knn_k", 15L),
+  type = "jaccard"
+)
 
 leiden_part <- igraph::cluster_leiden(
-  g,
+  snn,
+  objective_function   = "modularity",
   resolution_parameter = .wtx(cfg, "leiden_resolution",   0.5),
-  n_iterations         = .wtx(cfg, "leiden_n_iterations", 2L)
+  n_iterations         = .wtx(cfg, "leiden_n_iterations", 2L),
+  weights              = igraph::E(snn)$weight
 )
 merged_meta$leiden_clust <- factor(igraph::membership(leiden_part))
 
