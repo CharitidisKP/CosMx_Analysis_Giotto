@@ -33,19 +33,22 @@ Re-point the `pair_samples` chunk to use a different pair.
 ## Setup
 
 ```{r paths}
-project_dir <- normalizePath(file.path(here::here(), ".."), mustWork = FALSE)
-if (!dir.exists(project_dir)) {
-  project_dir <- normalizePath("..", mustWork = TRUE)
-}
+# Rmd lives at  <project_dir>/Scripts/Merged_Scripts/Paired_Merged_Analysis.Rmd
+# (on the server). On a local checkout where the .R files are at the repo
+# root rather than inside Scripts/, `scripts_dir` collapses to project_dir.
+.rmd_dir <- tryCatch(knitr::current_input(dir = TRUE),
+                     error = function(e) getwd())
+scripts_dir <- normalizePath(file.path(.rmd_dir, ".."), mustWork = TRUE)
+project_dir <- normalizePath(file.path(scripts_dir, ".."), mustWork = TRUE)
 
-merged_fn <- file.path(project_dir, "Merged_Scripts", "Merged_Functions.R")
+merged_fn <- file.path(scripts_dir, "Merged_Scripts", "Merged_Functions.R")
 source(merged_fn, local = FALSE)
 
 # Pull in the production load + merge helpers so this notebook stays in
 # step with the pipeline's join / re-normalization behaviour.
-source(file.path(project_dir, "CosMx_pipeline.R"),
+source(file.path(scripts_dir, "CosMx_pipeline.R"),
        local = FALSE, chdir = TRUE)
-source(file.path(project_dir, "Helper_Scripts", "Merge_Batch_Correction.R"),
+source(file.path(scripts_dir, "Helper_Scripts", "Merge_Batch_Correction.R"),
        local = FALSE, chdir = TRUE)
 ```
 
@@ -61,7 +64,7 @@ suppressPackageStartupMessages({
 ```
 
 ```{r config}
-config_path <- file.path(project_dir, "Parameters", "config.yaml")
+config_path <- file.path(scripts_dir, "Parameters", "config.yaml")
 cfg <- yaml::read_yaml(config_path)
 
 # Resolve the per-sample output root the same way the pipeline does. The
@@ -75,7 +78,7 @@ output_root
 ## Pair selection
 
 ```{r pair_samples}
-sample_sheet_path <- file.path(project_dir, "Parameters", "sample_sheet.csv")
+sample_sheet_path <- file.path(scripts_dir, "Parameters", "sample_sheet.csv")
 sample_sheet <- readr::read_csv(sample_sheet_path, show_col_types = FALSE)
 
 pair_ids <- c("CART_T0_S1", "CART_T12_S1")
