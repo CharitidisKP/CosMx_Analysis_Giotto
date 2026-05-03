@@ -12,182 +12,244 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(
-  echo    = TRUE,
-  message = FALSE,
-  warning = FALSE,
-  fig.width  = 8,
-  fig.height = 6
+  echo = TRUE, message = FALSE, warning = FALSE,
+  fig.width = 8, fig.height = 6
 )
 ```
 
-## Overview
-
-Stand-alone notebook for a *paired* CART biopsy comparison (T0 vs T12, same
-patient). Built outside `CosMx_pipeline.R` so the merge / batch / DE / pathway
-choices can be tuned by hand for the paired design. Reusable helpers will
-accumulate in `Merged_Functions.R`; one-off logic stays in this file.
-
-The pair below is the working test pair (`CART_T0_S1`, `CART_T12_S1`).
-Re-point the `pair_samples` chunk to use a different pair.
-
-## Setup
+## Paths
 
 ```{r paths}
-# Rmd lives at  <project_dir>/Scripts/Merged_Scripts/Paired_Merged_Analysis.Rmd
-# (on the server). On a local checkout where the .R files are at the repo
-# root rather than inside Scripts/, `scripts_dir` collapses to project_dir.
-.rmd_dir <- tryCatch(knitr::current_input(dir = TRUE),
-                     error = function(e) getwd())
-scripts_dir <- normalizePath(file.path(.rmd_dir, ".."), mustWork = TRUE)
-project_dir <- normalizePath(file.path(scripts_dir, ".."), mustWork = TRUE)
+project_dir <- Sys.getenv("COSMX_PROJECT_DIR",
+                          unset = normalizePath("../..", mustWork = TRUE))
+scripts_dir <- file.path(project_dir, "Scripts")
 
-merged_fn <- file.path(scripts_dir, "Merged_Scripts", "Merged_Functions.R")
-source(merged_fn, local = FALSE)
-
-# Pull in the production load + merge helpers so this notebook stays in
-# step with the pipeline's join / re-normalization behaviour.
-source(file.path(scripts_dir, "CosMx_pipeline.R"),
-       local = FALSE, chdir = TRUE)
-source(file.path(scripts_dir, "Helper_Scripts", "Merge_Batch_Correction.R"),
-       local = FALSE, chdir = TRUE)
+source(file.path(scripts_dir, "Merged_Scripts", "Merged_Functions.R"))
+source(file.path(scripts_dir, "CosMx_pipeline.R"), chdir = TRUE)
+source(file.path(scripts_dir, "Helper_Scripts", "Merge_Batch_Correction.R"), chdir = TRUE)
 ```
 
 ```{r libs}
 suppressPackageStartupMessages({
-  library(Giotto)
-  library(GiottoClass)
-  library(dplyr)
-  library(tibble)
-  library(readr)
-  library(yaml)
+  library(Giotto); library(GiottoClass)
+  library(magrittr)
+  library(dplyr); library(tibble); library(readr); library(yaml)
+  library(ggplot2)
+  library(scry)
+  library(scPearsonPCA)
+  library(harmony)
+  library(BiocNeighbors)
+  library(uwot)
+  library(igraph)
 })
 ```
 
 ```{r config}
-config_path <- file.path(scripts_dir, "Parameters", "config.yaml")
-cfg <- yaml::read_yaml(config_path)
-
-# Resolve the per-sample output root the same way the pipeline does. The
-# pipeline writes per-sample artifacts to <output_dir>/Sample_<sample_id>/
-# (final layout, see Run_Scripts/Run_Giotto_Pipeline.sh).
+cfg <- yaml::read_yaml(file.path(scripts_dir, "Parameters", "config.yaml"))
 output_root <- cfg$paths$output_dir %||% file.path(project_dir, "Output")
-stopifnot(dir.exists(output_root))
-output_root
 ```
 
 ## Pair selection
 
 ```{r pair_samples}
-sample_sheet_path <- file.path(scripts_dir, "Parameters", "sample_sheet.csv")
-sample_sheet <- readr::read_csv(sample_sheet_path, show_col_types = FALSE)
-
 pair_ids <- c("CART_T0_S1", "CART_T12_S1")
 
-samples <- sample_sheet |>
-  dplyr::filter(sample_id %in% pair_ids) |>
-  dplyr::mutate(
-    output_dir = file.path(output_root, paste0("Sample_", sample_id))
-  ) |>
+samples <- readr::read_csv(
+  file.path(scripts_dir, "Parameters", "sample_sheet.csv"),
+  show_col_types = FALSE
+) %>%
+  dplyr::filter(sample_id %in% pair_ids) %>%
+  dplyr::mutate(output_dir = file.path(output_root, paste0("Sample_", sample_id))) %>%
   dplyr::arrange(match(sample_id, pair_ids))
 
-stopifnot(nrow(samples) == length(pair_ids))
-all(dir.exists(samples$output_dir)) ||
-  stop("Per-sample output dirs missing: ",
-       paste(samples$output_dir[!dir.exists(samples$output_dir)],
-             collapse = ", "))
-
-samples |>
-  dplyr::select(sample_id, patient_id, treatment, timepoint, slide_id,
-                fov_min, fov_max, output_dir)
+stopifnot(nrow(samples) == length(pair_ids),
+          all(dir.exists(samples$output_dir)))
+samples %>%
+  dplyr::select(sample_id, patient_id, treatment, timepoint, slide_id, output_dir)
 ```
 
-## Load the per-sample Giotto checkpoints
+## Load post-QC checkpoints
 
-Loads the `07_annotate` checkpoint for each sample in the pair (default
-`merged.input_step` from config; override if needed). Polygon centroids are
-stripped before the join — `joinGiottoObjects()` regenerates them, and stale
-slot contents trigger a centroid/polygon count mismatch.
+Loads each sample's `Giotto_Object_Filtered` (step 02). Norm / dim reduction /
+clustering / annotation are redone jointly on the merged object below.
 
 ```{r load_checkpoints}
-input_step <- cfg$merged$input_step %||% "07_annotate"
+input_step <- "02_qc"
 
 per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
-  message("Loading ", samples$sample_id[i], " (", input_step, ")")
-  gobj <- load_sample_checkpoint(samples[i, , drop = FALSE], input_step)
-  .strip_polygon_centroids(gobj)
+  message("Loading ", samples$sample_id[i], " @ ", input_step)
+  .strip_polygon_centroids(
+    load_sample_checkpoint(samples[i, , drop = FALSE], input_step)
+  )
 })
 names(per_sample_gobjs) <- samples$sample_id
 
-# Quick-look summary for each loaded object.
-loaded_summary <- tibble::tibble(
-  sample_id   = names(per_sample_gobjs),
-  n_cells     = vapply(per_sample_gobjs,
-                       function(g) nrow(.giotto_pdata_dt(g)),
-                       integer(1)),
-  metadata_cols = vapply(per_sample_gobjs,
-                         function(g) ncol(.giotto_pdata_dt(g)),
-                         integer(1))
+tibble::tibble(
+  sample_id = names(per_sample_gobjs),
+  n_cells   = vapply(per_sample_gobjs,
+                     function(g) nrow(.giotto_pdata_dt(g)), integer(1))
 )
-loaded_summary
 ```
 
-## Merge the two objects
-
-Uses the production `merge_giotto_samples()` (from
-`Helper_Scripts/Merge_Batch_Correction.R`) so the shift-join, x-padding, and
-re-normalization behaviour match the pipeline.
-
-The output dir for this notebook is held separate from the pipeline's
-`Output/Merged/` runs to avoid clobbering pipeline artifacts. It mirrors the
-naming scheme so cross-referencing remains easy.
+## Merge + renormalize
 
 ```{r merge_paths}
 merged_label <- paste0("Paired_", paste(samples$sample_id, collapse = "_"))
-merged_output_dir_nb <- file.path(output_root, "Merged_Notebook", merged_label)
-dir.create(merged_output_dir_nb, recursive = TRUE, showWarnings = FALSE)
-merged_output_dir_nb
+merged_dir   <- file.path(output_root, "Merged_Notebook", merged_label)
+dir.create(merged_dir, recursive = TRUE, showWarnings = FALSE)
 ```
 
 ```{r merge}
 merged_gobj <- merge_giotto_samples(
   gobject_list  = per_sample_gobjs,
   sample_table  = samples,
-  output_dir    = merged_output_dir_nb,
+  output_dir    = merged_dir,
   join_method   = cfg$merged$join_method %||% "shift",
   x_padding     = cfg$merged$x_padding %||% 5000,
-  renormalize   = cfg$merged$renormalize %||% TRUE,
+  renormalize   = TRUE,
   scalefactor   = cfg$merged$normalization_scalefactor %||% NULL,
-  log_transform = cfg$merged$normalization_log_transform %||% TRUE,
-  save_object   = TRUE
+  log_transform = TRUE,
+  save_object   = FALSE
 )
 ```
 
-## Inspect the merged object
-
 ```{r merged_summary}
 merged_meta <- tibble::as_tibble(.giotto_pdata_dt(merged_gobj))
-
-cat("Merged cells: ", nrow(merged_meta), "\n",
-    "Merged genes: ", nrow(Giotto::getExpression(merged_gobj,
-                                                  values = "raw",
-                                                  output = "matrix")),
-    "\n", sep = "")
-
-merged_meta |>
-  dplyr::count(sample_id, name = "n_cells")
+raw_counts  <- .gobj_raw_counts(merged_gobj)
+cat("Merged cells:", nrow(merged_meta),
+    "| Genes:", nrow(raw_counts), "\n")
+merged_meta %>% dplyr::count(sample_id, name = "n_cells")
 ```
 
-```{r merged_meta_preview}
-merged_meta |>
-  dplyr::select(dplyr::any_of(c("cell_ID", "sample_id", "patient_id",
-                                "treatment", "timepoint", "leiden_clust",
-                                "cell_type", "nr_feats", "total_expr"))) |>
-  head(10)
+## HVG — binomial deviance (WTx-style)
+
+```{r hvg_pr}
+n_hvgs <- .wtx(cfg, "n_hvgs", 4000L)
+
+dev <- scry::devianceFeatureSelection(raw_counts, fam = "binomial")
+hvg_ids <- names(sort(dev, decreasing = TRUE))[seq_len(min(n_hvgs, length(dev)))]
+
+cat("HVGs selected:", length(hvg_ids), "/", nrow(raw_counts), "\n")
+head(hvg_ids, 10)
+```
+
+## PCA — sparse quasi-Poisson (scPearsonPCA)
+
+```{r pca_pr}
+hvg_counts <- raw_counts[hvg_ids, , drop = FALSE]
+total_per_cell <- Matrix::colSums(raw_counts)
+total_per_gene <- Matrix::rowSums(raw_counts)
+target_freq    <- (total_per_gene / sum(total_per_gene))[hvg_ids]
+
+pcaobj <- scPearsonPCA::sparse_quasipoisson_pca_seurat(
+  x           = hvg_counts,
+  totalcounts = total_per_cell,
+  grate       = target_freq,
+  scale.max   = .wtx(cfg, "pca_scale_max",  10),
+  do.scale    = .wtx(cfg, "pca_do_scale",   TRUE),
+  do.center   = .wtx(cfg, "pca_do_center",  TRUE),
+  ncores      = .wtx(cfg, "pca_ncores",     5L)
+)
+pca_mat <- pcaobj$reduction.data@cell.embeddings
+n_pcs   <- min(.wtx(cfg, "n_pcs", 40L), ncol(pca_mat))
+pca_mat <- pca_mat[, seq_len(n_pcs), drop = FALSE]
+dim(pca_mat)
+```
+
+## Harmony batch correction
+
+```{r harmony}
+batch_col <- .wtx(cfg, "harmony_batch_column", "sample_id")
+batch_vec <- merged_meta[[batch_col]][match(rownames(pca_mat), merged_meta$cell_ID)]
+
+harmony_pcs <- harmony::HarmonyMatrix(
+  data_mat  = pca_mat,
+  meta_data = data.frame(batch = batch_vec),
+  vars_use  = "batch",
+  do_pca    = FALSE,
+  verbose   = FALSE
+)
+dim(harmony_pcs)
+```
+
+## kNN graph (cosine)
+
+```{r knn}
+k <- .wtx(cfg, "knn_k", 15L)
+
+knn <- BiocNeighbors::findKNN(
+  harmony_pcs,
+  k       = k,
+  BNPARAM = BiocNeighbors::AnnoyParam(distance = "Cosine")
+)
+str(knn, max.level = 1)
+```
+
+## UMAP
+
+```{r umap}
+umap_xy <- uwot::umap(
+  harmony_pcs,
+  n_neighbors = k,
+  min_dist    = .wtx(cfg, "umap_min_dist", 0.02),
+  spread      = .wtx(cfg, "umap_spread",   2),
+  metric      = .wtx(cfg, "knn_metric",    "cosine"),
+  init        = "spectral"
+)
+colnames(umap_xy) <- c("UMAP_1", "UMAP_2")
+merged_meta <- merged_meta %>%
+  dplyr::mutate(UMAP_1 = umap_xy[, 1], UMAP_2 = umap_xy[, 2])
+```
+
+## Leiden clustering
+
+```{r leiden}
+edge_list <- do.call(rbind, lapply(seq_len(nrow(knn$index)), function(i) {
+  cbind(i, knn$index[i, ])
+}))
+g <- igraph::graph_from_edgelist(edge_list, directed = FALSE) %>%
+  igraph::simplify()
+
+leiden_part <- igraph::cluster_leiden(
+  g,
+  resolution_parameter = .wtx(cfg, "leiden_resolution",   0.5),
+  n_iterations         = .wtx(cfg, "leiden_n_iterations", 2L)
+)
+merged_meta$leiden_clust <- factor(igraph::membership(leiden_part))
+
+merged_gobj <- .gobj_add_meta(
+  merged_gobj,
+  data.frame(cell_ID      = merged_meta$cell_ID,
+             leiden_clust = merged_meta$leiden_clust,
+             UMAP_1       = merged_meta$UMAP_1,
+             UMAP_2       = merged_meta$UMAP_2,
+             stringsAsFactors = FALSE)
+)
+```
+
+## Cluster summary + UMAPs
+
+```{r cluster_summary}
+merged_meta %>%
+  dplyr::count(sample_id, leiden_clust, name = "n_cells") %>%
+  tidyr::pivot_wider(names_from = sample_id, values_from = n_cells, values_fill = 0)
+```
+
+```{r umap_plots, fig.width=11, fig.height=5}
+p_clust <- ggplot(merged_meta, aes(UMAP_1, UMAP_2, colour = leiden_clust)) +
+  geom_point(size = 0.4, alpha = 0.8) +
+  theme_bw() +
+  labs(title = "Leiden clusters", colour = NULL)
+
+p_sample <- ggplot(merged_meta, aes(UMAP_1, UMAP_2, colour = sample_id)) +
+  geom_point(size = 0.4, alpha = 0.8) +
+  theme_bw() +
+  labs(title = "Sample of origin", colour = NULL)
+
+cowplot::plot_grid(p_clust, p_sample, nrow = 1)
 ```
 
 ---
 
-> Next: decide what the *paired* analysis layer should look like — batch
-> correction strategy, paired DE backend, paired CCI handling. Update this
-> notebook chunk-by-chunk; promote helpers to `Merged_Functions.R` only
-> when they get reused across chunks (and confirm before promoting).
+> Next: cell-type annotation on the merged object. HieraType vs marker-gene
+> Wilcoxon vs InSituType — open question.
