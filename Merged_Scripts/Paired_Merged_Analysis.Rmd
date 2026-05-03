@@ -66,19 +66,37 @@ samples %>%
   dplyr::select(sample_id, patient_id, treatment, timepoint, slide_id, output_dir)
 ```
 
-## Load post-QC checkpoints
+## Load raw CosMx data per sample
 
-Loads each sample's `Giotto_Object_Filtered` (post-QC). Norm / dim reduction /
-clustering / annotation are redone jointly on the merged object below.
+Loads each sample's flat-file CosMx output via `createGiottoCosMxObject()`,
+restricting to the FOV range from `sample_sheet.csv`. Norm / dim reduction /
+clustering / annotation are derived jointly on the merged object below.
 
-```{r load_checkpoints}
-checkpoint_subdir <- "Giotto_Object_Filtered"
+```{r load_raw_per_sample}
+raw_root <- normalizePath(
+  file.path(scripts_dir, cfg$paths$raw_data_dir), mustWork = TRUE
+)
 
 per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
-  message("Loading ", samples$sample_id[i])
-  .strip_polygon_centroids(
-    Giotto::loadGiotto(file.path(samples$output_dir[i], checkpoint_subdir))
+  s <- samples[i, ]
+  message("Loading ", s$sample_id, " (FOV ", s$fov_min, "-", s$fov_max, ")")
+  fov_range <- if (!is.na(s$fov_min) && !is.na(s$fov_max)) {
+    seq(s$fov_min, s$fov_max)
+  } else NULL
+  g <- Giotto::createGiottoCosMxObject(
+    cosmx_dir   = file.path(raw_root, s$directory_name),
+    data_to_use = "aggregate",
+    FOVs        = fov_range
   )
+  if (!is.null(fov_range)) {
+    meta <- GiottoClass::pDataDT(g)
+    if (!all(meta$fov %in% fov_range)) {
+      message("  ⚠ FOVs arg ignored; falling back to subsetGiotto")
+      keep <- meta$cell_ID[meta$fov %in% fov_range]
+      g <- Giotto::subsetGiotto(g, cell_ids = keep)
+    }
+  }
+  g
 })
 names(per_sample_gobjs) <- samples$sample_id
 
@@ -89,7 +107,82 @@ tibble::tibble(
 )
 ```
 
-## Merge + renormalize
+## Per-sample cell QC
+
+Three layered passes per sample: (A) `filterGiotto` floor on
+features/cell, (B) `subsetGiotto` for `min_count` floor + `cell_max_genes`
+ceiling, (C) WTx outlier filter (mean ± 2.5 SD on `log10(total_expr)` and
+`log10(nr_feats)`). Genes are filtered post-merge, not here.
+
+```{r qc_per_sample}
+qc <- cfg$parameters$qc
+
+per_sample_gobjs <- lapply(seq_along(per_sample_gobjs), function(i) {
+  g  <- per_sample_gobjs[[i]]
+  id <- names(per_sample_gobjs)[i]
+  n_before <- nrow(GiottoClass::pDataDT(g))
+
+  g <- Giotto::filterGiotto(
+    gobject                = g,
+    expression_threshold   = 1,
+    feat_det_in_min_cells  = 0,
+    min_det_feats_per_cell = qc$cell_min_genes,
+    expression_values      = "raw"
+  )
+
+  g    <- Giotto::addStatistics(g, expression_values = "raw")
+  meta <- GiottoClass::pDataDT(g)
+  keep <- meta$cell_ID[
+    meta$total_expr >= qc$min_count &
+    meta$nr_feats   <= qc$cell_max_genes
+  ]
+  g <- Giotto::subsetGiotto(g, cell_ids = keep)
+
+  meta <- GiottoClass::pDataDT(g)
+  for (col in c("total_expr", "nr_feats")) {
+    lv <- log10(meta[[col]])
+    lo <- mean(lv) - 2.5 * sd(lv)
+    hi <- mean(lv) + 2.5 * sd(lv)
+    meta <- meta[lv >= lo & lv <= hi, ]
+  }
+  g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID)
+
+  n_after <- nrow(GiottoClass::pDataDT(g))
+  message(sprintf("  %s: %d → %d cells (%.1f%% retained)",
+                  id, n_before, n_after, 100 * n_after / n_before))
+  g
+})
+names(per_sample_gobjs) <- samples$sample_id
+
+tibble::tibble(
+  sample_id = names(per_sample_gobjs),
+  n_cells   = vapply(per_sample_gobjs,
+                     function(g) nrow(GiottoClass::pDataDT(g)), integer(1))
+)
+```
+
+## QC diagnostic — negative-probe ratio
+
+Print-only sanity check. Healthy CosMx WTx data → median negprb ratio < 1-2%.
+
+```{r qc_diagnostics_negprb}
+diag_negprb <- lapply(seq_along(per_sample_gobjs), function(i) {
+  g   <- per_sample_gobjs[[i]]
+  raw <- Giotto::getExpression(g, values = "raw", output = "matrix")
+  is_neg <- grepl("^(NegPrb|SystemControl)", rownames(raw))
+  if (!any(is_neg)) return(NULL)
+  ratio <- Matrix::colSums(raw[is_neg, , drop = FALSE]) / Matrix::colSums(raw)
+  tibble::tibble(
+    sample_id    = names(per_sample_gobjs)[i],
+    n_neg_probes = sum(is_neg),
+    median_ratio = median(ratio, na.rm = TRUE),
+    p95_ratio    = unname(quantile(ratio, 0.95, na.rm = TRUE))
+  )
+})
+dplyr::bind_rows(diag_negprb)
+```
+
+## Merge
 
 ```{r merge_paths}
 merged_label <- paste0("Paired_", paste(samples$sample_id, collapse = "_"))
@@ -104,6 +197,24 @@ merged_gobj <- Giotto::joinGiottoObjects(
   join_method   = cfg$merged$join_method %||% "shift",
   x_padding     = cfg$merged$x_padding   %||% 5000
 )
+merged_gobj
+```
+
+## Cohort-level gene QC
+
+Single threshold across the joined cohort. Toggleable via `qc$apply_gene_filter`
+(set FALSE to follow WTx guide's no-gene-filter recommendation).
+
+```{r qc_post_merge_genes}
+if (isTRUE(qc$apply_gene_filter %||% TRUE)) {
+  merged_gobj <- Giotto::filterGiotto(
+    gobject                = merged_gobj,
+    expression_threshold   = 1,
+    feat_det_in_min_cells  = qc$gene_min_cells,
+    min_det_feats_per_cell = 0,
+    expression_values      = "raw"
+  )
+}
 merged_gobj
 ```
 

@@ -420,6 +420,11 @@ parameters:
     cell_max_genes: 5000
     min_count: 100
     max_mito_pct: null
+    # Notebook-only (Paired_Merged_Analysis.Rmd): set false to skip the
+    # post-merge gene filter and align with WTx guide's "no gene filtering"
+    # stance (preserves rare-cell expression). Default true matches the
+    # production pipeline's behavior.
+    apply_gene_filter: true
 
   normalization:
     # Fixed integer = explicit scale factor.
