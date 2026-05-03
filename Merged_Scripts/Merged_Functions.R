@@ -1,4 +1,4 @@
-# Merged_Functions.R — helpers for Paired_Merged_Analysis.Rmd.
+# Merged_Functions.R - helpers for Paired_Merged_Analysis.Rmd.
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0L) b else a
 
@@ -23,7 +23,7 @@
     }
     gobj
   }, error = function(e) {
-    message("  ⚠ Could not strip polygon centroids (non-fatal): ", conditionMessage(e))
+    message("  Could not strip polygon centroids (non-fatal): ", conditionMessage(e))
     gobj
   })
 }

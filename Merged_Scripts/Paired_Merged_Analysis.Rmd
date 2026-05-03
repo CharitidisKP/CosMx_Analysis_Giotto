@@ -1,5 +1,5 @@
 ---
-title: "Paired Merged Analysis — CART T0 vs T12 (patient S1)"
+title: "Paired Merged Analysis - CART T0 vs T12 (patient S1)"
 author: "K. Charitidis"
 date: "`r format(Sys.Date(), '%Y-%m-%d')`"
 output:
@@ -68,37 +68,62 @@ samples %>%
 
 ## Load raw CosMx data per sample
 
-`createGiottoCosMxObject()` with explicit `load_*` flags (defaults trip aggregate-only dirs).
+Mirrors 01_Load_data.R: readr+gzfile (no arrow) -> createGiottoObject -> addCellMetadata.
 
 ```{r load_raw_per_sample}
 raw_root <- file.path(project_dir, "Data", "Raw_data")
 stopifnot(dir.exists(raw_root))
 
+xy_cols <- list(
+  x = c("CenterX_global_px", "x_global_px", "CenterX_local_px"),
+  y = c("CenterY_global_px", "y_global_px", "CenterY_local_px")
+)
+
 per_sample_gobjs <- lapply(seq_len(nrow(samples)), function(i) {
   s <- samples[i, ]
   message("Loading ", s$sample_id, " (FOV ", s$fov_min, "-", s$fov_max, ")")
-  fov_range <- if (!is.na(s$fov_min) && !is.na(s$fov_max)) {
-    seq(s$fov_min, s$fov_max)
-  } else NULL
-  g <- Giotto::createGiottoCosMxObject(
-    cosmx_dir        = file.path(raw_root, s$directory_name),
-    FOVs             = fov_range,
-    load_expression  = TRUE,
-    load_cellmeta    = TRUE,
-    load_transcripts = FALSE,
-    load_images      = list(),
-    feat_type        = c("rna", "negprobes"),
-    split_keyword    = list("NegPrb")
+
+  sample_dir <- file.path(raw_root, s$directory_name)
+  expr_file  <- list.files(sample_dir, "_exprMat_file\\.csv(\\.gz)?$", full.names = TRUE)
+  meta_file  <- list.files(sample_dir, "_metadata_file\\.csv(\\.gz)?$", full.names = TRUE)
+  stopifnot(length(expr_file) == 1, length(meta_file) == 1)
+
+  read_csv_gz <- function(p) as.data.frame(
+    readr::read_csv(if (grepl("\\.gz$", p)) gzfile(p) else p,
+                    show_col_types = FALSE)
   )
-  if (!is.null(fov_range)) {
-    meta <- GiottoClass::pDataDT(g)
-    if (!all(meta$fov %in% fov_range)) {
-      message("  ⚠ FOVs arg ignored; falling back to subsetGiotto")
-      keep <- meta$cell_ID[meta$fov %in% fov_range]
-      g <- Giotto::subsetGiotto(g, cell_ids = keep)
-    }
+  expr <- read_csv_gz(expr_file)
+  meta <- read_csv_gz(meta_file)
+
+  if (!is.na(s$fov_min) && !is.na(s$fov_max)) {
+    fov_range <- seq(s$fov_min, s$fov_max)
+    expr <- expr[expr$fov %in% fov_range, , drop = FALSE]
+    meta <- meta[meta$fov %in% fov_range, , drop = FALSE]
   }
-  g
+
+  expr$gid <- paste(expr$fov, expr$cell_ID, sep = "_")
+  meta$gid <- paste(meta$fov, meta$cell_ID, sep = "_")
+  common   <- intersect(expr$gid, meta$gid)
+  expr     <- expr[match(common, expr$gid), , drop = FALSE]
+  meta     <- meta[match(common, meta$gid), , drop = FALSE]
+
+  gene_cols <- setdiff(names(expr), c("fov", "cell_ID", "gid"))
+  counts    <- Matrix::Matrix(t(as.matrix(expr[, gene_cols])), sparse = TRUE)
+  colnames(counts) <- expr$gid
+  rownames(counts) <- gene_cols
+
+  x_col <- xy_cols$x[xy_cols$x %in% names(meta)][1]
+  y_col <- xy_cols$y[xy_cols$y %in% names(meta)][1]
+  spatial_locs <- data.frame(
+    cell_ID = meta$gid,
+    sdimx   = as.numeric(meta[[x_col]]),
+    sdimy   = as.numeric(meta[[y_col]])
+  )
+
+  meta$cell_ID <- meta$gid
+  g <- Giotto::createGiottoObject(expression = counts, spatial_locs = spatial_locs)
+  Giotto::addCellMetadata(g, new_metadata = meta,
+                          by_column = TRUE, column_cell_ID = "cell_ID")
 })
 names(per_sample_gobjs) <- samples$sample_id
 
@@ -111,7 +136,7 @@ tibble::tibble(
 
 ## Per-sample cell QC
 
-Per sample: features-floor → min_count + cell_max_genes → WTx ±2.5 SD log10 outlier → SplitRatioToLocal border.
+Per sample: features-floor -> min_count + cell_max_genes -> WTx +/-2.5 SD log10 outlier -> SplitRatioToLocal border.
 
 ```{r qc_per_sample}
 qc <- cfg$parameters$qc
@@ -146,7 +171,7 @@ per_sample_gobjs <- lapply(seq_along(per_sample_gobjs), function(i) {
   }
   g <- Giotto::subsetGiotto(g, cell_ids = meta$cell_ID)
 
-  # Pass D — SplitRatioToLocal border filter (Area / mean(Area | fov) < 0.5)
+  # Pass D - SplitRatioToLocal border filter (Area / mean(Area | fov) < 0.5)
   meta <- GiottoClass::pDataDT(g)
   area_col <- intersect(c("Area", "Area.um2", "cell_area"), names(meta))[1]
   if (!is.na(area_col)) {
@@ -156,7 +181,7 @@ per_sample_gobjs <- lapply(seq_along(per_sample_gobjs), function(i) {
   }
 
   n_after <- nrow(GiottoClass::pDataDT(g))
-  message(sprintf("  %s: %d → %d cells (%.1f%% retained)",
+  message(sprintf("  %s: %d -> %d cells (%.1f%% retained)",
                   id, n_before, n_after, 100 * n_after / n_before))
   g
 })
@@ -169,9 +194,9 @@ tibble::tibble(
 )
 ```
 
-## QC diagnostic — negative-probe ratio
+## QC diagnostic - negative-probe ratio
 
-Print-only sanity check. Healthy CosMx WTx data → median negprb ratio < 1-2%.
+Print-only sanity check. Healthy CosMx WTx data -> median negprb ratio < 1-2%.
 
 ```{r qc_diagnostics_negprb}
 diag_negprb <- lapply(seq_along(per_sample_gobjs), function(i) {
@@ -281,7 +306,7 @@ cat("Merged cells:", nrow(merged_meta),
 merged_meta %>% dplyr::count(sample_id, name = "n_cells")
 ```
 
-## HVG — binomial deviance (WTx-style)
+## HVG - binomial deviance (WTx-style)
 
 ```{r hvg_pr}
 n_hvgs <- .wtx(cfg, "n_hvgs", 4000L)
@@ -293,7 +318,7 @@ cat("HVGs selected:", length(hvg_ids), "/", nrow(raw_counts), "\n")
 head(hvg_ids, 10)
 ```
 
-## PCA — sparse quasi-Poisson (scPearsonPCA)
+## PCA - sparse quasi-Poisson (scPearsonPCA)
 
 ```{r pca_pr}
 hvg_counts <- raw_counts[hvg_ids, , drop = FALSE]
@@ -416,4 +441,4 @@ cowplot::plot_grid(p_clust, p_sample, nrow = 1)
 ---
 
 > Next: cell-type annotation on the merged object. HieraType vs marker-gene
-> Wilcoxon vs InSituType — open question.
+> Wilcoxon vs InSituType - open question.
