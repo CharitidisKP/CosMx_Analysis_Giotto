@@ -3756,16 +3756,21 @@ run_nichenet_batch <- function(gobj,
 #' @param expr_cache    Optional pre-extracted expression cache list.
 #' @return MISTy results list
 
+# run_misty - global HVG MISTy with intra/juxta/para + celltype-composition paraview.
+# Note: para_radius is the RBF bandwidth l in exp(-d^2 / l^2), not a hard cutoff;
+# cells beyond ~3*l contribute negligibly. zoi = juxta_radius excludes the juxta zone.
 run_misty <- function(gobj,
                       sample_id,
                       output_dir,
-                      target_genes  = NULL,
-                      juxta_radius  = 50,
-                      para_radius   = 200,
-                      n_cores       = 4,
-                      expr_cache    = NULL,
+                      target_genes   = NULL,
+                      juxta_radius   = 50,
+                      para_radius    = 200,
+                      n_cores        = 4,
+                      expr_cache     = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "^B cell$") {
+                      focus_celltype = "^B cell$",
+                      model_function = NULL,
+                      bypass_intra   = FALSE) {
   
   if (!requireNamespace("mistyR", quietly = TRUE))
     stop("mistyR not installed.\n",
@@ -3826,7 +3831,26 @@ run_misty <- function(gobj,
   spat <- as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table"))
   rownames(spat) <- spat$cell_ID
   xy <- spat[rownames(expr_mat), c("sdimx", "sdimy")]
-  
+
+  # Resolve celltype annotation up front so the celltype paraview (added below)
+  # uses the same row set as the expression views.
+  celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+  ct_aligned <- NULL
+  if (!is.null(celltype_col_local)) {
+    meta_dt <- as.data.frame(.giotto_pdata_dt(gobj))
+    ct_vec <- as.character(meta_dt[[celltype_col_local]])
+    names(ct_vec) <- meta_dt$cell_ID
+    ct_aligned <- ct_vec[rownames(expr_mat)]
+    keep_ct <- !is.na(ct_aligned) & nzchar(ct_aligned)
+    if (any(!keep_ct)) {
+      cat("  Filtering out", sum(!keep_ct),
+          "cells with no celltype annotation.\n")
+      expr_mat   <- expr_mat[keep_ct, , drop = FALSE]
+      xy         <- xy[keep_ct, , drop = FALSE]
+      ct_aligned <- ct_aligned[keep_ct]
+    }
+  }
+
   # FIX #8: Guard against running MISTy on datasets too large for pairwise
   # distance computation. add_juxtaview() and add_paraview() build O(n^2)
   # distance matrices which at 200k cells would require ~300 GB of RAM.
@@ -3839,6 +3863,7 @@ run_misty <- function(gobj,
     keep_idx <- sample(nrow(expr_mat), MAX_CELLS_MISTY)
     expr_mat <- expr_mat[keep_idx, , drop = FALSE]
     xy <- xy[keep_idx, , drop = FALSE]
+    if (!is.null(ct_aligned)) ct_aligned <- ct_aligned[keep_idx]
     cat("  Cells after downsampling:", nrow(expr_mat), "\n\n")
   }
   
@@ -3865,13 +3890,52 @@ run_misty <- function(gobj,
       cached = FALSE,
       verbose = TRUE
     )
-    
-    mistyR::run_misty(
-      views = misty_views,
+
+    # Celltype composition paraview: RBF-weighted neighbour celltype counts.
+    # Predictors are the panel's celltypes; useful for "which celltypes around
+    # me predict my expression?" without conflating with neighbour gene levels.
+    if (!is.null(ct_aligned) && length(unique(ct_aligned)) >= 2) {
+      ct_para_added <- tryCatch({
+        ct_factor <- factor(ct_aligned)
+        ct_mat <- stats::model.matrix(~ 0 + ct_factor)
+        colnames(ct_mat) <- gsub("^ct_factor", "", colnames(ct_mat))
+        colnames(ct_mat) <- make.names(colnames(ct_mat), unique = TRUE)
+        ct_initial <- mistyR::create_initial_view(
+          as.data.frame(ct_mat),
+          unique.id = paste0(sample_id, "_misty_ctype")
+        )
+        ct_initial <- mistyR::add_paraview(
+          ct_initial, xy, l = para_radius, zoi = juxta_radius,
+          cached = FALSE, verbose = FALSE
+        )
+        para_slot <- paste0("paraview.", para_radius)
+        if (!is.null(ct_initial[[para_slot]])) {
+          ctype_view <- mistyR::create_view(
+            name = "ctype_para",
+            data = ct_initial[[para_slot]]$data,
+            abbrev = "ctype"
+          )
+          misty_views <- mistyR::add_views(misty_views, ctype_view)
+          cat("  Added celltype composition paraview view (l =",
+              para_radius, ", classes =", ncol(ct_mat), ")\n")
+          TRUE
+        } else FALSE
+      }, error = function(e) {
+        cat("Warning: celltype composition paraview failed:",
+            conditionMessage(e), "\n")
+        FALSE
+      })
+    }
+
+    rm_args <- list(
+      views          = misty_views,
       results.folder = out_dir,
-      target.subset = target_genes,
-      num.threads = n_cores
+      target.subset  = target_genes,
+      num.threads    = n_cores,
+      bypass.intra   = bypass_intra
     )
+    if (!is.null(model_function)) rm_args$model.function <- model_function
+    do.call(mistyR::run_misty, rm_args)
   }, error = function(e) {
     cat("\u26A0 MISTy failed:", conditionMessage(e), "\n")
     NULL
@@ -3912,7 +3976,7 @@ run_misty <- function(gobj,
       cat("\u26A0 MISTy view_contributions plot failed:",
           conditionMessage(e), "\n")
     })
-    for (misty_view in c("juxtaview_50", "paraview_200")) {
+    for (misty_view in c("juxtaview_50", "paraview_200", "ctype_para")) {
       tryCatch({
         grDevices::png(
           file.path(out_dir, sprintf("%s_misty_interaction_heatmap_%s.png",
@@ -4026,6 +4090,192 @@ run_misty <- function(gobj,
   } else {
     invisible(NULL)
   }
+}
+
+
+# run_misty_bcell - targeted MISTy on a curated B-cell signature panel.
+# Restricts cells (and their coords) to B cells, then runs the standard
+# intra/juxta/para view stack on that subset with B-cell signature genes
+# as targets. Output: <output>/10_CCI_Analysis/misty_bcell/
+run_misty_bcell <- function(gobj,
+                            sample_id,
+                            output_dir,
+                            celltype_col   = NULL,
+                            focus_celltype = "^B cell$",
+                            target_genes   = NULL,
+                            juxta_radius   = 50,
+                            para_radius    = 200,
+                            n_cores        = 4,
+                            expr_cache     = NULL,
+                            model_function = NULL,
+                            bypass_intra   = FALSE,
+                            min_bcells     = 30) {
+
+  if (!requireNamespace("mistyR", quietly = TRUE)) {
+    cat("Warning: mistyR not installed; skipping B-cell MISTy.\n")
+    return(invisible(NULL))
+  }
+  ridge_ready <- tryCatch(requireNamespace("ridge", quietly = TRUE),
+                          error = function(e) FALSE)
+  if (!isTRUE(ridge_ready)) {
+    cat("Warning: ridge package not available; skipping B-cell MISTy.\n")
+    return(invisible(NULL))
+  }
+
+  cat("\n--- MISTy: B-cell-targeted spatial modelling ---\n")
+
+  celltype_col_local <- .resolve_celltype_column_auto(gobj, celltype_col)
+  if (is.null(celltype_col_local)) {
+    cat("Warning: no celltype column resolved; skipping B-cell MISTy.\n")
+    return(invisible(NULL))
+  }
+  bcell_ids <- .resolve_bcell_ids(gobj, celltype_col_local, focus_celltype)
+  if (length(bcell_ids) < min_bcells) {
+    cat("Warning: fewer than ", min_bcells, " B cells (",
+        length(bcell_ids), "); skipping B-cell MISTy.\n", sep = "")
+    return(invisible(NULL))
+  }
+
+  out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+  norm_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
+    expr_cache$normalized
+  } else {
+    .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+  }
+  expr_mat <- t(as.matrix(norm_mat))
+
+  bcell_keep <- intersect(rownames(expr_mat), bcell_ids)
+  if (length(bcell_keep) < min_bcells) {
+    cat("Warning: fewer than ", min_bcells, " B cells present in expression matrix (",
+        length(bcell_keep), "); skipping B-cell MISTy.\n", sep = "")
+    return(invisible(NULL))
+  }
+  expr_mat <- expr_mat[bcell_keep, , drop = FALSE]
+
+  spat <- as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table"))
+  rownames(spat) <- spat$cell_ID
+  xy <- spat[bcell_keep, c("sdimx", "sdimy")]
+
+  default_bcell_targets <- c(
+    "MS4A1", "CD79A", "CD79B", "CD19", "CD22", "MS4A4A",
+    "CXCR5", "CXCR4", "CCR7",
+    "IGHM", "IGHD", "IGHG1", "IGHA1", "IGKC", "IGLC2",
+    "CD27", "CD38", "CD83", "CD86",
+    "BCL6", "AICDA", "TCL1A", "FCER2", "FCRL4"
+  )
+  if (is.null(target_genes)) target_genes <- default_bcell_targets
+  target_genes <- intersect(target_genes, colnames(expr_mat))
+  if (length(target_genes) < 5) {
+    cat("Warning: fewer than 5 B-cell target genes available on panel (",
+        length(target_genes), "); skipping B-cell MISTy.\n", sep = "")
+    return(invisible(NULL))
+  }
+  cat("  B cells:", nrow(expr_mat),
+      "  Targets:", length(target_genes), "\n")
+  cat("  Targets used:", paste(head(target_genes, 12), collapse = ", "),
+      if (length(target_genes) > 12) " ..." else "", "\n")
+  cat("  Juxtaview radius:", juxta_radius,
+      "  Paraview radius:", para_radius,
+      "  bypass.intra:", bypass_intra, "\n\n")
+
+  feature_name_map <- data.frame(
+    original = colnames(expr_mat),
+    safe     = make.names(colnames(expr_mat), unique = TRUE),
+    stringsAsFactors = FALSE
+  )
+  colnames(expr_mat) <- feature_name_map$safe
+  target_genes <- feature_name_map$safe[match(target_genes, feature_name_map$original)]
+  target_genes <- unique(target_genes[!is.na(target_genes)])
+  write.csv(
+    feature_name_map,
+    file.path(out_dir, paste0(sample_id, "_misty_bcell_feature_name_map.csv")),
+    row.names = FALSE
+  )
+
+  misty_res <- tryCatch({
+    misty_views <- mistyR::create_initial_view(
+      as.data.frame(expr_mat[, target_genes, drop = FALSE]),
+      unique.id = paste0(sample_id, "_misty_bcell")
+    )
+    misty_views <- mistyR::add_juxtaview(
+      misty_views, xy, neighbor.thr = juxta_radius,
+      cached = FALSE, verbose = FALSE
+    )
+    misty_views <- mistyR::add_paraview(
+      misty_views, xy, l = para_radius, zoi = juxta_radius,
+      cached = FALSE, verbose = FALSE
+    )
+    rm_args <- list(
+      views          = misty_views,
+      results.folder = out_dir,
+      target.subset  = target_genes,
+      num.threads    = n_cores,
+      bypass.intra   = bypass_intra
+    )
+    if (!is.null(model_function)) rm_args$model.function <- model_function
+    do.call(mistyR::run_misty, rm_args)
+  }, error = function(e) {
+    cat("Warning: B-cell MISTy run failed:", conditionMessage(e), "\n")
+    NULL
+  })
+
+  if (is.null(misty_res)) return(invisible(NULL))
+
+  misty_results <- mistyR::collect_results(out_dir)
+
+  if (!is.null(misty_results$improvements)) {
+    write.csv(
+      misty_results$improvements,
+      file.path(out_dir, paste0(sample_id, "_misty_bcell_improvements.csv")),
+      row.names = FALSE
+    )
+  }
+
+  tryCatch({
+    grDevices::png(
+      file.path(out_dir, paste0(sample_id, "_misty_bcell_improvement_stats.png")),
+      width = 900, height = 600, res = 150
+    )
+    print(mistyR::plot_improvement_stats(misty_results, "gain.R2"))
+    grDevices::dev.off()
+  }, error = function(e) {
+    try(grDevices::dev.off(), silent = TRUE)
+    cat("Warning: B-cell MISTy improvement_stats plot failed:",
+        conditionMessage(e), "\n")
+  })
+  tryCatch({
+    grDevices::png(
+      file.path(out_dir, paste0(sample_id, "_misty_bcell_view_contributions.png")),
+      width = 900, height = 600, res = 150
+    )
+    print(mistyR::plot_view_contributions(misty_results))
+    grDevices::dev.off()
+  }, error = function(e) {
+    try(grDevices::dev.off(), silent = TRUE)
+    cat("Warning: B-cell MISTy view_contributions plot failed:",
+        conditionMessage(e), "\n")
+  })
+  for (misty_view in c(paste0("juxtaview_", juxta_radius),
+                       paste0("paraview_", para_radius))) {
+    tryCatch({
+      grDevices::png(
+        file.path(out_dir, sprintf("%s_misty_bcell_interaction_heatmap_%s.png",
+                                    sample_id, misty_view)),
+        width = 900, height = 900, res = 150
+      )
+      print(mistyR::plot_interaction_heatmap(misty_results, misty_view))
+      grDevices::dev.off()
+    }, error = function(e) {
+      try(grDevices::dev.off(), silent = TRUE)
+      cat("Warning: B-cell MISTy interaction_heatmap (", misty_view,
+          ") failed: ", conditionMessage(e), "\n", sep = "")
+    })
+  }
+
+  cat("B-cell MISTy complete. Results saved to:", out_dir, "\n\n")
+  invisible(misty_results)
 }
 
 
@@ -5205,6 +5455,25 @@ run_cci_analysis <- function(gobj,
       results$misty <- section_out$result
       section_status["misty"] <- section_out$status
       section_messages[["misty"]] <- section_out$message
+
+      # B-cell-targeted MISTy run (curated B-cell signature targets, B-cell subset).
+      misty_bcell_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell")
+      misty_bcell_sentinel <- paste0(sample_id, "_misty_bcell_improvements.csv")
+      if (!isTRUE(overwrite_existing) &&
+          section_outputs_exist(misty_bcell_dir, misty_bcell_sentinel)) {
+        cat("  ↻ MISTy (B-cell) section skipped: ", misty_bcell_sentinel,
+            " already exists. Pass --overwrite to regenerate.\n", sep = "")
+      } else {
+        bcell_section <- .run_cci_section(
+          "MISTy (B-cell)",
+          function() run_misty_bcell(gobj, sample_id, output_dir,
+                                     celltype_col   = celltype_col,
+                                     focus_celltype = focus_celltype,
+                                     expr_cache     = .cci_expr_cache)
+        )
+        results$misty_bcell <- bcell_section$result
+      }
+
       .maybe_cleanup_between_cci_sections(cleanup_between_sections, "MISTy")
     }
     }
