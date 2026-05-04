@@ -3786,8 +3786,8 @@ run_misty <- function(gobj,
   }
   
   cat("\n--- MISTy: Intercellular spatial modelling ---\n")
-  
-  out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty")
+
+  out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty", sample_id)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   # Expression matrix (cells x genes) - log-normalised
@@ -3896,6 +3896,16 @@ run_misty <- function(gobj,
     # me predict my expression?" without conflating with neighbour gene levels.
     if (!is.null(ct_aligned) && length(unique(ct_aligned)) >= 2) {
       ct_para_added <- tryCatch({
+        # Collapse celltypes with < 5 cells into "other" so singletons
+        # don't pollute the predictor columns with near-zero noise.
+        ct_counts <- table(ct_aligned)
+        keep_cts  <- names(ct_counts[ct_counts >= 5])
+        if (length(keep_cts) < length(ct_counts)) {
+          collapsed_n <- sum(ct_counts) - sum(ct_counts[keep_cts])
+          cat("  Collapsing", length(ct_counts) - length(keep_cts),
+              "rare celltypes (", collapsed_n, "cells) into 'other'.\n")
+          ct_aligned <- ifelse(ct_aligned %in% keep_cts, ct_aligned, "other")
+        }
         ct_factor <- factor(ct_aligned)
         ct_mat <- stats::model.matrix(~ 0 + ct_factor)
         colnames(ct_mat) <- gsub("^ct_factor", "", colnames(ct_mat))
@@ -3976,7 +3986,9 @@ run_misty <- function(gobj,
       cat("\u26A0 MISTy view_contributions plot failed:",
           conditionMessage(e), "\n")
     })
-    for (misty_view in c("juxtaview_50", "paraview_200", "ctype_para")) {
+    for (misty_view in c(paste0("juxtaview_", juxta_radius),
+                         paste0("paraview_", para_radius),
+                         "ctype_para")) {
       tryCatch({
         grDevices::png(
           file.path(out_dir, sprintf("%s_misty_interaction_heatmap_%s.png",
@@ -4094,9 +4106,10 @@ run_misty <- function(gobj,
 
 
 # run_misty_bcell - targeted MISTy on a curated B-cell signature panel.
-# Restricts cells (and their coords) to B cells, then runs the standard
-# intra/juxta/para view stack on that subset with B-cell signature genes
-# as targets. Output: <output>/10_CCI_Analysis/misty_bcell/
+# Builds intra/juxta/para + celltype-paraview views on the FULL tissue
+# (so the RBF kernel sees all neighbour celltypes), then row-filters
+# every view's $data slot to B-cell rows before run_misty fits and
+# scores. Output: <output>/10_CCI_Analysis/misty_bcell/<sample_id>/
 run_misty_bcell <- function(gobj,
                             sample_id,
                             output_dir,
@@ -4136,9 +4149,11 @@ run_misty_bcell <- function(gobj,
     return(invisible(NULL))
   }
 
-  out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell")
+  out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell", sample_id)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
+  # FULL-tissue expression and coords - do not subset to B cells before
+  # view construction; the row filter happens after add_juxtaview/add_paraview.
   norm_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
     expr_cache$normalized
   } else {
@@ -4146,17 +4161,42 @@ run_misty_bcell <- function(gobj,
   }
   expr_mat <- t(as.matrix(norm_mat))
 
-  bcell_keep <- intersect(rownames(expr_mat), bcell_ids)
-  if (length(bcell_keep) < min_bcells) {
-    cat("Warning: fewer than ", min_bcells, " B cells present in expression matrix (",
-        length(bcell_keep), "); skipping B-cell MISTy.\n", sep = "")
-    return(invisible(NULL))
-  }
-  expr_mat <- expr_mat[bcell_keep, , drop = FALSE]
-
   spat <- as.data.frame(.giotto_get_spatial_locations(gobj, output = "data.table"))
   rownames(spat) <- spat$cell_ID
-  xy <- spat[bcell_keep, c("sdimx", "sdimy")]
+  xy <- spat[rownames(expr_mat), c("sdimx", "sdimy")]
+
+  # Align celltype labels with expr_mat row order; drop NA-celltype rows so
+  # the celltype paraview's one-hot matrix and the row filter agree.
+  meta_dt <- as.data.frame(.giotto_pdata_dt(gobj))
+  ct_vec <- as.character(meta_dt[[celltype_col_local]])
+  names(ct_vec) <- meta_dt$cell_ID
+  ct_aligned <- ct_vec[rownames(expr_mat)]
+  keep_ct <- !is.na(ct_aligned) & nzchar(ct_aligned)
+  if (any(!keep_ct)) {
+    cat("  Filtering out", sum(!keep_ct),
+        "cells with no celltype annotation.\n")
+    expr_mat   <- expr_mat[keep_ct, , drop = FALSE]
+    xy         <- xy[keep_ct, , drop = FALSE]
+    ct_aligned <- ct_aligned[keep_ct]
+  }
+
+  # FIX #8: large-tissue downsample (same guard as run_misty).
+  MAX_CELLS_MISTY <- 50000
+  if (nrow(expr_mat) > MAX_CELLS_MISTY) {
+    cat("⚠ B-cell MISTy: dataset has", nrow(expr_mat),
+        "cells; downsampling to", MAX_CELLS_MISTY, ".\n")
+    set.seed(42)
+    keep_idx <- sample(nrow(expr_mat), MAX_CELLS_MISTY)
+    # Make sure we keep all B cells in the downsample so the row mask
+    # remains representative.
+    bcell_in_full <- which(rownames(expr_mat) %in% bcell_ids)
+    keep_idx <- unique(c(bcell_in_full, keep_idx))
+    keep_idx <- head(keep_idx, MAX_CELLS_MISTY)
+    expr_mat   <- expr_mat[keep_idx, , drop = FALSE]
+    xy         <- xy[keep_idx, , drop = FALSE]
+    ct_aligned <- ct_aligned[keep_idx]
+    cat("  Cells after downsampling:", nrow(expr_mat), "\n")
+  }
 
   default_bcell_targets <- c(
     "MS4A1", "CD79A", "CD79B", "CD19", "CD22", "MS4A4A",
@@ -4172,9 +4212,19 @@ run_misty_bcell <- function(gobj,
         length(target_genes), "); skipping B-cell MISTy.\n", sep = "")
     return(invisible(NULL))
   }
-  cat("  B cells:", nrow(expr_mat),
-      "  Targets:", length(target_genes), "\n")
-  cat("  Targets used:", paste(head(target_genes, 12), collapse = ", "),
+
+  bcell_rows <- which(rownames(expr_mat) %in% bcell_ids)
+  if (length(bcell_rows) < min_bcells) {
+    cat("Warning: fewer than ", min_bcells,
+        " B cells present in expression matrix (",
+        length(bcell_rows), "); skipping B-cell MISTy.\n", sep = "")
+    return(invisible(NULL))
+  }
+
+  cat("  Total cells (kernel pool):", nrow(expr_mat),
+      "  B-cell rows (target mask):", length(bcell_rows), "\n")
+  cat("  Targets:", length(target_genes), "  Used:",
+      paste(head(target_genes, 12), collapse = ", "),
       if (length(target_genes) > 12) " ..." else "", "\n")
   cat("  Juxtaview radius:", juxta_radius,
       "  Paraview radius:", para_radius,
@@ -4194,6 +4244,14 @@ run_misty_bcell <- function(gobj,
     row.names = FALSE
   )
 
+  # Helper: row-filter a single mistyR view's $data slot.
+  filter_view_rows <- function(v, idx) {
+    if (is.list(v) && !is.null(v$data) && is.data.frame(v$data)) {
+      v$data <- v$data[idx, , drop = FALSE]
+    }
+    v
+  }
+
   misty_res <- tryCatch({
     misty_views <- mistyR::create_initial_view(
       as.data.frame(expr_mat[, target_genes, drop = FALSE]),
@@ -4207,6 +4265,56 @@ run_misty_bcell <- function(gobj,
       misty_views, xy, l = para_radius, zoi = juxta_radius,
       cached = FALSE, verbose = FALSE
     )
+
+    # Celltype composition paraview (same construction as run_misty).
+    if (length(unique(ct_aligned)) >= 2) {
+      ct_para_added <- tryCatch({
+        ct_counts <- table(ct_aligned)
+        keep_cts  <- names(ct_counts[ct_counts >= 5])
+        ct_local  <- ct_aligned
+        if (length(keep_cts) < length(ct_counts)) {
+          collapsed_n <- sum(ct_counts) - sum(ct_counts[keep_cts])
+          cat("  Collapsing", length(ct_counts) - length(keep_cts),
+              "rare celltypes (", collapsed_n, "cells) into 'other'.\n")
+          ct_local <- ifelse(ct_local %in% keep_cts, ct_local, "other")
+        }
+        ct_factor <- factor(ct_local)
+        ct_mat <- stats::model.matrix(~ 0 + ct_factor)
+        colnames(ct_mat) <- gsub("^ct_factor", "", colnames(ct_mat))
+        colnames(ct_mat) <- make.names(colnames(ct_mat), unique = TRUE)
+        ct_initial <- mistyR::create_initial_view(
+          as.data.frame(ct_mat),
+          unique.id = paste0(sample_id, "_misty_bcell_ctype")
+        )
+        ct_initial <- mistyR::add_paraview(
+          ct_initial, xy, l = para_radius, zoi = juxta_radius,
+          cached = FALSE, verbose = FALSE
+        )
+        para_slot <- paste0("paraview.", para_radius)
+        if (!is.null(ct_initial[[para_slot]])) {
+          ctype_view <- mistyR::create_view(
+            name  = "ctype_para",
+            data  = ct_initial[[para_slot]]$data,
+            abbrev = "ctype"
+          )
+          misty_views <- mistyR::add_views(misty_views, ctype_view)
+          cat("  Added celltype composition paraview view (l =",
+              para_radius, ", classes =", ncol(ct_mat), ")\n")
+          TRUE
+        } else FALSE
+      }, error = function(e) {
+        cat("Warning: B-cell celltype composition paraview failed:",
+            conditionMessage(e), "\n")
+        FALSE
+      })
+    }
+
+    # Row-filter every view's $data slot to B-cell rows. Use [] assignment
+    # so mistyR's S3 attributes survive.
+    orig_attrs <- attributes(misty_views)
+    misty_views[] <- lapply(misty_views, filter_view_rows, idx = bcell_rows)
+    attributes(misty_views) <- orig_attrs
+
     rm_args <- list(
       views          = misty_views,
       results.folder = out_dir,
@@ -4258,7 +4366,8 @@ run_misty_bcell <- function(gobj,
         conditionMessage(e), "\n")
   })
   for (misty_view in c(paste0("juxtaview_", juxta_radius),
-                       paste0("paraview_", para_radius))) {
+                       paste0("paraview_", para_radius),
+                       "ctype_para")) {
     tryCatch({
       grDevices::png(
         file.path(out_dir, sprintf("%s_misty_bcell_interaction_heatmap_%s.png",
@@ -5403,7 +5512,7 @@ run_cci_analysis <- function(gobj,
   }
 
   if (isTRUE(run_sections["misty"])) {
-    misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty")
+    misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty", sample_id)
     misty_sentinel <- paste0(sample_id, "_misty_improvements.csv")
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(misty_dir, misty_sentinel)) {
@@ -5426,7 +5535,7 @@ run_cci_analysis <- function(gobj,
 
       # Persist skip record so analysts can audit post-hoc without grepping logs.
       tryCatch({
-        misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty")
+        misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty", sample_id)
         dir.create(misty_dir, recursive = TRUE, showWarnings = FALSE)
         skip_path <- file.path(misty_dir, paste0(sample_id, "_misty_skipped.txt"))
         writeLines(
@@ -5456,8 +5565,9 @@ run_cci_analysis <- function(gobj,
       section_status["misty"] <- section_out$status
       section_messages[["misty"]] <- section_out$message
 
-      # B-cell-targeted MISTy run (curated B-cell signature targets, B-cell subset).
-      misty_bcell_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell")
+      # B-cell-targeted MISTy run (curated B-cell signature targets, B-cell row mask
+      # over full-tissue views so cross-celltype neighbours stay in the kernel).
+      misty_bcell_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell", sample_id)
       misty_bcell_sentinel <- paste0(sample_id, "_misty_bcell_improvements.csv")
       if (!isTRUE(overwrite_existing) &&
           section_outputs_exist(misty_bcell_dir, misty_bcell_sentinel)) {
