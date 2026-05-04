@@ -1070,17 +1070,14 @@ build_spatial_network <- function(gobj,
                     stats::setNames(sig_top$alpha_v, sig_top$partner),
                     "B cell" = 0.95
                   )
-                  legend_labels <- c(
-                    "Other"  = "Other",
-                    stats::setNames(
-                      paste0(sig_top$partner, " (rank ", sig_top$rank,
-                             ", enrichm = ",
-                             sprintf("%.2f", sig_top$enrichm), ")"),
-                      sig_top$partner),
-                    "B cell" = "B cell"
-                  )
-                  # Legend keeps only the highlighted categories (drops "Other").
+                  # `breaks` and `labels` must have the same length when both are passed; build them positionally to stay aligned (drops "Other" entirely).
                   legend_breaks <- c("B cell", sig_top$partner)
+                  legend_labels <- c(
+                    "B cell",
+                    paste0(sig_top$partner, " (rank ", sig_top$rank,
+                           ", enrichm = ",
+                           sprintf("%.2f", sig_top$enrichm), ")")
+                  )
 
                   p_combined <- ggplot2::ggplot(
                       poly_df,
@@ -1319,7 +1316,8 @@ build_spatial_network <- function(gobj,
                 axis.text.x         = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1,
                                                             margin = ggplot2::margin(t = 0)),
                 axis.ticks.length.x = grid::unit(0, "pt"),
-                axis.title.x        = ggplot2::element_text(margin = ggplot2::margin(t = 4)),
+                # Use the same element class as presentation_theme()'s axis.title.x (element_markdown_safe -> element_markdown when ggtext is loaded) so the theme merge doesn't error on class mismatch.
+                axis.title.x        = element_markdown_safe(margin = ggplot2::margin(t = 4)),
                 panel.grid          = ggplot2::element_blank()
               )
             save_presentation_plot(
