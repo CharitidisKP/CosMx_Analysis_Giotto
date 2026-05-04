@@ -391,14 +391,15 @@ quality_control <- function(gobj,
   .render_qc_polygon_panel <- function(gobject_local, metric) {
     tryCatch(
       plot_cells_polygon(
-        gobject        = gobject_local,
-        fill_column    = metric$column,
-        fill_as_factor = isTRUE(metric$as_factor),
-        context        = "sample",
-        polygon_alpha  = 0.9,
-        save_plot      = FALSE,
-        return_plot    = TRUE,
-        show_plot      = FALSE
+        gobject            = gobject_local,
+        fill_column        = metric$column,
+        fill_as_factor     = isTRUE(metric$as_factor),
+        context            = "sample",
+        polygon_alpha      = 0.9,
+        polygon_line_color = NA,
+        save_plot          = FALSE,
+        return_plot        = TRUE,
+        show_plot          = FALSE
       ) + labs(title = metric$label),
       error = function(e) {
         cat("  ⚠ ", metric$column, ": ", conditionMessage(e), "\n", sep = "")
@@ -579,7 +580,7 @@ quality_control <- function(gobj,
     upset_input[]         <- lapply(upset_input, as.integer)
     colnames(upset_input) <- flag_labels[flag_active]
     upset_path <- file.path(results_folder, paste0(sample_id, "_qc_flag_upset.png"))
-    grDevices::png(upset_path, width = 10, height = 6, units = "in", res = 300, bg = "white")
+    grDevices::png(upset_path, width = 10, height = 6.5, units = "in", res = 300, bg = "white")
     print(UpSetR::upset(
       upset_input,
       sets             = colnames(upset_input),
@@ -590,6 +591,12 @@ quality_control <- function(gobj,
       mainbar.y.label  = "Cells with flag combination",
       sets.x.label     = "Cells flagged"
     ))
+    # UpSetR has no native title slot; overlay one via grid::grid.text.
+    grid::grid.text(
+      paste0(sample_id, " - Flagged quality filters"),
+      x  = 0.5, y = 0.97,
+      gp = grid::gpar(fontsize = 14, fontface = "bold")
+    )
     grDevices::dev.off()
   } else {
     cat("  UpSet skipped (UpSetR not installed)\n")
