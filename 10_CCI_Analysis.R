@@ -790,6 +790,9 @@ plot_insitucor_results <- function(cor_results,
   # Writes wide cell_ID x module score matrix using the same log1p-normalised
   # weighted aggregate as the spatial plots below. Saved regardless of
   # whether polygons are available.
+  # Hoisted default so the mod_cor resolver below can fall back to
+  # cor(score_mat) when InSituCor doesn't return a native modulecor slot.
+  score_mat <- NULL
   safe_run("InSituCor per-cell module scores CSV", {
     all_mod_ids <- unique(module_stats$module)
     cell_total  <- rowSums(counts)
@@ -1094,8 +1097,20 @@ plot_insitucor_results <- function(cor_results,
 
   # Resolve module-correlation matrix once; used by both the CSV export,
   # the new correlation heatmap (plot 5), and the existing network (plot 4).
+  # Fallback path: derive from per-cell module scores when InSituCor
+  # doesn't return a native modulecor slot (the common case).
   mod_cor <- cor_results$modulecor %||% cor_results$moduleCor %||%
              cor_results$module_cor %||% NULL
+  if (is.null(mod_cor) && !is.null(score_mat) && ncol(score_mat) >= 2) {
+    mod_cor <- tryCatch(
+      stats::cor(score_mat, use = "pairwise.complete.obs"),
+      error = function(e) NULL
+    )
+    if (!is.null(mod_cor)) {
+      cat("  Module correlation matrix derived from per-cell module scores (",
+          ncol(score_mat), " modules).\n", sep = "")
+    }
+  }
 
   # -- Module correlation CSV + heatmap (plot 5) --------------------------
   safe_run("InSituCor module correlation heatmap/CSV", {
