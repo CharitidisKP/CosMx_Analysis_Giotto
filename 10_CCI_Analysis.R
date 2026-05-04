@@ -437,13 +437,38 @@ run_insitucor <- function(gobj,
   
   meta_aligned <- meta[match(rownames(counts), meta$cell_ID), , drop = FALSE]
   total_counts <- rowSums(counts)
+
+  # Negative-probe mean per cell (CosMx-specific background control). Without it, low-expressed modules can be driven by per-FOV background gradients rather than real spatial co-expression. Tries Giotto's "negprobes" feat_type first; falls back to gene-name pattern matching ("Negative", "SystemControl", "FalseCode" prefixes) against the existing counts matrix.
+  negmean_vec <- tryCatch({
+      neg_mat <- getExpression(gobj, feat_type = "negprobes",
+                               values = "raw", output = "matrix")
+      neg_mat <- t(as.matrix(neg_mat))
+      neg_mat <- neg_mat[match(rownames(counts), rownames(neg_mat)), , drop = FALSE]
+      as.numeric(rowMeans(neg_mat, na.rm = TRUE))
+    }, error = function(e) NULL)
+  if (is.null(negmean_vec)) {
+    neg_pat <- "^(Negative|NegPrb|NegPrb_|SystemControl|FalseCode)"
+    neg_idx <- grep(neg_pat, colnames(counts), perl = TRUE, value = FALSE)
+    if (length(neg_idx) >= 2) {
+      negmean_vec <- rowMeans(counts[, neg_idx, drop = FALSE], na.rm = TRUE)
+    }
+  }
+
   conditionon_df <- data.frame(
-    celltype = ct_vec,
+    celltype     = ct_vec,
     total_counts = as.numeric(total_counts),
     stringsAsFactors = FALSE,
-    row.names = rownames(counts)
+    row.names    = rownames(counts)
   )
-  
+  if (!is.null(negmean_vec) && all(is.finite(negmean_vec))) {
+    conditionon_df$negmean <- as.numeric(negmean_vec)
+    cat("  negmean confounder: present (", length(negmean_vec), " cells)\n",
+        sep = "")
+  } else {
+    cat("  negmean confounder: not available; skipped\n")
+  }
+
+  # tissue (FOV/slide) is passed via the dedicated `tissue =` argument to partition the kNN graph. We deliberately do NOT add it to conditionon_df because regressing out per-FOV mean expression on top of the graph partition over-corrects when FOVs in a single slide are biologically similar.
   tissue_col <- intersect(
     c("fov", "fov_ID", "fov_id", "fov_num", "FOV", "slide", "slide_id"),
     colnames(meta_aligned)
@@ -451,12 +476,12 @@ run_insitucor <- function(gobj,
   tissue_vec <- NULL
   if (length(tissue_col) > 0) {
     candidate_tissue <- meta_aligned[[tissue_col[1]]]
-    if (!all(is.na(candidate_tissue)) && length(unique(stats::na.omit(candidate_tissue))) > 1) {
+    if (!all(is.na(candidate_tissue)) &&
+        length(unique(stats::na.omit(candidate_tissue))) > 1) {
       tissue_vec <- candidate_tissue
-      conditionon_df$tissue <- as.character(candidate_tissue)
     }
   }
-  
+
   cat("  Cells:", nrow(counts), "  Genes:", ncol(counts), "\n")
   cat("  Cell type column:", celltype_col, "\n")
   
@@ -479,7 +504,7 @@ run_insitucor <- function(gobj,
     insitucor_args$ncores <- n_cores
   }
   if ("k" %in% insitucor_formals) {
-    insitucor_args$k <- 6
+    insitucor_args$k <- 50
   } else if ("radius" %in% insitucor_formals) {
     insitucor_args$radius <- 50
   }

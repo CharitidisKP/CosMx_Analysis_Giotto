@@ -67,14 +67,14 @@ sample_plot_title <- function(sample_id, title) {
 # caller's scope. Success cats stay inline with the calling code (so
 # skip-branches that print their own "⚠ X skipped: ..." don't get an
 # extra "✓" tacked on).
-safe_run <- function(label, expr) {
-  tryCatch(
-    force(expr),
-    error = function(e) {
-      cat("  ⚠ ", label, " failed: ", conditionMessage(e), "\n",
-          sep = "")
-    }
-  )
+safe_run <- function(label, expr, error = NULL) {
+  handler <- if (is.null(error)) {
+    function(e) cat("  ⚠ ", label, " failed: ", conditionMessage(e), "\n",
+                    sep = "")
+  } else {
+    error
+  }
+  tryCatch(force(expr), error = handler)
   invisible(NULL)
 }
 
