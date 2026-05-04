@@ -369,9 +369,56 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
 }
 
 
-# ============================================================================== 
-# Main function 
-# ============================================================================== 
+# ==============================================================================
+# Internal helper: degree boxplot by group (cell type or Leiden cluster)
+# ==============================================================================
+
+#' @keywords internal
+.plot_degree_by_group <- function(deg_df, group_col, palette_values,
+                                  title_text, filename, sample_id) {
+
+  # Integer-aware factor order so leiden 1, 2, ..., 14 instead of 1, 10, 11, 2.
+  raw_lev <- unique(stats::na.omit(as.character(deg_df[[group_col]])))
+  int_lev <- suppressWarnings(as.integer(raw_lev))
+  lev <- if (all(!is.na(int_lev))) as.character(sort(int_lev)) else sort(raw_lev)
+  deg_df[[group_col]] <- factor(as.character(deg_df[[group_col]]), levels = lev)
+
+  p <- ggplot2::ggplot(
+      deg_df,
+      ggplot2::aes(x = .data[[group_col]],
+                   y = degree,
+                   fill = .data[[group_col]])
+    ) +
+    ggplot2::geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4,
+                          colour = "grey25", linewidth = 0.3) +
+    ggplot2::scale_fill_manual(values = palette_values, drop = FALSE) +
+    ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id, title_text),
+      x = NULL, y = "Degree (edges per cell)"
+    ) +
+    presentation_theme(base_size = 11) +
+    # Wider bottom margin + clip = off so rotated tick labels are not visually truncated when group names are long.
+    ggplot2::theme(
+      axis.text.x     = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1),
+      plot.margin     = ggplot2::margin(t = 10, r = 20, b = 30, l = 20),
+      legend.position = "none"
+    ) +
+    ggplot2::coord_cartesian(clip = "off")
+
+  save_presentation_plot(
+    plot     = p,
+    filename = filename,
+    width    = max(10, 0.45 * length(lev) + 4),
+    height   = 9, dpi = 300
+  )
+  invisible(filename)
+}
+
+
+# ==============================================================================
+# Main function
+# ==============================================================================
 
 #' Build Spatial Networks, Run Neighbourhood Enrichment, and Niche Deconvolution
 #'
@@ -684,44 +731,64 @@ build_spatial_network <- function(gobj,
                     n_written, basename(fov_dir)))
       }
 
-      # Degree distribution per cell type
+      # Per-cell degree (computed once, joined to celltype + leiden separately).
+      deg_tbl <- c(
+        table(as.character(diag_net$from)),
+        table(as.character(diag_net$to))
+      )
+      deg_df_raw <- data.frame(
+        cell_ID = names(deg_tbl),
+        degree  = as.integer(deg_tbl),
+        stringsAsFactors = FALSE
+      )
+      deg_df_raw <- aggregate(degree ~ cell_ID, data = deg_df_raw, FUN = sum)
+
+      # Degree by cell type (uses celltype_palette so colours match the rest of the pipeline).
       if (celltype_col %in% names(meta_fov)) {
-        deg_tbl <- c(
-          table(as.character(diag_net$from)),
-          table(as.character(diag_net$to))
-        )
-        deg_df <- data.frame(
-          cell_ID = names(deg_tbl),
-          degree  = as.integer(deg_tbl),
-          stringsAsFactors = FALSE
-        )
-        deg_df <- aggregate(degree ~ cell_ID, data = deg_df, FUN = sum)
-        deg_df <- merge(deg_df,
+        deg_ct <- merge(deg_df_raw,
                         meta_fov[, c("cell_ID", celltype_col)],
                         by = "cell_ID")
-        names(deg_df)[3] <- "celltype"
-        deg_df$celltype <- factor(deg_df$celltype)
-        p_deg <- ggplot2::ggplot(deg_df,
-            ggplot2::aes(x = celltype, y = degree, fill = celltype)) +
-          ggplot2::geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4) +
-          ggplot2::labs(
-            title = sample_plot_title(sample_id,
-                      paste0("Node degree by cell type - ", primary_network)),
-            x = NULL, y = "Degree (edges per cell)"
-          ) +
-          presentation_theme(base_size = 11) +
-          ggplot2::theme(
-            axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
-            legend.position = "none"
-          )
-        save_presentation_plot(
-          plot     = p_deg,
-          filename = file.path(net_folder,
-                               paste0(sample_id, "_degree_by_celltype.png")),
-          width    = max(10, 0.4 * length(levels(deg_df$celltype)) + 4),
-          height   = 7, dpi = 300
+        names(deg_ct)[3] <- "celltype"
+        ct_palette <- if (exists("celltype_palette", mode = "function")) {
+          celltype_palette(unique(deg_ct$celltype))
+        } else {
+          stats::setNames(scales::hue_pal()(length(unique(deg_ct$celltype))),
+                          sort(unique(deg_ct$celltype)))
+        }
+        .plot_degree_by_group(
+          deg_df         = deg_ct,
+          group_col      = "celltype",
+          palette_values = ct_palette,
+          title_text     = paste0("Node degree by cell type - ", primary_network),
+          filename       = file.path(net_folder,
+                                     paste0(sample_id, "_degree_by_celltype.png")),
+          sample_id      = sample_id
         )
         cat("  \u2713 Degree-by-celltype plot saved\n")
+      }
+
+      # Degree by Leiden cluster (uses cluster_palette; skipped if leiden was already the celltype fallback).
+      if ("leiden_clust" %in% names(meta_fov) && !identical(celltype_col, "leiden_clust")) {
+        deg_lc <- merge(deg_df_raw,
+                        meta_fov[, c("cell_ID", "leiden_clust")],
+                        by = "cell_ID")
+        names(deg_lc)[3] <- "leiden_clust"
+        cl_palette <- if (exists("cluster_palette", mode = "function")) {
+          cluster_palette(unique(deg_lc$leiden_clust))
+        } else {
+          stats::setNames(scales::hue_pal()(length(unique(deg_lc$leiden_clust))),
+                          sort(unique(deg_lc$leiden_clust)))
+        }
+        .plot_degree_by_group(
+          deg_df         = deg_lc,
+          group_col      = "leiden_clust",
+          palette_values = cl_palette,
+          title_text     = paste0("Node degree by Leiden cluster - ", primary_network),
+          filename       = file.path(net_folder,
+                                     paste0(sample_id, "_degree_by_leiden.png")),
+          sample_id      = sample_id
+        )
+        cat("  \u2713 Degree-by-leiden plot saved\n")
       }
       cat("\n")
     }
