@@ -3341,7 +3341,20 @@ run_nichenet <- function(gobj,
   receiver_expr <- .row_means_matrix_like(receiver_mat)
   
   # Background and expressed genes
-  background_genes  <- rownames(expr_mat)
+  # NicheNet 2.0 recommends background = receiver-expressed genes intersected with
+  # rownames(ligand_target_matrix). Falling back to full panel only if the filtered
+  # set is too small (rare/sparse receivers).
+  background_genes <- intersect(
+    .expressed_genes_from_matrix(receiver_mat, pct = 0.05),
+    rownames(ligand_target_matrix)
+  )
+  if (length(background_genes) < 100) {
+    cat("Warning: filtered background gene set too small (",
+        length(background_genes),
+        "); falling back to full panel intersected with prior.\n", sep = "")
+    background_genes <- intersect(rownames(expr_mat),
+                                  rownames(ligand_target_matrix))
+  }
   expressed_ligands <- intersect(
     .expressed_genes_from_matrix(sender_mat, pct = 0.10),
     lr_network$from
@@ -3378,10 +3391,15 @@ run_nichenet <- function(gobj,
     character(0)
   }
   
-  if (length(receiver_de) < 10) {
+  n_target_genes <- length(receiver_de)
+  if (n_target_genes < 10) {
     cat("\u26A0 Insufficient target genes for NicheNet (<10 after intersection with expression matrix).\n")
     cat("  Skipping NicheNet for receiver '", receiver_celltype, "'.\n\n", sep = "")
     return(invisible(NULL))
+  }
+  if (n_target_genes < 25) {
+    cat("Warning: low target-gene count for NicheNet (", n_target_genes,
+        " - ranking metrics may be noisy below ~25).\n", sep = "")
   }
   
   # Ligand activity
@@ -3393,7 +3411,7 @@ run_nichenet <- function(gobj,
   )
   
   top_ligands <- head(
-    ligand_activities[order(-ligand_activities$pearson), "test_ligand"],
+    ligand_activities[order(-ligand_activities$aupr_corrected), "test_ligand"],
     top_n_ligands
   )
   
@@ -3403,16 +3421,16 @@ run_nichenet <- function(gobj,
   
   # --- P1: top-20 ligand activity bar plot ---
   tryCatch({
-    la_sorted <- ligand_activities[order(-ligand_activities$pearson), , drop = FALSE]
+    la_sorted <- ligand_activities[order(-ligand_activities$aupr_corrected), , drop = FALSE]
     la_top    <- head(la_sorted, 20)
     p_la <- ggplot2::ggplot(
       la_top,
-      ggplot2::aes(x = stats::reorder(test_ligand, pearson), y = pearson)
+      ggplot2::aes(x = stats::reorder(test_ligand, aupr_corrected), y = aupr_corrected)
     ) +
       ggplot2::geom_col(fill = "steelblue") +
       ggplot2::coord_flip() +
       ggplot2::labs(
-        x = NULL, y = "Pearson score",
+        x = NULL, y = "AUPR (corrected)",
         title = sprintf("%s \u2014 NicheNet top-20 ligands \u2192 %s",
                         sample_id, receiver_celltype)
       ) +
@@ -3427,7 +3445,7 @@ run_nichenet <- function(gobj,
   
   # --- P2: ligand -> target heatmap (top 20 ligands x top 30 targets) ---
   tryCatch({
-    top_ligs_p2 <- head(ligand_activities[order(-ligand_activities$pearson),
+    top_ligs_p2 <- head(ligand_activities[order(-ligand_activities$aupr_corrected),
                                           "test_ligand"], 20)
     top_ligs_p2 <- intersect(top_ligs_p2, rownames(ligand_target_matrix))
     if (length(top_ligs_p2) > 0) {
@@ -3486,7 +3504,7 @@ run_nichenet <- function(gobj,
       
       # P4: top-6 ligand expression on polygons (senders show, receivers outlined)
       top_ligs_spatial <- utils::head(
-        ligand_activities[order(-ligand_activities$pearson), "test_ligand"], 6
+        ligand_activities[order(-ligand_activities$aupr_corrected), "test_ligand"], 6
       )
       .plot_bcell_polygon_grid(
         poly_df  = poly_df,
@@ -3502,7 +3520,7 @@ run_nichenet <- function(gobj,
       # P5: top-6 target gene expression on polygons
       top_targs_spatial <- {
         top_ligs_for_targets <- utils::head(
-          ligand_activities[order(-ligand_activities$pearson), "test_ligand"], 20
+          ligand_activities[order(-ligand_activities$aupr_corrected), "test_ligand"], 20
         )
         top_ligs_for_targets <- intersect(as.character(top_ligs_for_targets),
                                           rownames(ligand_target_matrix))
@@ -3537,7 +3555,8 @@ run_nichenet <- function(gobj,
   invisible(list(
     ligand_activities     = ligand_activities,
     top_ligands           = top_ligands,
-    ligand_target_matrix  = ligand_target_matrix
+    ligand_target_matrix  = ligand_target_matrix,
+    n_target_genes        = n_target_genes
   ))
 }
 
@@ -3683,14 +3702,17 @@ run_nichenet_batch <- function(gobj,
     }
     
     top_tbl <- as.data.frame(nichenet_out$ligand_activities, stringsAsFactors = FALSE)
-    if ("pearson" %in% names(top_tbl)) {
-      top_tbl <- top_tbl[order(-top_tbl$pearson), , drop = FALSE]
+    if ("aupr_corrected" %in% names(top_tbl)) {
+      top_tbl <- top_tbl[order(-top_tbl$aupr_corrected), , drop = FALSE]
     }
     top_tbl <- utils::head(top_tbl, 10)
     if (nrow(top_tbl) == 0) {
       next
     }
     
+    n_targets_pair <- nichenet_out$n_target_genes %||% NA_integer_
+    top_tbl$n_targets <- n_targets_pair
+    top_tbl$low_n_targets <- !is.na(n_targets_pair) & n_targets_pair < 25
     top_tbl$sender <- sender_label
     top_tbl$receiver <- receiver_label
     summary_rows[[length(summary_rows) + 1L]] <- top_tbl
