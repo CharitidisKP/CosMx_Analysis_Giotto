@@ -28,6 +28,14 @@
 #' @param top_n Top N markers per cluster
 #' @return Giotto object with marker results
 
+# Sort cluster IDs integer-aware when all values coerce to integer (so axis
+# order is 1, 2, ..., 10, 11 not 1, 10, 11, ..., 2, 3); otherwise alphabetical.
+.sort_clusters <- function(x) {
+  lev <- unique(as.character(x))
+  int <- suppressWarnings(as.integer(lev))
+  if (length(lev) > 0 && all(!is.na(int))) as.character(sort(int)) else sort(lev)
+}
+
 # Custom cluster-marker heatmap.
 # Replaces Giotto::plotMetaDataHeatmap() with a diverging blue/white/red z-score
 # tile heatmap. Genes are row-z-scored across clusters and clipped to [-2, 2]
@@ -55,7 +63,7 @@
     return(invisible(NULL))
   }
 
-  cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
+  cluster_levels <- .sort_clusters(meta[[cluster_column]])
   n_clusters <- length(cluster_levels)
 
   mean_mat <- matrix(NA_real_,
@@ -127,7 +135,9 @@
                                     filename_suffix = "marker_dotplot",
                                     x_label         = "Cluster",
                                     y_label         = "Gene",
-                                    out_dir         = NULL) {
+                                    out_dir         = NULL,
+                                    colour_limits   = NULL,
+                                    size_limits     = NULL) {
   expr <- getExpression(gobj, values = "normalized", output = "matrix")
   meta <- as.data.frame(pDataDT(gobj))
 
@@ -144,7 +154,7 @@
     return(invisible(NULL))
   }
 
-  cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
+  cluster_levels <- .sort_clusters(meta[[cluster_column]])
   n_clusters <- length(cluster_levels)
 
   rows <- vector("list", length(genes_hit) * n_clusters)
@@ -171,8 +181,13 @@
         ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
     ggplot2::geom_point() +
     ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
-                                   name = "Mean expression") +
-    ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
+                                   name   = "Mean expression",
+                                   limits = colour_limits,
+                                   oob    = scales::squish) +
+    ggplot2::scale_size_continuous(range  = c(0, 6),
+                                   name   = "% cells",
+                                   limits = size_limits,
+                                   oob    = scales::squish) +
     ggplot2::scale_y_discrete(limits = rev(genes_hit)) +
     ggplot2::labs(
       title = sample_plot_title(sample_id, title_suffix),
@@ -226,13 +241,17 @@ marker_analysis <- function(gobj,
   cat("  Cluster column:", cluster_column, "\n")
   cat("  Top N per cluster:", top_n, "\n\n")
   
-  # Find markers using scran
+  # Find markers using scran. direction = "up" forwards to scran::findMarkers
+  # so top-ranked genes are those upregulated in each focal cluster - without
+  # this, sign-agnostic ranking lets strongly downregulated genes appear as
+  # "top markers", which produces inverted-looking marker dotplots.
   markers_scran <- findMarkers_one_vs_all(
-    gobject = gobj,
-    method = "scran",
+    gobject           = gobj,
+    method            = "scran",
     expression_values = "normalized",
-    cluster_column = cluster_column,
-    min_feats = 3
+    cluster_column    = cluster_column,
+    min_feats         = 3,
+    direction         = "up"
   )
   
   cat("✓ Markers found\n\n")
@@ -370,7 +389,7 @@ marker_analysis <- function(gobj,
       m_df$.nlog10 <- -log10(pmax(m_df$.sig, 1e-300))
       m_df$.significant <- m_df$.sig < 0.05 & abs(m_df$.lfc) > 0.25
       n_written <- 0L
-      for (cl in sort(unique(m_df$cluster))) {
+      for (cl in .sort_clusters(m_df$cluster)) {
         df_cl <- m_df[m_df$cluster == cl, , drop = FALSE]
         if (nrow(df_cl) < 5) next
         top_labels <- df_cl[order(df_cl$.sig)[seq_len(min(10, nrow(df_cl)))], ]
@@ -448,12 +467,39 @@ marker_analysis <- function(gobj,
   })
 
   # Per-cluster top-10 dotplots ----------------------------------------------
-  # One slide-friendly figure per cluster, showing that cluster's 10 strongest
-  # markers across all clusters so specificity is visible at a glance.
+  # Slide-friendly figure per cluster. Shared colour + size limits across all
+  # files so the user can compare two per-cluster plots directly - otherwise
+  # each ggplot auto-fits its own scale and identical-looking dots represent
+  # very different absolute expression levels.
   cat("Creating per-cluster top-10 dotplots...\n")
   tryCatch({
     per_cluster_dir <- file.path(results_folder, "Per_leiden_cluster")
-    cluster_ids <- sort(unique(as.character(top_markers$cluster)))
+    cluster_ids <- .sort_clusters(top_markers$cluster)
+
+    all_g10 <- top_markers %>%
+      dplyr::group_by(cluster) %>%
+      dplyr::slice_head(n = 10) %>%
+      dplyr::pull(feats) %>%
+      unique()
+
+    expr_local <- getExpression(gobj, values = "normalized", output = "matrix")
+    meta_local <- as.data.frame(pDataDT(gobj))
+    all_g10    <- intersect(all_g10, rownames(expr_local))
+    clev_local <- .sort_clusters(meta_local[[cluster_column]])
+
+    global_mean_max <- 0
+    global_pct_max  <- 0
+    for (g in all_g10) {
+      e <- expr_local[g, meta_local$cell_ID]
+      for (cl in clev_local) {
+        keep <- meta_local[[cluster_column]] == cl
+        global_mean_max <- max(global_mean_max, mean(e[keep]))
+        global_pct_max  <- max(global_pct_max,  100 * mean(e[keep] > 0))
+      }
+    }
+    cat(sprintf("  shared scales: mean expression [0, %.2f], %% cells [0, %.1f]\n",
+                global_mean_max, global_pct_max))
+
     n_written <- 0L
     for (cl in cluster_ids) {
       g10 <- top_markers %>%
@@ -470,7 +516,9 @@ marker_analysis <- function(gobj,
         title_suffix    = paste0("Top 10 markers - cluster ", cl),
         filename_suffix = paste0("marker_dotplot_leiden_", cl),
         x_label         = "Leiden cluster",
-        out_dir         = per_cluster_dir
+        out_dir         = per_cluster_dir,
+        colour_limits   = c(0, global_mean_max),
+        size_limits     = c(0, global_pct_max)
       )
       n_written <- n_written + 1L
     }
