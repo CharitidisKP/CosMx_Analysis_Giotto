@@ -55,6 +55,16 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
   trimws(out)
 }
 
+# Normalize labels in BOTH $clust AND $logliks/$profiles colnames so every downstream join keyed on cell-type name (mean_conf maps, refineClusters to_delete sets, flightpath legend, refined-scores CSV) sees a single naming convention. Without this, dotted HCA names match in logliks colnames but spaced names match in clust -> all NA mean_conf for any name with a dot.
+.normalize_insitu_labels <- function(insitu) {
+  if (is.null(insitu)) return(insitu)
+  insitu$clust <- .normalize_label(insitu$clust)
+  if (!is.null(insitu$logliks))  colnames(insitu$logliks)  <- .normalize_label(colnames(insitu$logliks))
+  if (!is.null(insitu$profiles)) colnames(insitu$profiles) <- .normalize_label(colnames(insitu$profiles))
+  if (is.matrix(insitu$prob))    colnames(insitu$prob)     <- .normalize_label(colnames(insitu$prob))
+  insitu
+}
+
 #' Build a shared named colour map for a set of cell type labels.
 #'
 #' Delegates to the universal celltype_palette() helper so every pipeline plot
@@ -966,12 +976,17 @@ select_best_annotation <- function(gobj,
     df_fv <- poly_df[!is.na(poly_df$fov) & poly_df$fov == fv, , drop = FALSE]
     if (length(unique(df_fv$cell_ID)) < min_cells) next
 
+    # Restrict legend to cell types actually present in this FOV (intersect with the master colour_map order so colour assignments stay stable across FOVs).
+    present_raw    <- intersect(names(colour_map),
+                                unique(stats::na.omit(as.character(df_fv[[celltype_col]]))))
+    if (length(present_raw) == 0) next
+    present_pretty <- pretty_plot_label(present_raw)
     df_fv$CellType_label <- factor(
       pretty_plot_label(as.character(df_fv[[celltype_col]])),
-      levels = pretty_plot_label(names(colour_map))
+      levels = present_pretty
     )
-    wrapped_cmap <- stats::setNames(unname(colour_map),
-                                    pretty_plot_label(names(colour_map)))
+    wrapped_cmap <- stats::setNames(unname(colour_map[present_raw]),
+                                    present_pretty)
 
     p <- ggplot2::ggplot(
       df_fv,
@@ -1295,11 +1310,12 @@ plot_custom_flightpath <- function(insitu_result,
                                    profile_name,
                                    sample_id,
                                    out_dir,
-                                   ann_type    = "supervised",
-                                   point_size  = 0.2,
-                                   point_alpha = 0.8,
-                                   label_size  = 3,
-                                   plot_seed   = 1511,
+                                   ann_type        = "supervised",
+                                   point_size      = 0.2,
+                                   point_alpha     = 0.8,
+                                   label_size      = 3,
+                                   min_cells_label = 50L,
+                                   plot_seed       = 1511,
                                    width  = 20,
                                    height = 10,
                                    dpi    = 600) {
@@ -1349,15 +1365,14 @@ plot_custom_flightpath <- function(insitu_result,
       by = "Cluster"
     ) %>%
     dplyr::mutate(
-      Cluster_lab = sprintf(
+      # Pretty-label the cluster NAME first (dots/underscores -> spaces) so the decimal in the appended stats survives pretty_plot_label's "\\." -> " " rule.
+      Cluster_name_pretty = pretty_plot_label(as.character(Cluster)),
+      Cluster_lab_pretty  = sprintf(
         "%s (%s, %.2f)",
-        as.character(Cluster),
+        Cluster_name_pretty,
         scales::comma(n_cells),
         dplyr::if_else(is.na(mean_conf), 0, mean_conf)
       )
-    ) %>%
-    dplyr::mutate(
-      Cluster_lab_pretty = pretty_plot_label(Cluster_lab)
     ) %>%
     dplyr::arrange(dplyr::desc(n_cells))
   
@@ -1373,16 +1388,18 @@ plot_custom_flightpath <- function(insitu_result,
     dplyr::left_join(Cluster_stats, by = "Cluster") %>%
     dplyr::mutate(
       Cluster_lab_pretty = factor(
-        pretty_plot_label(Cluster_lab),
+        Cluster_lab_pretty,
         levels = Cluster_stats$Cluster_lab_pretty
       )
     )
-  
+
+  # Single-line pretty labels (no strwrap so ggrepel can repel reliably) and skip clusters under min_cells_label so the on-plot label crowd does not displace useful labels - legend still carries every type.
   clustpos_df <- as.data.frame(flight$clustpos) %>%
     tibble::rownames_to_column("Cluster") %>%
     dplyr::mutate(Cluster = factor(Cluster, levels = names(colour_map))) %>%
     dplyr::left_join(Cluster_stats, by = "Cluster") %>%
-    dplyr::mutate(Cluster_pretty = pretty_plot_label(Cluster, width = 18))
+    dplyr::filter(!is.na(n_cells), n_cells >= min_cells_label) %>%
+    dplyr::mutate(Cluster_pretty = Cluster_name_pretty)
   
   title_txt <- sample_plot_title(
     sample_id,
@@ -1857,7 +1874,8 @@ refine_annotation <- function(gobj,
   
   cat("  \u2713 refineClusters() complete\n")
   
-  refined_clust    <- .normalize_label(insitu_refined$clust)
+  insitu_refined   <- .normalize_insitu_labels(insitu_refined)
+  refined_clust    <- insitu_refined$clust
   refined_prob_raw <- insitu_refined$prob
   
   refined_score <- if (is.matrix(refined_prob_raw)) {
@@ -2366,7 +2384,7 @@ annotate_cells <- function(gobj,
         reference_profiles = ref_profiles,
         align_genes        = align_genes
       ))
-      insitu_supervised$clust <- .normalize_label(insitu_supervised$clust)
+      insitu_supervised <- .normalize_insitu_labels(insitu_supervised)
       
       cat("\u2713 Supervised complete\n")
       cat("  Cell types found:", length(unique(insitu_supervised$clust)), "\n\n")
@@ -2524,7 +2542,7 @@ annotate_cells <- function(gobj,
         })
         
         if (!is.null(insitu_semi)) {
-          insitu_semi$clust <- .normalize_label(insitu_semi$clust)
+          insitu_semi <- .normalize_insitu_labels(insitu_semi)
           cat("\u2713 Semi-supervised complete\n")
           cat("  Cell types found:", length(unique(insitu_semi$clust)), "\n\n")
           annotation_diagnostics[[profile_name]]$semi_supervised_status <-
@@ -3261,8 +3279,10 @@ annotate_cells <- function(gobj,
           ggplot2::aes(label = sprintf("%.0f%%", 100 * frac)),
           vjust = -0.3, size = 2.8
         ) +
-        ggplot2::scale_y_continuous(limits = c(0, 1.05),
-                                    labels = scales::percent_format()) +
+        ggplot2::scale_y_continuous(
+          limits = c(0, max(best_per_cluster$frac, na.rm = TRUE) * 1.10),
+          labels = scales::percent_format()
+        ) +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "Per-cluster annotation purity"),
           subtitle = paste0("Dominant label fraction (", best, ")"),
