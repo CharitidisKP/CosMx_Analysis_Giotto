@@ -745,24 +745,36 @@ create_visualizations <- function(gobj,
                          axis.ticks = ggplot2::element_blank(),
                          panel.grid = ggplot2::element_blank())
 
+        # Flipped composition bar with percentage labels (mirrors .plot_proportions in 07_Annotation): horizontal bars sorted by count, percent annotation outside the bar end, y-scale expanded so labels do not get clipped.
         comp_tbl <- as.data.frame(table(ov[[colour_col]]))
         names(comp_tbl) <- c("label", "n")
-        comp_tbl <- comp_tbl[order(-comp_tbl$n), ]
-        comp_tbl$label <- factor(comp_tbl$label, levels = comp_tbl$label)
-        p_comp <- ggplot2::ggplot(comp_tbl,
-            ggplot2::aes(x = label, y = n, fill = label)) +
+        comp_total <- sum(comp_tbl$n)
+        p_comp <- ggplot2::ggplot(
+            comp_tbl,
+            ggplot2::aes(x = stats::reorder(label, n), y = n, fill = label)
+          ) +
           ggplot2::geom_col() +
           ggplot2::scale_fill_manual(values = panel_cmap, drop = FALSE) +
+          ggplot2::coord_flip() +
+          ggplot2::geom_text(
+            ggplot2::aes(label = paste0(round(n / comp_total * 100, 1), "%")),
+            hjust    = -0.15,
+            size     = 3,
+            colour   = "grey20",
+            fontface = "bold"
+          ) +
+          ggplot2::scale_y_continuous(
+            expand = ggplot2::expansion(mult = c(0, 0.18))
+          ) +
           ggplot2::labs(title = "Composition", x = NULL, y = "Cells") +
           presentation_theme(base_size = 10) +
-          ggplot2::theme(
-            axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
-            legend.position = "none"
-          )
+          ggplot2::theme(legend.position = "none")
 
+        # Layout (3x3 grid): UMAP top-left 2x2 (A), Composition right column rows 1-2 (C), Spatial full bottom row (B). Heights bias slightly toward the spatial row so the FOV-grid panel does not get squashed.
         overview <- patchwork::wrap_plots(
-          p_umap, p_spat, p_comp,
-          design = "AAB\nAAB\nCCC", heights = c(1, 1, 0.8)
+          A = p_umap, B = p_spat, C = p_comp,
+          design  = "AAC\nAAC\nBBB",
+          heights = c(1, 1, 1.2)
         ) +
           patchwork::plot_annotation(
             title = sample_plot_title(sample_id, "Sample overview"),
@@ -772,7 +784,7 @@ create_visualizations <- function(gobj,
           plot     = overview,
           filename = file.path(results_folder,
                                paste0(sample_id, "_overview_multipanel.png")),
-          width    = 16, height = 12, dpi = 300
+          width    = 16, height = 14, dpi = 300
         )
         cat("  \u2713 Multi-panel overview saved\n")
       }
