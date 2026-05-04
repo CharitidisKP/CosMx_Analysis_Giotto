@@ -118,6 +118,84 @@
   invisible(out_path)
 }
 
+# Self-contained dotplot helper: builds its own per-cluster mean/pct table from
+# the genes vector it was given, so callers can request any gene set (top
+# markers, B-cell markers, per-cluster top-10) without sharing state.
+.cluster_marker_dotplot <- function(gobj, sample_id, genes, cluster_column,
+                                    results_folder,
+                                    title_suffix    = "Marker dotplot",
+                                    filename_suffix = "marker_dotplot",
+                                    x_label         = "Cluster",
+                                    y_label         = "Gene",
+                                    out_dir         = NULL) {
+  expr <- getExpression(gobj, values = "normalized", output = "matrix")
+  meta <- as.data.frame(pDataDT(gobj))
+
+  genes_in   <- unique(as.character(genes))
+  genes_in   <- genes_in[nzchar(genes_in)]
+  genes_hit  <- intersect(genes_in, rownames(expr))
+  genes_skip <- setdiff(genes_in, genes_hit)
+  if (length(genes_skip) > 0) {
+    cat(sprintf("  i %d gene(s) absent from expression matrix: %s\n",
+                length(genes_skip), paste(genes_skip, collapse = ", ")))
+  }
+  if (length(genes_hit) == 0) {
+    cat("  i no genes available for dotplot; skipping\n")
+    return(invisible(NULL))
+  }
+
+  cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
+  n_clusters <- length(cluster_levels)
+
+  rows <- vector("list", length(genes_hit) * n_clusters)
+  k <- 1L
+  for (g in genes_hit) {
+    e <- expr[g, meta$cell_ID]
+    for (cl in cluster_levels) {
+      keep <- meta[[cluster_column]] == cl
+      rows[[k]] <- data.frame(
+        gene      = g,
+        cluster   = as.character(cl),
+        mean_expr = mean(e[keep]),
+        pct_expr  = 100 * mean(e[keep] > 0),
+        stringsAsFactors = FALSE
+      )
+      k <- k + 1L
+    }
+  }
+  dot_df         <- do.call(rbind, rows)
+  dot_df$gene    <- factor(dot_df$gene,    levels = genes_hit)
+  dot_df$cluster <- factor(dot_df$cluster, levels = cluster_levels)
+
+  p <- ggplot2::ggplot(dot_df,
+        ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
+    ggplot2::geom_point() +
+    ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
+                                   name = "Mean expression") +
+    ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
+    ggplot2::scale_y_discrete(limits = rev(genes_hit)) +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id, title_suffix),
+      x = x_label, y = y_label
+    ) +
+    presentation_theme(base_size = 11)
+
+  target_dir <- if (is.null(out_dir)) results_folder else out_dir
+  dir.create(target_dir, recursive = TRUE, showWarnings = FALSE)
+  out_path <- file.path(target_dir,
+                        paste0(sample_id, "_", filename_suffix, ".png"))
+  save_presentation_plot(
+    plot     = p,
+    filename = out_path,
+    width    = max(6, 0.35 * n_clusters + 2),
+    height   = max(6, 0.30 * length(genes_hit) + 3),
+    dpi      = 300
+  )
+
+  cat("  v Dotplot saved:", basename(out_path), "\n")
+  invisible(out_path)
+}
+
 
 marker_analysis <- function(gobj,
                             sample_id,
@@ -140,8 +218,10 @@ marker_analysis <- function(gobj,
   }
   
   results_folder <- file.path(output_dir, "06_Markers")
+  tables_folder  <- file.path(results_folder, "tables")
   dir.create(results_folder, recursive = TRUE, showWarnings = FALSE)
-  
+  dir.create(tables_folder,  recursive = TRUE, showWarnings = FALSE)
+
   cat("Finding marker genes...\n")
   cat("  Cluster column:", cluster_column, "\n")
   cat("  Top N per cluster:", top_n, "\n\n")
@@ -164,15 +244,13 @@ marker_analysis <- function(gobj,
     slice_head(n = top_n) %>%
     ungroup()
   
-  # Save all markers
-  write_csv(markers_scran, 
-            file.path(results_folder, paste0(sample_id, "_all_markers.csv")))
-  
-  # Save top markers
+  write_csv(markers_scran,
+            file.path(tables_folder, paste0(sample_id, "_all_markers.csv")))
+
   write_csv(top_markers,
-            file.path(results_folder, paste0(sample_id, "_top_markers.csv")))
-  
-  cat("✓ Marker tables saved\n\n")
+            file.path(tables_folder, paste0(sample_id, "_top_markers.csv")))
+
+  cat("✓ Marker tables saved (06_Markers/tables/)\n\n")
   
   # Create heatmap of top markers (custom ggplot tile heatmap; replaces Giotto's
   # plotMetaDataHeatmap() for visual consistency with the rest of the pipeline).
@@ -337,90 +415,69 @@ marker_analysis <- function(gobj,
   })
 
   # Top-markers dotplot -------------------------------------------------------
-  # Axes: clusters on x, genes on y so "many markers" grows height and
-  # clusters pack tight on x. The Giotto dotPlot() branch is dropped because
-  # it offers no axis-swap hook; the manual ggplot is now the only path.
+  # Helper builds its own per-cluster mean/pct table from the genes vector,
+  # so the B-cell variant works even when none of those genes rank in scran's
+  # top-N (was the empty-plot bug in the previous inline path).
   cat("Creating marker dotplot...\n")
   tryCatch({
-    dp_genes <- unique(top_genes)
-    expr     <- getExpression(gobj, values = "normalized", output = "matrix")
-    meta     <- as.data.frame(pDataDT(gobj))
-    dp_genes <- intersect(dp_genes, rownames(expr))
-    if (length(dp_genes) == 0) {
-      cat("  \u26A0 No top-marker genes available; skipping dotplot\n")
-    } else {
-      cluster_levels <- sort(unique(as.character(meta[[cluster_column]])))
-      rows <- list()
-      for (g in dp_genes) {
-        e <- expr[g, meta$cell_ID]
-        for (cl in cluster_levels) {
-          keep <- meta[[cluster_column]] == cl
-          rows[[length(rows) + 1L]] <- data.frame(
-            gene = g, cluster = as.character(cl),
-            mean_expr = mean(e[keep]),
-            pct_expr  = 100 * mean(e[keep] > 0),
-            stringsAsFactors = FALSE
-          )
-        }
-      }
-      dot_df         <- do.call(rbind, rows)
-      dot_df$gene    <- factor(dot_df$gene,    levels = dp_genes)
-      dot_df$cluster <- factor(dot_df$cluster, levels = cluster_levels)
-      p_dot <- ggplot2::ggplot(dot_df,
-          ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
-        ggplot2::geom_point() +
-        ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
-                                       name = "mean expr") +
-        ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
-        ggplot2::scale_y_discrete(limits = rev(dp_genes)) +
-        ggplot2::labs(
-          title = sample_plot_title(sample_id, "Top marker dotplot"),
-          x = "Cluster", y = "Gene"
-        ) +
-        presentation_theme(base_size = 11)
-      save_presentation_plot(
-        plot     = p_dot,
-        filename = file.path(results_folder,
-                             paste0(sample_id, "_marker_dotplot.png")),
-        width    = max(6, 0.35 * length(cluster_levels) + 2),
-        height   = max(8, 0.30 * length(dp_genes) + 3),
-        dpi      = 300
-      )
-      cat("  \u2713 Dotplot saved\n")
+    .cluster_marker_dotplot(
+      gobj            = gobj,
+      sample_id       = sample_id,
+      genes           = top_genes,
+      cluster_column  = cluster_column,
+      results_folder  = results_folder,
+      title_suffix    = "Top marker dotplot",
+      filename_suffix = "marker_dotplot",
+      x_label         = "Cluster"
+    )
 
-      # B-cell-only dotplot variant. Reuses the per-cluster mean/pct rows
-      # already computed above; just re-filters to b_all genes that are on
-      # the panel (no second per-cluster scan required).
-      bdp_genes <- intersect(b_all, rownames(expr))
-      if (length(bdp_genes) > 0) {
-        bdot_df <- dot_df[as.character(dot_df$gene) %in% bdp_genes, , drop = FALSE]
-        bdot_df$gene <- factor(as.character(bdot_df$gene), levels = bdp_genes)
-        p_bdot <- ggplot2::ggplot(bdot_df,
-            ggplot2::aes(x = cluster, y = gene, size = pct_expr, colour = mean_expr)) +
-          ggplot2::geom_point() +
-          ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
-                                         name = "Mean expression") +
-          ggplot2::scale_size_continuous(range = c(0, 6), name = "% cells") +
-          ggplot2::scale_y_discrete(limits = rev(bdp_genes)) +
-          ggplot2::labs(
-            title    = sample_plot_title(sample_id, "B-cell marker dotplot"),
-            subtitle = NULL,
-            x = "Leiden cluster", y = "Gene"
-          ) +
-          presentation_theme(base_size = 11)
-        save_presentation_plot(
-          plot     = p_bdot,
-          filename = file.path(results_folder,
-                               paste0(sample_id, "_bcell_dotplot.png")),
-          width    = max(6, 0.35 * length(cluster_levels) + 2),
-          height   = max(6, 0.30 * length(bdp_genes) + 3),
-          dpi      = 300
-        )
-        cat("  \u2713 B-cell dotplot saved\n")
-      }
+    if (length(b_all) > 0) {
+      .cluster_marker_dotplot(
+        gobj            = gobj,
+        sample_id       = sample_id,
+        genes           = b_all,
+        cluster_column  = cluster_column,
+        results_folder  = results_folder,
+        title_suffix    = "B-cell marker dotplot",
+        filename_suffix = "bcell_dotplot",
+        x_label         = "Leiden cluster"
+      )
     }
   }, error = function(e) {
     cat("\u26A0 Dotplot failed:", conditionMessage(e), "\n")
+  })
+
+  # Per-cluster top-10 dotplots ----------------------------------------------
+  # One slide-friendly figure per cluster, showing that cluster's 10 strongest
+  # markers across all clusters so specificity is visible at a glance.
+  cat("Creating per-cluster top-10 dotplots...\n")
+  tryCatch({
+    per_cluster_dir <- file.path(results_folder, "Per_leiden_cluster")
+    cluster_ids <- sort(unique(as.character(top_markers$cluster)))
+    n_written <- 0L
+    for (cl in cluster_ids) {
+      g10 <- top_markers %>%
+        dplyr::filter(as.character(cluster) == cl) %>%
+        dplyr::slice_head(n = 10) %>%
+        dplyr::pull(feats)
+      if (length(g10) == 0) next
+      .cluster_marker_dotplot(
+        gobj            = gobj,
+        sample_id       = sample_id,
+        genes           = g10,
+        cluster_column  = cluster_column,
+        results_folder  = results_folder,
+        title_suffix    = paste0("Top 10 markers - cluster ", cl),
+        filename_suffix = paste0("marker_dotplot_leiden_", cl),
+        x_label         = "Leiden cluster",
+        out_dir         = per_cluster_dir
+      )
+      n_written <- n_written + 1L
+    }
+    cat(sprintf("  v %d per-cluster dotplots saved under %s/\n",
+                n_written, basename(per_cluster_dir)))
+  }, error = function(e) {
+    cat("\u26A0 Per-cluster dotplots failed:", conditionMessage(e), "\n")
   })
 
   cat("=== Marker Analysis Summary ===\n")
