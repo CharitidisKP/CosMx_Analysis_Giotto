@@ -182,12 +182,10 @@
     ggplot2::geom_point() +
     ggplot2::scale_colour_gradient(low = "lightgrey", high = "red",
                                    name   = "Mean expression",
-                                   limits = colour_limits,
-                                   oob    = scales::squish) +
+                                   limits = colour_limits) +
     ggplot2::scale_size_continuous(range  = c(0, 6),
                                    name   = "% cells",
-                                   limits = size_limits,
-                                   oob    = scales::squish) +
+                                   limits = size_limits) +
     ggplot2::scale_y_discrete(limits = rev(genes_hit)) +
     ggplot2::labs(
       title = sample_plot_title(sample_id, title_suffix),
