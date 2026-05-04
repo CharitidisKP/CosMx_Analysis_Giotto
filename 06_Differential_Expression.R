@@ -239,10 +239,7 @@ marker_analysis <- function(gobj,
   cat("  Cluster column:", cluster_column, "\n")
   cat("  Top N per cluster:", top_n, "\n\n")
   
-  # Find markers using scran. direction = "up" forwards to scran::findMarkers
-  # so top-ranked genes are those upregulated in each focal cluster - without
-  # this, sign-agnostic ranking lets strongly downregulated genes appear as
-  # "top markers", which produces inverted-looking marker dotplots.
+  # direction = "up" is silently dropped by Giotto's wrapper (CART_T0_S1 2026-05-04: cluster 1 top rows had logFC = -3.7); kept in case it starts forwarding. Real safety net is the logFC > 0 filter on top_markers below.
   markers_scran <- findMarkers_one_vs_all(
     gobject           = gobj,
     method            = "scran",
@@ -254,13 +251,28 @@ marker_analysis <- function(gobj,
   
   cat("✓ Markers found\n\n")
   
-  # Extract top markers per cluster
-  top_markers <- markers_scran %>%
-    as_tibble() %>%
-    group_by(cluster) %>%
-    slice_head(n = top_n) %>%
-    ungroup()
-  
+  # Belt-and-braces upregulated filter (Giotto wrapper drops direction = "up"); detect the logFC column dynamically (Giotto renames scran's summary.logFC to logFC) and skip filtering with a warning if the schema changes.
+  lfc_candidates <- c("summary.logFC", "summary_logFC", "logFC",
+                      "median.logFC.other", "mean.logFC.other")
+  lfc_col <- intersect(lfc_candidates, names(markers_scran))[1]
+  if (is.na(lfc_col)) {
+    cat("Warning: no logFC column found in markers_scran - skipping upregulated filter.\n")
+    cat("Available columns:", paste(names(markers_scran), collapse = ", "), "\n")
+    top_markers <- markers_scran %>%
+      as_tibble() %>%
+      group_by(cluster) %>%
+      slice_head(n = top_n) %>%
+      ungroup()
+  } else {
+    cat("Filtering top markers to upregulated only (column:", lfc_col, ")\n")
+    top_markers <- markers_scran %>%
+      as_tibble() %>%
+      filter(.data[[lfc_col]] > 0) %>%
+      group_by(cluster) %>%
+      slice_head(n = top_n) %>%
+      ungroup()
+  }
+
   write_csv(markers_scran,
             file.path(tables_folder, paste0(sample_id, "_all_markers.csv")))
 
