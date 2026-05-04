@@ -363,7 +363,7 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   .plot_proximity_heatmap_complex(
     mat        = mat_masked,
     title      = paste0(sample_id, " - Cell-type neighbourhood enrichment"),
-    subtitle   = "Grey = not significant (FDR >= 0.05); blue = exclusion; red = co-localisation",
+    subtitle   = NULL,
     focus_label = NULL,
     filename   = save_path,
     width      = 14,
@@ -390,35 +390,20 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   lev <- if (all(!is.na(int_lev))) as.character(sort(int_lev)) else sort(raw_lev)
   deg_df[[group_col]] <- factor(as.character(deg_df[[group_col]]), levels = lev)
 
-  # Per-group mean for the crossbar overlay.
-  mean_df <- stats::aggregate(degree ~ ., data = deg_df[, c(group_col, "degree")], FUN = mean)
-  names(mean_df)[names(mean_df) == "degree"] <- "mean_degree"
-  mean_df[[group_col]] <- factor(as.character(mean_df[[group_col]]), levels = lev)
-
   p <- ggplot2::ggplot(
       deg_df,
       ggplot2::aes(x = .data[[group_col]],
                    y = degree,
-                   colour = .data[[group_col]])
+                   fill = .data[[group_col]])
     ) +
-    # Jitter shows the discrete integer-degree distribution (Delaunay produces tightly-clustered integer degrees) without the misleading squashed-box look.
-    ggplot2::geom_jitter(width = 0.35, height = 0.18,
-                         size = 0.35, alpha = 0.18) +
-    # Mean crossbar makes between-group differences readable even when the medians overlap on integer ticks.
-    ggplot2::geom_crossbar(
-      data = mean_df,
-      mapping = ggplot2::aes(x = .data[[group_col]],
-                             y = mean_degree,
-                             ymin = mean_degree, ymax = mean_degree),
-      width = 0.7, colour = "grey15", linewidth = 0.45,
-      inherit.aes = FALSE
-    ) +
-    ggplot2::scale_colour_manual(values = palette_values, drop = FALSE,
-                                 guide = "none") +
+    ggplot2::geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4,
+                          colour = "grey25", linewidth = 0.3) +
+    ggplot2::scale_fill_manual(values = palette_values, drop = FALSE) +
     ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
+    # Y axis from 0 so cross-group differences sit against a fixed baseline rather than the boxplot's auto-zoomed band.
+    ggplot2::scale_y_continuous(limits = c(0, NA), expand = ggplot2::expansion(mult = c(0, 0.05))) +
     ggplot2::labs(
       title = sample_plot_title(sample_id, title_text),
-      subtitle = "Per-cell degree (jitter) with group mean (black bar)",
       x = NULL, y = "Degree (edges per cell)"
     ) +
     presentation_theme(base_size = 11) +
@@ -592,11 +577,11 @@ build_spatial_network <- function(gobj,
   if ("Delaunay" %in% network_methods) {
     cat(sprintf("Building Delaunay spatial network (max edge length: %g um)...\n",
                 max_delaunay_distance))
-    # Pre-flight diagnostic (canonical Giotto stat plot) so the cap choice is auditable next to the post-hoc edge-length histogram.
+    # Pre-flight diagnostic (canonical Giotto stat plot). The diagnostic uses a generous maximum_distance (5x the build cap) so the natural neighbour-rank distribution is visible BEFORE the cap is applied; if we passed the build cap here we'd only see ranks 1-2 and the plot would be uninformative for cap selection.
     tryCatch({
       plotStatDelaunayNetwork(
         gobject          = gobj,
-        maximum_distance = max_delaunay_distance,
+        maximum_distance = max_delaunay_distance * 5,
         save_plot        = TRUE,
         save_param       = list(
           save_dir  = net_folder,
@@ -1016,6 +1001,134 @@ build_spatial_network <- function(gobj,
                   " skipped: ", conditionMessage(e), "\n", sep = "")
               )
             }
+
+            # Combined plot: one ggplot, one geom_polygon. Cells are categorised as "Other" (background grey) or one of {B cell, sig partner}; fill + alpha both come from that category via scale_*_manual.
+            tryCatch({
+              sig_top <- enr_bc[!is.na(enr_bc$p.adj_higher) &
+                                  enr_bc$p.adj_higher < 0.05 &
+                                  enr_bc$enrichm > 0, , drop = FALSE]
+              if (nrow(sig_top) == 0) {
+                cat("  No significant B-cell partners (p.adj_higher < 0.05); combined plot skipped\n")
+              } else {
+                sig_top <- sig_top[order(-sig_top$enrichm), ]
+                .ct_norm <- function(x) trimws(gsub("\\s+", " ",
+                  gsub("[._]+", " ", as.character(x))))
+                pair_norm <- lapply(strsplit(sig_top$unified_int, "--"), .ct_norm)
+                sig_top$partner <- vapply(pair_norm, function(p) {
+                  out <- p[!grepl("^B[ .]?cell$", p, ignore.case = TRUE)]
+                  if (length(out) == 0) NA_character_ else out[1]
+                }, character(1))
+                sig_top <- sig_top[!is.na(sig_top$partner), , drop = FALSE]
+                sig_top$rank    <- seq_len(nrow(sig_top))
+                sig_top$alpha_v <- if (nrow(sig_top) == 1L) 1.0
+                                   else scales::rescale(rev(sig_top$rank),
+                                                        to = c(0.4, 1.0))
+
+                poly_df <- tryCatch(.extract_polygon_df(gobj),
+                                    error = function(e) NULL)
+                if (is.null(poly_df) || nrow(poly_df) == 0) {
+                  cat("  \u26A0 Polygon data unavailable; combined plot skipped\n")
+                } else {
+                  meta_all <- as.data.frame(pDataDT(gobj))
+                  meta_ct_norm <- .ct_norm(meta_all[[celltype_col]])
+                  poly_df$cell_type <- .ct_norm(
+                    meta_all[[celltype_col]][match(poly_df$cell_ID, meta_all$cell_ID)]
+                  )
+                  poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
+                                              poly_df$part, sep = "_")
+
+                  # Single column drives both fill and alpha; cells outside the highlight set become "Other".
+                  highlight_set <- c("B cell", sig_top$partner)
+                  poly_df$category <- ifelse(poly_df$cell_type %in% highlight_set,
+                                             poly_df$cell_type, "Other")
+                  # Draw order (bottom -> top): Other, partners weakest -> strongest, B cell last.
+                  cat_levels <- c("Other", rev(sig_top$partner), "B cell")
+                  poly_df$category <- factor(poly_df$category, levels = cat_levels)
+                  poly_df <- poly_df[order(poly_df$category), ]
+
+                  cmap_full <- if (exists("celltype_palette", mode = "function")) {
+                    celltype_palette(unique(stats::na.omit(meta_ct_norm)))
+                  } else {
+                    stats::setNames(scales::hue_pal()(length(highlight_set)),
+                                    highlight_set)
+                  }
+                  resolve_col <- function(nm, fallback) {
+                    if (!is.na(cmap_full[nm])) cmap_full[[nm]] else fallback
+                  }
+                  bcell_colour    <- resolve_col("B cell", "mediumspringgreen")
+                  partner_colours <- vapply(sig_top$partner,
+                    function(pn) resolve_col(pn, "grey50"),
+                    character(1))
+
+                  fill_values <- c(
+                    "Other"  = "grey90",
+                    stats::setNames(partner_colours, sig_top$partner),
+                    "B cell" = bcell_colour
+                  )
+                  alpha_values <- c(
+                    "Other"  = 0.5,
+                    stats::setNames(sig_top$alpha_v, sig_top$partner),
+                    "B cell" = 0.95
+                  )
+                  legend_labels <- c(
+                    "Other"  = "Other",
+                    stats::setNames(
+                      paste0(sig_top$partner, " (rank ", sig_top$rank,
+                             ", enrichm = ",
+                             sprintf("%.2f", sig_top$enrichm), ")"),
+                      sig_top$partner),
+                    "B cell" = "B cell"
+                  )
+                  # Legend keeps only the highlighted categories (drops "Other").
+                  legend_breaks <- c("B cell", sig_top$partner)
+
+                  p_combined <- ggplot2::ggplot(
+                      poly_df,
+                      ggplot2::aes(x = x, y = y, group = poly_group,
+                                   fill = category, alpha = category)
+                    ) +
+                    ggplot2::geom_polygon(colour = NA) +
+                    ggplot2::scale_fill_manual(
+                      values = fill_values,
+                      labels = legend_labels,
+                      breaks = legend_breaks,
+                      name   = "Cell Type"
+                    ) +
+                    ggplot2::scale_alpha_manual(values = alpha_values,
+                                                guide  = "none") +
+                    ggplot2::coord_fixed() +
+                    ggplot2::labs(
+                      title = sample_plot_title(sample_id,
+                        paste0("B cell significant proximity partners (top ",
+                               nrow(sig_top), ")")),
+                      x = "Global X Coordinate", y = "Global Y Coordinate"
+                    ) +
+                    presentation_theme(base_size = 12, legend_position = "right") +
+                    ggplot2::theme(
+                      legend.key.height = grid::unit(0.5, "cm"),
+                      axis.title.x      = element_markdown_safe(margin = ggplot2::margin(t = 10)),
+                      axis.title.y      = element_markdown_safe(margin = ggplot2::margin(r = 10)),
+                      plot.margin       = ggplot2::margin(t = 10, r = 20, b = 20, l = 20)
+                    )
+
+                  n_partners <- nrow(sig_top)
+                  save_presentation_plot(
+                    plot     = p_combined,
+                    filename = file.path(bcell_dir,
+                                         paste0(sample_id,
+                                                "_proximity_visplot_top",
+                                                n_partners,
+                                                "_neighbours_combined.png")),
+                    width    = 18, height = 14, dpi = 200
+                  )
+                  cat("  \u2713 B-cell significant partners combined plot saved (",
+                      n_partners, " partners)\n", sep = "")
+                }
+              }
+            }, error = function(e) {
+              cat("    \u26A0 B-cell significant partners combined plot failed: ",
+                  conditionMessage(e), "\n", sep = "")
+            })
             # Concise summary table written next to the plots.
             utils::write.csv(
               top5[, intersect(c("unified_int", "enrichm",
@@ -1158,6 +1271,74 @@ build_spatial_network <- function(gobj,
           }
           cat("  \u2713 Spatial enrichment plots saved\n")
         }
+
+        # PAGE heatmap by cell type. Moved INSIDE the PAGE tryCatch so any failure prints via the same handler instead of skipping silently when the parent gobj's enrichment slot is unreadable in some Giotto builds.
+        if (create_plots && length(score_cols) >= 2) {
+          cat("  Building PAGE heatmap by cell type...\n")
+          tryCatch({
+            meta_dt <- pDataDT(gobj)[, c("cell_ID", celltype_col), with = FALSE]
+            names(meta_dt)[2] <- "celltype"
+            merged_dt <- merge(page_scores, meta_dt, by = "cell_ID")
+            ct_levels <- sort(unique(stats::na.omit(as.character(merged_dt$celltype))))
+            heat_mat  <- vapply(score_cols, function(sc) {
+              vapply(ct_levels, function(ct) {
+                mean(merged_dt[[sc]][as.character(merged_dt$celltype) == ct],
+                     na.rm = TRUE)
+              }, numeric(1))
+            }, numeric(length(ct_levels)))
+            rownames(heat_mat) <- ct_levels
+            colnames(heat_mat) <- score_cols
+            heat_long <- as.data.frame(as.table(heat_mat),
+                                       stringsAsFactors = FALSE)
+            names(heat_long) <- c("celltype", "signature", "score")
+            heat_long$celltype  <- factor(heat_long$celltype,
+                                          levels = rev(ct_levels))
+            heat_long$signature <- factor(heat_long$signature,
+                                          levels = score_cols)
+            max_abs <- max(abs(heat_long$score), na.rm = TRUE)
+            if (!is.finite(max_abs) || max_abs == 0) max_abs <- 1
+            p_page_hm <- ggplot2::ggplot(
+                heat_long,
+                ggplot2::aes(x = signature, y = celltype, fill = score)
+              ) +
+              ggplot2::geom_tile(colour = "white", linewidth = 0.2) +
+              ggplot2::scale_fill_gradient2(
+                low = "#2166AC", mid = "#F7F7F7", high = "#B2182B",
+                midpoint = 0, limits = c(-max_abs, max_abs),
+                name = "Mean PAGE z-score"
+              ) +
+              ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
+              ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x)) +
+              ggplot2::labs(
+                title = sample_plot_title(sample_id,
+                          "PAGE niche enrichment by cell type"),
+                x = "PAGE signature", y = "Celltype"
+              ) +
+              presentation_theme(base_size = 11) +
+              ggplot2::theme(
+                axis.text.x         = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1,
+                                                            margin = ggplot2::margin(t = 0)),
+                axis.ticks.length.x = grid::unit(0, "pt"),
+                axis.title.x        = ggplot2::element_text(margin = ggplot2::margin(t = 4)),
+                panel.grid          = ggplot2::element_blank()
+              )
+            save_presentation_plot(
+              plot     = p_page_hm,
+              filename = file.path(deconv_folder,
+                                   paste0(sample_id,
+                                          "_PAGE_heatmap_by_celltype.png")),
+              width    = max(10, 0.45 * length(score_cols) + 4),
+              height   = max(8,  0.40 * length(ct_levels)  + 3),
+              dpi      = 300
+            )
+            cat("  \u2713 PAGE heatmap by cell type saved\n")
+          }, error = function(e) {
+            cat("  \u26A0 PAGE heatmap failed: ", conditionMessage(e), "\n",
+                sep = "")
+          })
+        } else if (create_plots) {
+          cat("  \u26A0 PAGE heatmap skipped: fewer than 2 cell types scored\n")
+        }
       }, error = function(e) {
         cat("\u26A0 PAGE enrichment failed:", conditionMessage(e), "\n\n")
       })
@@ -1193,85 +1374,10 @@ build_spatial_network <- function(gobj,
     })
   }
   
-  if (create_plots) {
-    page_present <- !is.null(
-      tryCatch(getSpatialEnrichment(gobj, name = "PAGE_enrichment"),
-               error = function(e) NULL)
-    )
-    if (page_present) {
-      tryCatch({
-        page_scores <- getSpatialEnrichment(gobj, name = "PAGE_enrichment",
-                                            output = "data.table")
-        score_cols  <- setdiff(names(page_scores), "cell_ID")
-        if (length(score_cols) >= 2) {
-          # Build mean PAGE z-score per (celltype, signature) so we control title + axis labels (Giotto's plotMetaDataCellsHeatmap exposes neither).
-          meta_dt <- pDataDT(gobj)[, c("cell_ID", celltype_col), with = FALSE]
-          names(meta_dt)[2] <- "celltype"
-          merged_dt <- merge(page_scores, meta_dt, by = "cell_ID")
-          ct_levels <- sort(unique(stats::na.omit(as.character(merged_dt$celltype))))
-          heat_mat  <- vapply(score_cols, function(sc) {
-            vapply(ct_levels, function(ct) {
-              mean(merged_dt[[sc]][as.character(merged_dt$celltype) == ct], na.rm = TRUE)
-            }, numeric(1))
-          }, numeric(length(ct_levels)))
-          rownames(heat_mat) <- ct_levels
-          colnames(heat_mat) <- score_cols
+  # PAGE heatmap is now built inside the PAGE tryCatch (see Section 3) so it can never silently skip when this standalone block's gobj read disagreed with Giotto's enrichment slot accessor in some versions.
 
-          heat_long <- as.data.frame(as.table(heat_mat), stringsAsFactors = FALSE)
-          names(heat_long) <- c("celltype", "signature", "score")
-          heat_long$celltype  <- factor(heat_long$celltype,  levels = rev(ct_levels))
-          heat_long$signature <- factor(heat_long$signature, levels = score_cols)
-
-          max_abs <- max(abs(heat_long$score), na.rm = TRUE)
-          if (!is.finite(max_abs) || max_abs == 0) max_abs <- 1
-
-          p_page_hm <- ggplot2::ggplot(
-              heat_long,
-              ggplot2::aes(x = signature, y = celltype, fill = score)
-            ) +
-            ggplot2::geom_tile(colour = "white", linewidth = 0.2) +
-            ggplot2::scale_fill_gradient2(
-              low = "#2166AC", mid = "#F7F7F7", high = "#B2182B",
-              midpoint = 0, limits = c(-max_abs, max_abs),
-              name = "Mean PAGE z-score"
-            ) +
-            ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
-            ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x)) +
-            ggplot2::labs(
-              title = sample_plot_title(sample_id,
-                        "PAGE niche enrichment by cell type"),
-              x = "PAGE signature", y = "Celltype"
-            ) +
-            presentation_theme(base_size = 11) +
-            ggplot2::theme(
-              axis.text.x        = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1,
-                                                         margin = ggplot2::margin(t = 0)),
-              axis.ticks.length.x = grid::unit(0, "pt"),
-              axis.title.x       = ggplot2::element_text(margin = ggplot2::margin(t = 4)),
-              panel.grid         = ggplot2::element_blank()
-            )
-
-          save_presentation_plot(
-            plot     = p_page_hm,
-            filename = file.path(deconv_folder,
-                                 paste0(sample_id, "_PAGE_heatmap_by_celltype.png")),
-            width    = max(10, 0.45 * length(score_cols) + 4),
-            height   = max(8,  0.40 * length(ct_levels)  + 3),
-            dpi      = 300
-          )
-          cat("\u2713 PAGE score heatmap by cell type saved\n")
-        } else {
-          cat("\u26A0 PAGE heatmap skipped: fewer than 2 cell types scored\n")
-        }
-      }, error = function(e) {
-        cat("\u26A0 PAGE heatmap failed:", conditionMessage(e), "\n")
-      })
-    }
-  }
-  
-  
-  # ============================================================================ 
-  # SECTION 4 - SAVE & SUMMARISE 
+  # ============================================================================
+  # SECTION 4 - SAVE & SUMMARISE
   # ============================================================================ 
   
   cat("================================================================================\n")
