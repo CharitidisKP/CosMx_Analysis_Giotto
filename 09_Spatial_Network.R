@@ -68,27 +68,33 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
                              "sdimx_end",   "sdimy_end")]
 
   ct_pair <- strsplit(interaction_name, "--")[[1]]
-  in_pair <- meta$cell_ID[as.character(meta[[celltype_col]]) %in% ct_pair]
+  # Giotto's cellProximityEnrichment mangles celltype names in unified_int (spaces -> dots), but the metadata column keeps the spaced labels. Normalise both sides to a canonical "spaced" form so the palette + cell selection lookups match.
+  .ct_norm <- function(x) trimws(gsub("\\s+", " ", gsub("[._]+", " ", as.character(x))))
+  meta_ct_raw <- as.character(meta[[celltype_col]])
+  meta_ct_norm <- .ct_norm(meta_ct_raw)
+  ct_pair_norm <- .ct_norm(ct_pair)
+  in_pair <- meta$cell_ID[meta_ct_norm %in% ct_pair_norm]
 
   # Polygon geometry for cell bodies (replaces geom_point so the plot matches the pipeline-wide polygon convention). Falls back silently to point rendering if polygons are unavailable.
   poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
 
-  # Pull pair colours from the project-wide celltype_palette (Okabe-Ito + Set3 with B cell pinned to mediumspringgreen) so proximity vis plots agree with annotation/clustering panels.
+  # Pull pair colours from the project-wide celltype_palette (Okabe-Ito + Set3 with B cell pinned to mediumspringgreen) so proximity vis plots agree with annotation/clustering panels. Build cmap_full keyed on NORMALISED names so dotted ct_pair from unified_int still resolves.
   cmap_full <- if (exists("celltype_palette", mode = "function")) {
-    celltype_palette(unique(stats::na.omit(as.character(meta[[celltype_col]]))))
+    cmap_raw <- celltype_palette(unique(stats::na.omit(meta_ct_norm)))
+    cmap_raw
   } else {
-    stats::setNames(scales::hue_pal()(length(ct_pair)), ct_pair)
+    stats::setNames(scales::hue_pal()(length(ct_pair_norm)), ct_pair_norm)
   }
-  ct_colours <- cmap_full[ct_pair]
+  ct_colours <- cmap_full[ct_pair_norm]
   miss <- is.na(ct_colours) | !nzchar(ct_colours)
   if (any(miss)) ct_colours[miss] <- scales::hue_pal()(sum(miss))
-  names(ct_colours) <- ct_pair
+  names(ct_colours) <- ct_pair_norm
 
   if (!is.null(poly_df) && nrow(poly_df) > 0) {
     poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
                                  poly_df$part, sep = "_")
-    poly_df$cell_type  <- as.character(
-      meta[[celltype_col]][match(poly_df$cell_ID, meta$cell_ID)]
+    poly_df$cell_type  <- .ct_norm(
+      meta_ct_raw[match(poly_df$cell_ID, meta$cell_ID)]
     )
     poly_df$in_pair <- poly_df$cell_ID %in% in_pair
 
@@ -125,7 +131,8 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
       by = "cell_ID"
     )
     names(cell_dt)[names(cell_dt) == celltype_col] <- "cell_type"
-    cell_dt$in_pair <- cell_dt$cell_type %in% ct_pair
+    cell_dt$cell_type <- .ct_norm(cell_dt$cell_type)
+    cell_dt$in_pair <- cell_dt$cell_type %in% ct_pair_norm
     selected_dt <- cell_dt[cell_dt$in_pair, ]
     other_dt    <- cell_dt[!cell_dt$in_pair, ]
     p <- ggplot2::ggplot() +
@@ -383,18 +390,35 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   lev <- if (all(!is.na(int_lev))) as.character(sort(int_lev)) else sort(raw_lev)
   deg_df[[group_col]] <- factor(as.character(deg_df[[group_col]]), levels = lev)
 
+  # Per-group mean for the crossbar overlay.
+  mean_df <- stats::aggregate(degree ~ ., data = deg_df[, c(group_col, "degree")], FUN = mean)
+  names(mean_df)[names(mean_df) == "degree"] <- "mean_degree"
+  mean_df[[group_col]] <- factor(as.character(mean_df[[group_col]]), levels = lev)
+
   p <- ggplot2::ggplot(
       deg_df,
       ggplot2::aes(x = .data[[group_col]],
                    y = degree,
-                   fill = .data[[group_col]])
+                   colour = .data[[group_col]])
     ) +
-    ggplot2::geom_boxplot(outlier.size = 0.4, outlier.alpha = 0.4,
-                          colour = "grey25", linewidth = 0.3) +
-    ggplot2::scale_fill_manual(values = palette_values, drop = FALSE) +
+    # Jitter shows the discrete integer-degree distribution (Delaunay produces tightly-clustered integer degrees) without the misleading squashed-box look.
+    ggplot2::geom_jitter(width = 0.35, height = 0.18,
+                         size = 0.35, alpha = 0.18) +
+    # Mean crossbar makes between-group differences readable even when the medians overlap on integer ticks.
+    ggplot2::geom_crossbar(
+      data = mean_df,
+      mapping = ggplot2::aes(x = .data[[group_col]],
+                             y = mean_degree,
+                             ymin = mean_degree, ymax = mean_degree),
+      width = 0.7, colour = "grey15", linewidth = 0.45,
+      inherit.aes = FALSE
+    ) +
+    ggplot2::scale_colour_manual(values = palette_values, drop = FALSE,
+                                 guide = "none") +
     ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
     ggplot2::labs(
       title = sample_plot_title(sample_id, title_text),
+      subtitle = "Per-cell degree (jitter) with group mean (black bar)",
       x = NULL, y = "Degree (edges per cell)"
     ) +
     presentation_theme(base_size = 11) +
@@ -568,6 +592,19 @@ build_spatial_network <- function(gobj,
   if ("Delaunay" %in% network_methods) {
     cat(sprintf("Building Delaunay spatial network (max edge length: %g um)...\n",
                 max_delaunay_distance))
+    # Pre-flight diagnostic (canonical Giotto stat plot) so the cap choice is auditable next to the post-hoc edge-length histogram.
+    tryCatch({
+      plotStatDelaunayNetwork(
+        gobject          = gobj,
+        maximum_distance = max_delaunay_distance,
+        save_plot        = TRUE,
+        save_param       = list(
+          save_dir  = net_folder,
+          save_name = paste0(sample_id, "_delaunay_stat")
+        )
+      )
+    }, error = function(e) cat("  note: plotStatDelaunayNetwork failed: ",
+                               conditionMessage(e), "\n", sep = ""))
     tryCatch({
       # Try passing maximum_distance_delaunay (supported in Giotto >= 4.0);
       # if the argument is rejected fall back to an uncapped build and
@@ -1201,15 +1238,17 @@ build_spatial_network <- function(gobj,
             ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
             ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x)) +
             ggplot2::labs(
-              title    = sample_plot_title(sample_id,
-                           "PAGE niche enrichment by cell type"),
-              subtitle = "Mean PAGE z-score per (cell type, signature)",
+              title = sample_plot_title(sample_id,
+                        "PAGE niche enrichment by cell type"),
               x = "PAGE signature", y = "Celltype"
             ) +
             presentation_theme(base_size = 11) +
             ggplot2::theme(
-              axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
-              panel.grid  = ggplot2::element_blank()
+              axis.text.x        = ggplot2::element_text(angle = 45, hjust = 1, vjust = 1,
+                                                         margin = ggplot2::margin(t = 0)),
+              axis.ticks.length.x = grid::unit(0, "pt"),
+              axis.title.x       = ggplot2::element_text(margin = ggplot2::margin(t = 4)),
+              panel.grid         = ggplot2::element_blank()
             )
 
           save_presentation_plot(

@@ -616,6 +616,24 @@ clean_plot_text <- function(x) {
     col_fn <- circlize::colorRamp2(colour_breaks,
                                    c("#2166AC", "white", "#B2182B"))
 
+    # Pre-compute clustering on a NA-zeroed surrogate so fully-masked rows/cols (celltypes with no significant interactions) don't trip dist()/hclust() with "NA/NaN/Inf in foreign function call". Cluster dendrograms are passed in explicitly; the displayed matrix keeps NAs (grey via na_col).
+    mat_for_clust <- mat
+    mat_for_clust[is.na(mat_for_clust) | !is.finite(mat_for_clust)] <- 0
+    cluster_rows_arg <- is.null(focus_label)
+    cluster_cols_arg <- is.null(focus_label)
+    if (isTRUE(cluster_rows_arg) && nrow(mat_for_clust) >= 2) {
+      cluster_rows_arg <- tryCatch(
+        stats::hclust(stats::dist(mat_for_clust)),
+        error = function(e) FALSE
+      )
+    }
+    if (isTRUE(cluster_cols_arg) && ncol(mat_for_clust) >= 2) {
+      cluster_cols_arg <- tryCatch(
+        stats::hclust(stats::dist(t(mat_for_clust))),
+        error = function(e) FALSE
+      )
+    }
+
     # Build optional row/col annotation that highlights the focus celltype.
     top_anno <- NULL
     left_anno <- NULL
@@ -644,8 +662,9 @@ clean_plot_text <- function(x) {
       mat,
       name = "Enrichment",
       col = col_fn,
-      cluster_rows = is.null(focus_label),
-      cluster_columns = is.null(focus_label),
+      na_col = "grey85",
+      cluster_rows = cluster_rows_arg,
+      cluster_columns = cluster_cols_arg,
       rect_gp = grid::gpar(col = "white", lwd = 0.5),
       row_names_side = "left",
       column_names_side = "bottom",
