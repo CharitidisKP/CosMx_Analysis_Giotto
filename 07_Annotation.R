@@ -68,6 +68,13 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") ||
 #' @return Named character vector: names = cell type, values = hex colour
 .build_colour_map <- function(clust_vec) {
   ct <- sort(unique(stats::na.omit(as.character(clust_vec))))
+  # Integer-coercible IDs (e.g. leiden cluster numbers) need integer-aware
+  # sort - delegate to cluster_palette() so 05_Clustering and 07_Annotation
+  # leiden plots share the same cluster-to-colour mapping.
+  if (length(ct) > 0 && all(!is.na(suppressWarnings(as.integer(ct)))) &&
+      exists("cluster_palette", mode = "function", inherits = TRUE)) {
+    return(cluster_palette(ct))
+  }
   if (exists("celltype_palette", mode = "function", inherits = TRUE)) {
     return(celltype_palette(ct))
   }
