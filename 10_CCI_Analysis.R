@@ -1525,6 +1525,8 @@ plot_liana_extended <- function(liana_agg,
                                 celltype_col,
                                 top_n             = 20,
                                 focus_celltype    = NULL,
+                                sig_threshold     = 0.05,
+                                min_sig_pairs     = 25,
                                 sample_row        = NULL,
                                 sample_sheet_path = NULL) {
 
@@ -1542,12 +1544,28 @@ plot_liana_extended <- function(liana_agg,
     return(invisible(NULL))
   }
 
-  agg <- liana_agg
-  agg$source           <- agg[[source_col]]
-  agg$target           <- agg[[target_col]]
-  agg$ligand_complex   <- agg[[ligand_col]]
-  agg$receptor_complex <- agg[[receptor_col]]
-  agg$aggregate_rank   <- agg[[rank_col]]
+  agg_full <- liana_agg
+  agg_full$source           <- agg_full[[source_col]]
+  agg_full$target           <- agg_full[[target_col]]
+  agg_full$ligand_complex   <- agg_full[[ligand_col]]
+  agg_full$receptor_complex <- agg_full[[receptor_col]]
+  agg_full$aggregate_rank   <- agg_full[[rank_col]]
+
+  # Significance gate: aggregate_rank is a Robust Rank Aggregation p-value (lower = better). Filter on `< sig_threshold` so downstream top-N selections (LR bar, dotplot, network, B-cell variants) prioritise pairs with cross-method support rather than near-noise. Falls back to the full table when fewer than `min_sig_pairs` survive so plot layouts are not left near-empty in samples with sparse signal.
+  agg_sig <- agg_full[!is.na(agg_full$aggregate_rank) &
+                       agg_full$aggregate_rank < sig_threshold, , drop = FALSE]
+  n_sig <- nrow(agg_sig)
+  cat("  LIANA: ", n_sig, "/", nrow(agg_full),
+      " pairs significant (aggregate_rank < ", sig_threshold, ")\n", sep = "")
+  agg_for_topn <- if (n_sig >= min_sig_pairs) {
+    agg_sig
+  } else {
+    cat("  \u26A0 < ", min_sig_pairs,
+        " significant pairs; falling back to full aggregate for top-N selection\n",
+        sep = "")
+    agg_full
+  }
+  agg <- agg_for_topn
 
   count_df <- tryCatch(
     dplyr::count(agg, source, target, name = "n_interactions"),
@@ -2999,6 +3017,9 @@ run_liana <- function(gobj,
                       methods           = NULL,
                       expr_cache        = NULL,
                       focus_celltype    = "B cell",
+                      min_cells_liana   = 10,
+                      sig_threshold     = 0.05,
+                      min_sig_pairs     = 25,
                       sample_row        = NULL,
                       sample_sheet_path = NULL) {
   
@@ -3036,7 +3057,22 @@ run_liana <- function(gobj,
       .giotto_get_expression(gobj, values = "normalized", output = "matrix")
     }
     cell_meta <- meta[match(colnames(counts_mat), meta$cell_ID), , drop = FALSE]
-    
+
+    # Min-cells filter: drop celltypes with fewer than min_cells_liana cells. LIANA's per-celltype mean-expression estimates become unstable below ~10 cells and inflate noise across every method's score, propagating into aggregate_rank.
+    ct_counts <- table(as.character(cell_meta[[celltype_col]]))
+    drop_ct   <- names(ct_counts[ct_counts < min_cells_liana])
+    keep_ct   <- names(ct_counts[ct_counts >= min_cells_liana])
+    if (length(drop_ct) > 0) {
+      cat("  Min-cells filter (>=", min_cells_liana, "): dropping ",
+          length(drop_ct), " rare celltype(s) [",
+          paste(drop_ct, collapse = ", "), "]\n", sep = "")
+      # Boolean mask aligned to current column order; filter all three (cell_meta, counts, logcounts) with the same mask so cell_ID ordering stays consistent.
+      keep_idx      <- as.character(cell_meta[[celltype_col]]) %in% keep_ct
+      cell_meta     <- cell_meta[keep_idx, , drop = FALSE]
+      counts_mat    <- counts_mat[,    keep_idx, drop = FALSE]
+      logcounts_mat <- logcounts_mat[, keep_idx, drop = FALSE]
+    }
+
     sce <- SingleCellExperiment::SingleCellExperiment(
       assays = list(
         counts = counts_mat,
@@ -3052,7 +3088,54 @@ run_liana <- function(gobj,
   })
   
   if (is.null(sce_obj)) return(invisible(NULL))
-  
+
+  # Panel-coverage report: Consensus carries ~5000 L-R pairs but a CosMx 1k panel can only detect a fraction. Saved before any LIANA call so a low pair count in downstream plots can be attributed to panel coverage rather than biology.
+  safe_run("LIANA panel coverage report", {
+    if (!requireNamespace("SummarizedExperiment", quietly = TRUE))
+      stop("SummarizedExperiment unavailable")
+    panel_genes <- rownames(SummarizedExperiment::assay(sce_obj, "counts"))
+    res_pairs   <- liana::select_resource("Consensus")[[1]]
+    src_col <- intersect(
+      c("source_genesymbol", "ligand_genesymbol", "ligand"),
+      names(res_pairs)
+    )
+    tgt_col <- intersect(
+      c("target_genesymbol", "receptor_genesymbol", "receptor"),
+      names(res_pairs)
+    )
+    if (length(src_col) == 0 || length(tgt_col) == 0)
+      stop("could not locate ligand/receptor columns in Consensus resource")
+    src_col <- src_col[1]
+    tgt_col <- tgt_col[1]
+    total       <- nrow(res_pairs)
+    ligand_ok   <- res_pairs[[src_col]] %in% panel_genes
+    receptor_ok <- res_pairs[[tgt_col]] %in% panel_genes
+    both_ok     <- ligand_ok & receptor_ok
+    cov_lines <- c(
+      paste0("Sample: ",      sample_id),
+      paste0("Panel size: ",  length(panel_genes), " genes"),
+      paste0("Resource: Consensus (", total, " L-R pairs)"),
+      paste0("Pairs with detectable ligand:   ", sum(ligand_ok),
+             " (", sprintf("%.1f%%", 100 * sum(ligand_ok)   / total), ")"),
+      paste0("Pairs with detectable receptor: ", sum(receptor_ok),
+             " (", sprintf("%.1f%%", 100 * sum(receptor_ok) / total), ")"),
+      paste0("Pairs detectable (both):        ", sum(both_ok),
+             " (", sprintf("%.1f%%", 100 * sum(both_ok)     / total), ")")
+    )
+    writeLines(
+      cov_lines,
+      file.path(out_dir, paste0(sample_id, "_liana_panel_coverage.txt"))
+    )
+    utils::write.csv(
+      res_pairs[both_ok, c(src_col, tgt_col), drop = FALSE],
+      file.path(out_dir, paste0(sample_id, "_liana_panel_coverage_pairs.csv")),
+      row.names = FALSE
+    )
+    cat("  ✓ LIANA panel coverage: ", sum(both_ok), "/", total,
+        " pairs detectable on this panel (",
+        sprintf("%.1f%%", 100 * sum(both_ok) / total), ")\n", sep = "")
+  })
+
   if (is.null(methods)) {
     preferred_methods <- c("natmi", "connectome", "logfc", "sca", "cellphonedb")
     available_methods <- tryCatch(liana::show_methods(), error = function(e) preferred_methods)
@@ -3111,6 +3194,8 @@ run_liana <- function(gobj,
       sample_id         = sample_id,
       celltype_col      = celltype_col,
       focus_celltype    = resolved_focus,
+      sig_threshold     = sig_threshold,
+      min_sig_pairs     = min_sig_pairs,
       sample_row        = sample_row,
       sample_sheet_path = sample_sheet_path
     )
