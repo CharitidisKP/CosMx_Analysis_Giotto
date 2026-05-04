@@ -435,20 +435,19 @@ quality_control <- function(gobj,
       )
     }
 
-    # Combined figure.
-    combined <- if (stack_direction == "side") {
-      Reduce(`|`, panels[ok])
-    } else {
-      Reduce(`/`, panels[ok])
-    }
+    # Combined figure: sample-scope -> 2-column grid; sub-biopsy stacked -> single column.
+    n_ok    <- sum(ok)
+    n_cols  <- if (stack_direction == "side") 2L else 1L
+    n_rows  <- as.integer(ceiling(n_ok / n_cols))
+    combined <- patchwork::wrap_plots(panels[ok], ncol = n_cols)
     if (!is.null(title_text)) {
       combined <- combined + plot_annotation(
         title = title_text,
         theme = theme(plot.title = element_text(hjust = 0.5, face = "bold", size = 18))
       )
     }
-    combined_width  <- if (stack_direction == "side") 14 * sum(ok) else 16
-    combined_height <- if (stack_direction == "side") 11          else 12 * sum(ok)
+    combined_width  <- 14 * n_cols
+    combined_height <- 11 * n_rows
     combined_name   <- if (stack_direction == "side") {
       paste0(file_prefix, "_spatial_qc_combined.png")
     } else {
@@ -563,24 +562,37 @@ quality_control <- function(gobj,
   flag_labels <- c("Low features", "Low counts", "High features",
                    "Count outlier", "Feature outlier",
                    "High mito", "Border (low SplitRatio)", "High NegPrb")
-  flag_present <- vapply(flag_cols, function(c) any(qc_flags[[c]]), logical(1))
-  if (requireNamespace("UpSetR", quietly = TRUE) && sum(flag_present) >= 1L) {
-    upset_input           <- as.data.frame(qc_flags[, flag_cols[flag_present], drop = FALSE])
+  # Show every flag category the run is *configured* to enforce (zero-cell sets included);
+  # skip categories deliberately disabled via config so the panel matches the active QC battery.
+  flag_active <- c(
+    flag_low_features  = TRUE,
+    flag_low_counts    = TRUE,
+    flag_high_features = !is.null(cell_max_genes),
+    flag_count_outlier = isTRUE(apply_wtx_outlier),
+    flag_feat_outlier  = isTRUE(apply_wtx_outlier),
+    flag_mito          = !is.null(max_mito_pct),
+    flag_border        = isTRUE(apply_split_ratio),
+    flag_negprb        = !is.null(negprb_ratio_threshold)
+  )
+  if (requireNamespace("UpSetR", quietly = TRUE) && any(flag_active)) {
+    upset_input           <- as.data.frame(qc_flags[, flag_cols[flag_active], drop = FALSE])
     upset_input[]         <- lapply(upset_input, as.integer)
-    colnames(upset_input) <- flag_labels[flag_present]
+    colnames(upset_input) <- flag_labels[flag_active]
     upset_path <- file.path(results_folder, paste0(sample_id, "_qc_flag_upset.png"))
     grDevices::png(upset_path, width = 10, height = 6, units = "in", res = 300, bg = "white")
     print(UpSetR::upset(
       upset_input,
       sets             = colnames(upset_input),
+      keep.order       = TRUE,
       order.by         = "freq",
-      nintersects      = 10,
+      empty.intersections = "on",
+      nintersects      = 15,
       mainbar.y.label  = "Cells with flag combination",
       sets.x.label     = "Cells flagged"
     ))
     grDevices::dev.off()
   } else {
-    cat("  UpSet skipped (UpSetR not installed or no cells flagged)\n")
+    cat("  UpSet skipped (UpSetR not installed)\n")
   }
 
   cat("✓ Joint scatter + UpSet saved\n\n")

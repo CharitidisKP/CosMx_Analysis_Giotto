@@ -1064,7 +1064,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
           scripts_dir = cfg$paths$scripts_dir,
           python_path = cfg$paths$python_path,
           seed = cfg$reproducibility$seed %||% 42,
-          save_object = TRUE
+          save_object = isTRUE(cfg$interaction$save_per_focus_native)
         )
       }
       last_gobj

@@ -126,6 +126,12 @@ interaction:
   # Set annotation column explicitly instead of relying on fragile
   # auto-detection. Must match the column produced by step 07_Annotation.
   annotation_column: "celltype_HCA_Kidney_supervised"
+  # Per-focus native Giotto saves (Giotto_Object_<focus>_Analysis/, _Subcluster/).
+  # Wrapped pipeline_checkpoints/11_bcell/ already carries last_gobj for resume;
+  # the per-focus natives are only useful for ad-hoc inspection of a specific
+  # focus. Default false to save disk; flip to true if you load focus-specific
+  # gobjs interactively outside Run_Giotto_Pipeline.sh.
+  save_per_focus_native: false
   # Generalised cell-type focus regex (legacy single-focus path — used
   # only when focus_analyses below is empty / missing).
   # Labels follow smiDE-native NanoString convention: space-separated
@@ -420,12 +426,12 @@ parameters:
     cell_max_genes: 5000
     min_count: 100
     max_mito_pct: null
-    # WTx-style optional passes (off by default; turn on per cohort).
-    apply_wtx_outlier: false        # +/- N SD log10 outlier on cells passing the floor + window
+    # WTx-style passes from the Nanostring guide; aligned with merged-notebook QC.
+    apply_wtx_outlier: true         # +/- N SD log10 outlier on cells passing the floor + window
     wtx_sd_threshold: 2.5
-    apply_split_ratio: false        # SplitRatioToLocal border filter (Area / mean(Area | fov))
+    apply_split_ratio: true         # SplitRatioToLocal border filter (Area / mean(Area | fov)); silently no-op if no Area column
     split_ratio_threshold: 0.5
-    negprb_ratio_threshold: null    # null = compute and plot only, do not flag
+    negprb_ratio_threshold: null    # null = compute and plot only, do not flag (no universal WTx cutoff)
     # Notebook-only (Paired_Merged_Analysis.Rmd): set false to skip the
     # post-merge gene filter and align with WTx guide's "no gene filtering"
     # stance (preserves rare-cell expression). Default true matches the
