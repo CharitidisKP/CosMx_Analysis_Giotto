@@ -1412,7 +1412,7 @@ plot_insitucor_results <- function(cor_results,
 # (thick blue border) on top of a base polygon map coloured by `value`.
 # ==============================================================================
 
-.resolve_bcell_ids <- function(gobj, celltype_col, focus_celltype = "^B cell$") {
+.resolve_bcell_ids <- function(gobj, celltype_col, focus_celltype = "\\bB.cell\\b") {
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (is.null(celltype_col) || !celltype_col %in% names(meta)) return(character(0))
   hit <- grepl(focus_celltype, as.character(meta[[celltype_col]]),
@@ -3016,7 +3016,7 @@ run_liana <- function(gobj,
                       celltype_col      = NULL,
                       methods           = NULL,
                       expr_cache        = NULL,
-                      focus_celltype    = "B cell",
+                      focus_celltype    = "\\bB.cell\\b",
                       min_cells_liana   = 10,
                       sig_threshold     = 0.05,
                       min_sig_pairs     = 25,
@@ -3768,7 +3768,7 @@ run_misty <- function(gobj,
                       n_cores        = 4,
                       expr_cache     = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "^B cell$",
+                      focus_celltype = "\\bB.cell\\b",
                       model_function = NULL,
                       bypass_intra   = FALSE) {
   
@@ -4114,7 +4114,7 @@ run_misty_bcell <- function(gobj,
                             sample_id,
                             output_dir,
                             celltype_col   = NULL,
-                            focus_celltype = "^B cell$",
+                            focus_celltype = "\\bB.cell\\b",
                             target_genes   = NULL,
                             juxta_radius   = 50,
                             para_radius    = 200,
@@ -4427,7 +4427,7 @@ run_nnsvg <- function(gobj,
                       n_cores    = 4,
                       expr_cache = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "^B cell$",
+                      focus_celltype = "\\bB.cell\\b",
                       raster_resolution = "auto") {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
@@ -4437,7 +4437,7 @@ run_nnsvg <- function(gobj,
   cat("\n--- nnSVG: Spatially variable gene detection ---\n")
   cat("  \u26A0 nnSVG is computationally heavy (~15-60 min per sample at 20k cells).\n")
   
-  out_dir <- file.path(output_dir, "10_CCI_Analysis", "svg")
+  out_dir <- file.path(output_dir, "10_CCI_Analysis", "svg", sample_id)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   
   # Build SpatialExperiment from Giotto
@@ -5278,7 +5278,7 @@ run_cci_analysis <- function(gobj,
                              sample_id,
                              output_dir,
                              celltype_col       = NULL,
-                             focus_celltype     = "^B\\.cell$",
+                             focus_celltype     = "\\bB.cell\\b",
                              sender_celltypes   = NULL,
                              receiver_celltype  = NULL,
                              target_genes       = NULL,
@@ -5394,8 +5394,16 @@ run_cci_analysis <- function(gobj,
   if (isTRUE(run_sections["nichenet"])) {
     nichenet_root <- file.path(output_dir, "10_CCI_Analysis", "nichenet")
     nichenet_sentinel <- paste0(sample_id, "_nichenet_comparison_summary.csv")
-    if (!isTRUE(overwrite_existing) &&
-        section_outputs_exist(nichenet_root, nichenet_sentinel)) {
+    # Sentinel layout depends on spatial_option: "both" splits results into
+    # unfiltered/ + spatial_filtered/ subdirs (lines ~5460/5479), so the
+    # resume check needs to look in those subdirs and require both summaries.
+    nichenet_resume_done <- if (identical(nichenet_spatial_option, "both")) {
+      file.exists(file.path(nichenet_root, "unfiltered", nichenet_sentinel)) &&
+        file.exists(file.path(nichenet_root, "spatial_filtered", nichenet_sentinel))
+    } else {
+      isTRUE(section_outputs_exist(nichenet_root, nichenet_sentinel))
+    }
+    if (!isTRUE(overwrite_existing) && isTRUE(nichenet_resume_done)) {
       cat("  ↻ NicheNet section skipped: ", nichenet_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["nichenet"] <- "SKIPPED"
@@ -5582,6 +5590,8 @@ run_cci_analysis <- function(gobj,
                                      expr_cache     = .cci_expr_cache)
         )
         results$misty_bcell <- bcell_section$result
+        section_status["misty_bcell"]    <- bcell_section$status
+        section_messages[["misty_bcell"]] <- bcell_section$message
       }
 
       .maybe_cleanup_between_cci_sections(cleanup_between_sections, "MISTy")
@@ -5590,7 +5600,7 @@ run_cci_analysis <- function(gobj,
   }
 
   if (isTRUE(run_sections["nnsvg"])) {
-    nnsvg_dir <- file.path(output_dir, "10_CCI_Analysis", "svg")
+    nnsvg_dir <- file.path(output_dir, "10_CCI_Analysis", "svg", sample_id)
     nnsvg_sentinel <- paste0(sample_id, "_nnSVG_results.csv")
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(nnsvg_dir, nnsvg_sentinel)) {

@@ -164,7 +164,7 @@ cci:
     insitucor: true
     liana: true
     nichenet: true
-    misty: false  # disabled 2026-04-23 pending .sif rebuild with libgsl27 (see Environment/Docker_Image/giotto_rstudio_clean.def plan)
+    misty: true  # enabled 2026-05-04 after celltype-paraview + B-cell row-mask rebuild
     nnsvg: true
   nichenet_mode: "single"
   sender_celltypes: null
