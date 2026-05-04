@@ -700,12 +700,32 @@ create_visualizations <- function(gobj,
         )
         ov <- merge(ov, spat_dt[, c("cell_ID", "sdimx", "sdimy")], by = "cell_ID")
         ov <- merge(ov, meta_ov[, c("cell_ID", colour_col)], by = "cell_ID")
-        ov[[colour_col]] <- factor(ov[[colour_col]])
+
+        # Reuse the project-wide palettes - integer-coercible -> cluster_palette() (Okabe+Set3, integer-sort), text -> celltype_palette() (same pool, alphabetical, B-cell pin) so this multipanel matches 05_Clustering / 07_Annotation outputs.
+        ov[[colour_col]] <- as.character(ov[[colour_col]])
+        lev_raw <- unique(stats::na.omit(ov[[colour_col]]))
+        int_lev <- suppressWarnings(as.integer(lev_raw))
+        if (length(lev_raw) > 0 && all(!is.na(int_lev)) &&
+            exists("cluster_palette", mode = "function", inherits = TRUE)) {
+          ord_lev    <- as.character(sort(int_lev))
+          panel_cmap <- cluster_palette(ord_lev)
+        } else if (exists("celltype_palette", mode = "function", inherits = TRUE)) {
+          ord_lev    <- sort(lev_raw)
+          panel_cmap <- celltype_palette(ord_lev)
+        } else {
+          ord_lev    <- sort(lev_raw)
+          panel_cmap <- stats::setNames(
+            grDevices::hcl.colors(max(length(ord_lev), 1), palette = "Set3"),
+            ord_lev
+          )
+        }
+        ov[[colour_col]] <- factor(ov[[colour_col]], levels = ord_lev)
 
         p_umap <- ggplot2::ggplot(ov,
             ggplot2::aes(x = umap1, y = umap2,
                          colour = .data[[colour_col]])) +
           ggplot2::geom_point(size = 0.35, alpha = 0.8) +
+          ggplot2::scale_colour_manual(values = panel_cmap, drop = FALSE) +
           ggplot2::labs(title = "UMAP", x = "UMAP 1", y = "UMAP 2") +
           presentation_theme(base_size = 10) +
           ggplot2::guides(colour = ggplot2::guide_legend(
@@ -716,6 +736,7 @@ create_visualizations <- function(gobj,
             ggplot2::aes(x = sdimx, y = sdimy,
                          colour = .data[[colour_col]])) +
           ggplot2::geom_point(size = 0.25, alpha = 0.85) +
+          ggplot2::scale_colour_manual(values = panel_cmap, drop = FALSE) +
           ggplot2::coord_fixed() +
           ggplot2::labs(title = "Spatial", x = NULL, y = NULL) +
           presentation_theme(base_size = 10) +
@@ -731,6 +752,7 @@ create_visualizations <- function(gobj,
         p_comp <- ggplot2::ggplot(comp_tbl,
             ggplot2::aes(x = label, y = n, fill = label)) +
           ggplot2::geom_col() +
+          ggplot2::scale_fill_manual(values = panel_cmap, drop = FALSE) +
           ggplot2::labs(title = "Composition", x = NULL, y = "Cells") +
           presentation_theme(base_size = 10) +
           ggplot2::theme(

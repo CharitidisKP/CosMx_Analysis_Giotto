@@ -1422,7 +1422,7 @@ plot_custom_flightpath <- function(insitu_result,
     ) +
     ggplot2::labs(
       title    = title_txt,
-      subtitle = "Cells are positioned in the InSituType flightpath layout and colored by inferred annotation.",
+      subtitle = NULL,
       colour = "Celltype",
       x = NULL, y = NULL
     ) +
