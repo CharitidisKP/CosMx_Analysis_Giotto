@@ -388,21 +388,24 @@ quality_control <- function(gobj,
 
   # Render one polygon panel per metric (per-sample context: linewidth stays
   # at the existing project default rather than PER_FOV_LINEWIDTH).
+  # Match the annotation-style outlined polygon look (thin grey 0.15 border + explicit gradient).
   .render_qc_polygon_panel <- function(gobject_local, metric) {
+    is_factor <- isTRUE(metric$as_factor)
+    cmap <- if (is_factor && metric$column == "qc_pass") {
+      c(`TRUE` = "dodgerblue", `FALSE` = "darkorange")
+    } else NULL
     tryCatch(
-      plot_cells_polygon(
-        gobject            = gobject_local,
-        fill_column        = metric$column,
-        fill_as_factor     = isTRUE(metric$as_factor),
-        context            = "sample",
-        polygon_alpha      = 0.9,
-        polygon_line_color = NA,
-        save_plot          = FALSE,
-        return_plot        = TRUE,
-        show_plot          = FALSE
-      ) + labs(title = metric$label),
+      plot_cells_polygon_outlined(
+        gobject        = gobject_local,
+        fill_column    = metric$column,
+        fill_as_factor = is_factor,
+        colour_map     = cmap,
+        gradient       = c("lightgrey", "red"),
+        legend_title   = metric$label,
+        title_txt      = metric$label
+      ),
       error = function(e) {
-        cat("  ⚠ ", metric$column, ": ", conditionMessage(e), "\n", sep = "")
+        cat("  Warning: ", metric$column, ": ", conditionMessage(e), "\n", sep = "")
         NULL
       }
     )

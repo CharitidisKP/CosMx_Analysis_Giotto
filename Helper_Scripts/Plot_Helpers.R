@@ -154,6 +154,108 @@ plot_cells_polygon <- function(gobject,
   do.call(Giotto::spatInSituPlotPoints, call_args)
 }
 
+#' Outlined-cells polygon plot (annotation-style rendering).
+#'
+#' Annotation-style polygon plot: thin grey outlines (0.15) + explicit
+#' gradient or colour map so cells render with visible per-cell fills
+#' instead of the default low-contrast wash. Lifted from the helper used
+#' across step 07 (annotations) and step 11 (focus analyses); shared here
+#' so step 02 (QC) can use the same look.
+#'
+#' Resolves spatInSituPlotPoints across Giotto / GiottoVisuals / search
+#' path, and probes formals via pick() so it survives Giotto's arg-name
+#' drift between releases.
+#'
+#' @param gobject            Giotto object
+#' @param fill_column        cell-metadata column used for polygon fill
+#' @param fill_as_factor     treat fill column as discrete (factor / logical)
+#' @param colour_map         named char vec of factor-level -> colour, used
+#'                           when fill_as_factor = TRUE
+#' @param gradient           length-2 char vec for continuous fills
+#' @param legend_title       legend title; defaults to fill_column
+#' @param title_txt          plot title; NULL = no title
+#' @param polygon_alpha      fill alpha (default 0.75)
+#' @param polygon_line_color outline colour (default "grey20")
+#' @param polygon_line_size  outline width (default 0.15)
+#' @return ggplot object, or NULL if Giotto path is unavailable
+plot_cells_polygon_outlined <- function(gobject,
+                                        fill_column,
+                                        fill_as_factor     = FALSE,
+                                        colour_map         = NULL,
+                                        gradient           = c("lightgrey", "red"),
+                                        legend_title       = NULL,
+                                        title_txt          = NULL,
+                                        polygon_alpha      = 0.75,
+                                        polygon_line_color = "grey20",
+                                        polygon_line_size  = 0.15) {
+  fn <- NULL
+  if (requireNamespace("Giotto", quietly = TRUE) &&
+      exists("spatInSituPlotPoints", envir = asNamespace("Giotto"), inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoVisuals", quietly = TRUE) &&
+             exists("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"), inherits = FALSE)) {
+    fn <- get("spatInSituPlotPoints", envir = asNamespace("GiottoVisuals"))
+  } else if (exists("spatInSituPlotPoints", mode = "function")) {
+    fn <- get("spatInSituPlotPoints", mode = "function")
+  }
+  if (is.null(fn)) return(NULL)
+
+  accepted <- names(formals(fn))
+  pick <- function(val, candidates) {
+    hit <- intersect(candidates, accepted)
+    if (!length(hit)) return(NULL)
+    stats::setNames(list(val), hit[1])
+  }
+
+  args <- list(
+    gobject                = gobject,
+    show_polygon           = TRUE,
+    polygon_feat_type      = "cell",
+    polygon_fill           = fill_column,
+    polygon_fill_as_factor = fill_as_factor,
+    polygon_alpha          = polygon_alpha,
+    show_image             = FALSE,
+    return_plot            = TRUE,
+    save_plot              = FALSE
+  )
+  args <- c(args, pick(polygon_line_color,
+    c("polygon_line_color", "polygon_color",
+      "polygon_stroke_color", "polygon_border_color")))
+  args <- c(args, pick(polygon_line_size,
+    c("polygon_line_size", "polygon_stroke_size",
+      "polygon_border_size", "polygon_size")))
+  if (fill_as_factor && !is.null(colour_map)) {
+    args <- c(args, pick(colour_map,
+      c("polygon_fill_code", "polygon_fill_colors", "polygon_fill_values")))
+  } else if (!fill_as_factor) {
+    args <- c(args, pick(gradient,
+      c("polygon_fill_gradient", "polygon_fill_gradient_colors", "polygon_gradient")))
+  }
+  args <- args[names(args) %in% accepted | names(args) == "gobject"]
+
+  p <- tryCatch(do.call(fn, args), error = function(e) NULL)
+  if (is.null(p)) return(NULL)
+  if (!inherits(p, "ggplot") && !is.null(p$ggobj)) p <- p$ggobj
+  if (!inherits(p, "ggplot")) return(NULL)
+
+  legend_title <- legend_title %||% fill_column
+  p +
+    ggplot2::labs(title = title_txt, x = NULL, y = NULL) +
+    ggplot2::guides(
+      fill  = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4)),
+      color = ggplot2::guide_legend(title = legend_title, ncol = 1,
+                                    override.aes = list(size = 4))
+    ) +
+    presentation_theme(base_size = 11, legend_position = "right") +
+    ggplot2::theme(
+      axis.title = ggplot2::element_blank(),
+      axis.text  = ggplot2::element_blank(),
+      axis.ticks = ggplot2::element_blank(),
+      panel.grid = ggplot2::element_blank()
+    )
+}
+
 #' Dual-layer highlight polygon plot.
 #'
 #' Draws every cell in \code{background_colour}, then overlays the cells that
