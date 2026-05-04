@@ -538,8 +538,8 @@ parameters:
     #   0       -> skip the unsupervised pass entirely.
     # Output: 07_Annotation/unsupervised_<N>/ + cluster_unsup_<N> col on gobj.
     # When "auto", a *_n_clusts_sweep.csv is also written for audit.
-    unsupervised_n_clusts: "auto"
-    unsupervised_auto_range: [4, 14]   # n_clusts range tested when "auto"
+    unsupervised_n_clusts: 16          # pinned for current CART run; set to "auto" to use the auto-range below
+    unsupervised_auto_range: [12, 18]  # n_clusts range tested when "auto" (auto picked 4 on default [4,14] - too low for CART)
     # Which annotation profiles to run and whether to score/select the best:
     #   "default"     -> only default_profile (HCA_Kidney), supervised + refinement.
     #                    Both columns kept in pDataDT; no scoring.
