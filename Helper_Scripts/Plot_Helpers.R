@@ -78,29 +78,22 @@ celltype_palette <- function(celltypes,
 
 #' Deterministic palette for un-named / numeric / text-only clusters.
 #'
-#' Thin wrapper over \code{generate_cluster_colors()} that sorts the input
-#' first so cluster-to-colour assignments are stable across scripts in a run.
+#' Mirrors celltype_palette(): same .universal_pool, integer-aware sort so
+#' "1, 2, ..., 10, 11" not "1, 10, 11, 2". No pinning - cluster IDs are
+#' arbitrary per sample. Overflow ramps via colorRampPalette().
 #'
 #' @param cluster_levels character/numeric vector of cluster labels
-#' @param palette RColorBrewer palette name forwarded to generate_cluster_colors
-#' @return named character vector
-cluster_palette <- function(cluster_levels, palette = "Paired") {
-  lev <- sort(unique(as.character(cluster_levels)))
+#' @return named character vector keyed by cluster ID
+cluster_palette <- function(cluster_levels) {
+  lev <- unique(stats::na.omit(as.character(cluster_levels)))
   if (length(lev) == 0) return(stats::setNames(character(0), character(0)))
-  if (exists("generate_cluster_colors", mode = "function", inherits = TRUE)) {
-    return(generate_cluster_colors(cluster_levels = lev, palette = palette))
+  int_lev <- suppressWarnings(as.integer(lev))
+  lev <- if (all(!is.na(int_lev))) as.character(sort(int_lev)) else sort(lev)
+  pool <- .universal_pool
+  if (length(lev) > length(pool)) {
+    pool <- grDevices::colorRampPalette(pool)(length(lev))
   }
-  # Fallback if Cluster_Visualisations.R has not been sourced yet.
-  if (requireNamespace("RColorBrewer", quietly = TRUE) &&
-      palette %in% rownames(RColorBrewer::brewer.pal.info)) {
-    max_n <- RColorBrewer::brewer.pal.info[palette, "maxcolors"]
-    cols  <- grDevices::colorRampPalette(
-      RColorBrewer::brewer.pal(max_n, palette)
-    )(length(lev))
-  } else {
-    cols <- scales::hue_pal()(length(lev))
-  }
-  stats::setNames(cols, lev)
+  stats::setNames(pool[seq_along(lev)], lev)
 }
 
 

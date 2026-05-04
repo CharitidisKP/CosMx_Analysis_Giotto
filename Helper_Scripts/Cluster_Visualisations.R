@@ -149,34 +149,41 @@ prepare_clustering_dataframes <- function(gobject,
 
 # Function 2: Generate cluster colors -------------------------------------
 
-generate_cluster_colors <- function(cluster_levels, 
+generate_cluster_colors <- function(cluster_levels,
                                     palette = "Paired",
                                     custom_colors = NULL) {
-  
+
   n_clusters <- length(cluster_levels)
-  
-  if (!is.null(custom_colors) && length(custom_colors) >= n_clusters) {
+  lev_chr <- as.character(cluster_levels)
+
+  named_lookup <- !is.null(custom_colors) &&
+    !is.null(names(custom_colors)) &&
+    all(lev_chr %in% names(custom_colors))
+
+  if (named_lookup) {
+    # Honour the caller's name->colour mapping verbatim (annotation-style).
+    clus_colors <- custom_colors[lev_chr]
+  } else if (!is.null(custom_colors) && length(custom_colors) >= n_clusters) {
     clus_colors <- custom_colors[1:n_clusters]
+    names(clus_colors) <- lev_chr
   } else {
-    ## Check if this is properly running or if I need to change the syntax ##
     if (requireNamespace("RColorBrewer", quietly = TRUE) &&
         palette %in% rownames(RColorBrewer::brewer.pal.info)) {
       max_n <- RColorBrewer::brewer.pal.info[palette, "maxcolors"]
       clus_colors <- colorRampPalette(RColorBrewer::brewer.pal(max_n, palette))(n_clusters)
     } else {
-      clus_colors <- scales::hue_pal()(n_clusters)   # scales is already used in the repo
+      clus_colors <- scales::hue_pal()(n_clusters)
     }
+    names(clus_colors) <- lev_chr
   }
-  
-  names(clus_colors) <- as.character(cluster_levels)
-  
+
   cat("\nCluster color mapping:\n")
   print(data.frame(
     Cluster = names(clus_colors),
     Color = clus_colors,
     row.names = NULL
   ))
-  
+
   return(clus_colors)
 }
 

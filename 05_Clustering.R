@@ -306,12 +306,19 @@ perform_clustering <- function(gobj,
   cluster_vis_candidates <- unique(cluster_vis_candidates)
   cluster_vis_script <- cluster_vis_candidates[file.exists(cluster_vis_candidates)][1]
   
+  # Build leiden cluster colour map ONCE, mirror .build_colour_map() in
+  # 07_Annotation.R so spatial polygon, UMAP, tSNE, and combined all read
+  # from the same named vector.
+  cluster_levels_here <- sort(unique(as.character(pDataDT(gobj)$leiden_clust)))
+  clus_colour_map <- cluster_palette(cluster_levels_here)
+
   if (!is.na(cluster_vis_script) && nzchar(cluster_vis_script) && file.exists(cluster_vis_script)) {
     source(cluster_vis_script)
     tryCatch({
       create_clustering_visualization(
         gobject = gobj,
         cluster_column = "leiden_clust",
+        custom_colors = clus_colour_map,
         title_suffix = paste0(" - ", sample_id, " Leiden Clusters"),
         save_plots = TRUE,
         save_dir = results_folder,
@@ -328,9 +335,6 @@ perform_clustering <- function(gobj,
   # per-sub-biopsy variant into subsamples/ so each biopsy can be inspected
   # independently.
   tryCatch({
-    cluster_levels_here <- sort(unique(as.character(pDataDT(gobj)$leiden_clust)))
-    clus_colour_map <- cluster_palette(cluster_levels_here)
-
     .save_cluster_polygon <- function(gobject_local, out_dir, file_prefix, context = "sample") {
       dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
       # Pass NA stroke colour (probed by plot_cells_polygon) to remove the
