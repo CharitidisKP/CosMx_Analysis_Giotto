@@ -49,7 +49,9 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
                                  primary_network,
                                  sample_id,
                                  prox_folder,
-                                 file_label = NULL) {
+                                 file_label = NULL,
+                                 width      = 14,
+                                 height     = 10) {
 
   ann_net <- annotateSpatialNetwork(
     gobject              = gobj,
@@ -68,12 +70,19 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   ct_pair <- strsplit(interaction_name, "--")[[1]]
   in_pair <- meta$cell_ID[as.character(meta[[celltype_col]]) %in% ct_pair]
 
-  # Polygon geometry for cell bodies (replaces geom_point so the plot
-  # matches the pipeline-wide polygon convention). Falls back silently
-  # to the previous point rendering if polygons are unavailable.
+  # Polygon geometry for cell bodies (replaces geom_point so the plot matches the pipeline-wide polygon convention). Falls back silently to point rendering if polygons are unavailable.
   poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
 
-  ct_colours <- setNames(scales::hue_pal()(length(ct_pair)), ct_pair)
+  # Pull pair colours from the project-wide celltype_palette (Okabe-Ito + Set3 with B cell pinned to mediumspringgreen) so proximity vis plots agree with annotation/clustering panels.
+  cmap_full <- if (exists("celltype_palette", mode = "function")) {
+    celltype_palette(unique(stats::na.omit(as.character(meta[[celltype_col]]))))
+  } else {
+    stats::setNames(scales::hue_pal()(length(ct_pair)), ct_pair)
+  }
+  ct_colours <- cmap_full[ct_pair]
+  miss <- is.na(ct_colours) | !nzchar(ct_colours)
+  if (any(miss)) ct_colours[miss] <- scales::hue_pal()(sum(miss))
+  names(ct_colours) <- ct_pair
 
   if (!is.null(poly_df) && nrow(poly_df) > 0) {
     poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
@@ -163,7 +172,7 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   save_path <- file.path(prox_folder,
                          paste0(label_tag, "_proximity_visplot_",
                                 safe_name, ".png"))
-  save_presentation_plot(p, save_path, width = 14, height = 10, dpi = 150)
+  save_presentation_plot(p, save_path, width = width, height = height, dpi = 150)
   cat("\u2713 Proximity vis plot saved:", basename(save_path), "\n")
   invisible(p)
 }
@@ -895,7 +904,9 @@ build_spatial_network <- function(gobj,
                   celltype_col     = celltype_col,
                   primary_network  = primary_network,
                   sample_id        = sample_id,
-                  prox_folder      = bcell_dir
+                  prox_folder      = bcell_dir,
+                  width            = 18,
+                  height           = 14
                 ),
                 error = function(e) cat("    \u26A0 ", top5$unified_int[i],
                   " skipped: ", conditionMessage(e), "\n", sep = "")
@@ -1089,18 +1100,58 @@ build_spatial_network <- function(gobj,
                                             output = "data.table")
         score_cols  <- setdiff(names(page_scores), "cell_ID")
         if (length(score_cols) >= 2) {
-          plotMetaDataCellsHeatmap(
-            gobject        = gobj,
-            metadata_cols  = celltype_col,
-            value_cols     = score_cols,
-            spat_enr_names = "PAGE_enrichment",
-            save_plot      = TRUE,
-            save_param     = list(
-              save_name   = paste0(sample_id, "_PAGE_heatmap_by_celltype"),
-              save_dir    = deconv_folder,
-              base_width  = 14,
-              base_height = 10
+          # Build mean PAGE z-score per (celltype, signature) so we control title + axis labels (Giotto's plotMetaDataCellsHeatmap exposes neither).
+          meta_dt <- pDataDT(gobj)[, c("cell_ID", celltype_col), with = FALSE]
+          names(meta_dt)[2] <- "celltype"
+          merged_dt <- merge(page_scores, meta_dt, by = "cell_ID")
+          ct_levels <- sort(unique(stats::na.omit(as.character(merged_dt$celltype))))
+          heat_mat  <- vapply(score_cols, function(sc) {
+            vapply(ct_levels, function(ct) {
+              mean(merged_dt[[sc]][as.character(merged_dt$celltype) == ct], na.rm = TRUE)
+            }, numeric(1))
+          }, numeric(length(ct_levels)))
+          rownames(heat_mat) <- ct_levels
+          colnames(heat_mat) <- score_cols
+
+          heat_long <- as.data.frame(as.table(heat_mat), stringsAsFactors = FALSE)
+          names(heat_long) <- c("celltype", "signature", "score")
+          heat_long$celltype  <- factor(heat_long$celltype,  levels = rev(ct_levels))
+          heat_long$signature <- factor(heat_long$signature, levels = score_cols)
+
+          max_abs <- max(abs(heat_long$score), na.rm = TRUE)
+          if (!is.finite(max_abs) || max_abs == 0) max_abs <- 1
+
+          p_page_hm <- ggplot2::ggplot(
+              heat_long,
+              ggplot2::aes(x = signature, y = celltype, fill = score)
+            ) +
+            ggplot2::geom_tile(colour = "white", linewidth = 0.2) +
+            ggplot2::scale_fill_gradient2(
+              low = "#2166AC", mid = "#F7F7F7", high = "#B2182B",
+              midpoint = 0, limits = c(-max_abs, max_abs),
+              name = "Mean PAGE z-score"
+            ) +
+            ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x)) +
+            ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x)) +
+            ggplot2::labs(
+              title    = sample_plot_title(sample_id,
+                           "PAGE niche enrichment by cell type"),
+              subtitle = "Mean PAGE z-score per (cell type, signature)",
+              x = "PAGE signature", y = "Celltype"
+            ) +
+            presentation_theme(base_size = 11) +
+            ggplot2::theme(
+              axis.text.x = ggplot2::element_text(angle = 45, hjust = 1),
+              panel.grid  = ggplot2::element_blank()
             )
+
+          save_presentation_plot(
+            plot     = p_page_hm,
+            filename = file.path(deconv_folder,
+                                 paste0(sample_id, "_PAGE_heatmap_by_celltype.png")),
+            width    = max(10, 0.45 * length(score_cols) + 4),
+            height   = max(8,  0.40 * length(ct_levels)  + 3),
+            dpi      = 300
           )
           cat("\u2713 PAGE score heatmap by cell type saved\n")
         } else {
