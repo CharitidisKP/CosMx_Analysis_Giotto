@@ -953,18 +953,36 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       sample_row = sample_row,
       sample_sheet_path = cfg$paths$sample_sheet
     ),
-    "09_spatial" = runtime_env$build_spatial_network(
-      gobj                  = gobj,
-      sample_id             = sample_id,
-      output_dir            = output_dir,
-      celltype_col          = cfg$interaction$annotation_column %||% NULL,
-      n_simulations         = cfg$interaction$number_of_simulations %||% 250,
-      max_delaunay_distance = as.numeric(
-        cfg$parameters$spatial_network$max_delaunay_distance %||% 50
-      ),
-      sample_row            = sample_row,
-      sample_sheet_path     = cfg$paths$sample_sheet
-    ),
+    "09_spatial" = {
+      gobj <- runtime_env$build_spatial_network(
+        gobj                  = gobj,
+        sample_id             = sample_id,
+        output_dir            = output_dir,
+        celltype_col          = cfg$interaction$annotation_column %||% NULL,
+        n_simulations         = cfg$interaction$number_of_simulations %||% 250,
+        max_delaunay_distance = as.numeric(
+          cfg$parameters$spatial_network$max_delaunay_distance %||% 50
+        ),
+        sample_row            = sample_row,
+        sample_sheet_path     = cfg$paths$sample_sheet
+      )
+      # BANKSY per-sample niches via Helper_Scripts/BANKSY_Niches.R::run_banksy. Writes niche_id onto gobj so 10/11/12/13 inherit it.
+      banksy_cfg <- cfg$banksy %||% list()
+      if (isTRUE(banksy_cfg$enabled %||% TRUE)) {
+        banksy_out <- runtime_env$run_banksy(
+          per_sample_gobjs = setNames(list(gobj), sample_id),
+          mode             = "per_sample",
+          output_dir       = output_dir,
+          k_geom           = banksy_cfg$k_geom %||% 18,
+          lambda           = banksy_cfg$lambda %||% 0.2,
+          resolution       = banksy_cfg$resolution %||% 0.4
+        )
+        if (!is.null(banksy_out) && !is.null(banksy_out[[sample_id]])) {
+          gobj <- banksy_out[[sample_id]]
+        }
+      }
+      gobj
+    },
     # FIX #2: run_cci_analysis() does NOT mutate the Giotto object.  All CCI
     # outputs (InSituCor modules, LIANA tables, NicheNet ligand activities,
     # MISTy models, nnSVG SVGs) are written to disk under
@@ -977,7 +995,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       # the same focal cell type(s) used by downstream B-cell analysis.
       focus_regex <- cfg$interaction$focus_celltype_regex %||%
                      cfg$interaction$bcell_regex %||%
-                     "^B\\.cell$"
+                     "^B[ ._-]?cells?$"
       runtime_env$run_cci_analysis(
         gobj = gobj,
         sample_id = sample_id,
@@ -1024,7 +1042,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       if (is.null(focus_list) || length(focus_list) == 0) {
         legacy_regex <- cfg$interaction$focus_celltype_regex %||%
                         cfg$interaction$bcell_regex %||%
-                        "^B\\.cell$"
+                        "^B[ ._-]?cells?$"
         focus_list <- list(list(
           label             = "BCell",
           regex             = legacy_regex,
@@ -1035,7 +1053,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       last_gobj <- gobj
       for (fa in focus_list) {
         fa_label <- as.character(fa$label %||% "Focus")
-        fa_regex <- as.character(fa$regex %||% "^B\\.cell$")
+        fa_regex <- as.character(fa$regex %||% "^B[ ._-]?cells?$")
         fa_sub   <- isTRUE(fa$run_subclustering %||% FALSE)
         cat(sprintf("\n[step 11] focus: %s (subclustering: %s)\n",
                     fa_label, fa_sub))

@@ -107,9 +107,10 @@ merged:
 # of Stage 1 reads these. Defaults follow the BANKSY multi-sample vignette;
 # override here without touching code if niche granularity needs tuning.
 banksy:
+  enabled: true   # gate the per-sample BANKSY niche call invoked from inside step 09_spatial
   k_geom: 18      # spatial-neighborhood size for BANKSY augmentation
   lambda: 0.2     # spatial weight (0=no spatial; 1=spatial only)
-  resolution: 0.4 # Leiden resolution on the BANKSY+Harmony embedding
+  resolution: 0.4 # Leiden resolution on the BANKSY+Harmony embedding (single-sample mode skips Harmony)
 
 # FOV subsetting for composite slides (multiple biopsies on one raw slide).
 # Each sample_id listed here will have its Giotto object subset to cells

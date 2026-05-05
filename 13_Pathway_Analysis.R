@@ -969,7 +969,7 @@ if ((!exists("presentation_theme") ||
   keep_cols <- intersect(
     c("ID", "Description", "GeneRatio", "BgRatio", "pvalue", "p.adjust",
       "qvalue", "Count", "geneID", "direction", "collection", "subcollection",
-      "clean_name"),
+      "clean_name", "plot_group"),
     names(combined)
   )
   combined[, keep_cols, drop = FALSE]

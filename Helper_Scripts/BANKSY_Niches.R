@@ -43,17 +43,17 @@ if (!exists("%||%")) {
   `%||%` <- function(a, b) if (is.null(a) || length(a) == 0) b else a
 }
 
-# Pulls the raw expression matrix (genes × cells) from a Giotto object via
-# whichever accessor is available (Giotto vs GiottoClass).
-.banksy_get_raw_counts <- function(gobj) {
+# Pulls the normalized expression matrix (genes by cells), BANKSY's neighbour-mean
+# smoothing distorts on raw counts because library-size differences dominate.
+.banksy_get_norm_counts <- function(gobj) {
   if (requireNamespace("Giotto", quietly = TRUE) &&
       exists("getExpression", envir = asNamespace("Giotto"), inherits = FALSE)) {
     get("getExpression", envir = asNamespace("Giotto"))(
-      gobj, values = "raw", output = "matrix")
+      gobj, values = "normalized", output = "matrix")
   } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
              exists("getExpression", envir = asNamespace("GiottoClass"), inherits = FALSE)) {
     get("getExpression", envir = asNamespace("GiottoClass"))(
-      gobj, values = "raw", output = "matrix")
+      gobj, values = "normalized", output = "matrix")
   } else NULL
 }
 
@@ -75,7 +75,7 @@ if (!exists("%||%")) {
     stop("SpatialExperiment is required for BANKSY. ",
          "BiocManager::install('SpatialExperiment').")
   }
-  counts <- .banksy_get_raw_counts(gobj)
+  counts <- .banksy_get_norm_counts(gobj)
   locs   <- .banksy_get_spatial_locs(gobj)
   if (is.null(counts) || is.null(locs)) return(NULL)
   # Match cell_ID column order across counts and locs.
@@ -96,7 +96,7 @@ if (!exists("%||%")) {
   )
   rownames(meta) <- cell_ids
   SpatialExperiment::SpatialExperiment(
-    assays      = list(counts = counts),
+    assays      = list(normalized = counts),
     colData     = S4Vectors::DataFrame(meta),
     spatialCoords = coords,
     sample_id   = sample_id
@@ -134,7 +134,7 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
     if (is.null(spe)) next
     aug <- tryCatch(
       Banksy::computeBanksy(spe,
-                            assay_name = "counts",
+                            assay_name = "normalized",
                             k_geom = k_geom,
                             compute_agf = TRUE),
       error = function(e) {
@@ -179,9 +179,10 @@ cluster_banksy_niches <- function(merged_gobj,
   merged_ids <- as.character(merged_meta$cell_ID)
   keep <- colnames(aug) %in% merged_ids
   aug <- aug[, keep]
-  # Re-order to match merged Giotto cell order.
-  aug <- aug[, match(merged_ids, colnames(aug))]
-  aug <- aug[, !is.na(colnames(aug))]
+  # Drop NAs from the match index BEFORE subsetting. Sparse matrices reject NA indices.
+  idx <- match(merged_ids, colnames(aug))
+  idx <- idx[!is.na(idx)]
+  aug <- aug[, idx, drop = FALSE]
   if (ncol(aug) == 0L) {
     cat("  BANKSY: no overlapping cells with merged object — skipping.\n")
     return(invisible(NULL))
@@ -291,4 +292,205 @@ cluster_banksy_niches <- function(merged_gobj,
       " samples.\n", sep = "")
 
   invisible(merged_gobj)
+}
+
+#' Single-sample BANKSY clustering. Mirrors `cluster_banksy_niches()` but
+#' skips the cbind + Harmony steps (no batch in single-sample mode) and
+#' writes `niche_id` to the per-sample Giotto object.
+cluster_banksy_single_sample <- function(aug_spe,
+                                         sample_id,
+                                         per_sample_gobj,
+                                         lambda = 0.2,
+                                         resolution = 0.4,
+                                         n_pcs = 30,
+                                         k_nn = 30,
+                                         output_dir) {
+  if (is.null(aug_spe)) {
+    cat("  BANKSY: no augmented SPE for ", sample_id, ", skipping.\n",
+        sep = "")
+    return(invisible(NULL))
+  }
+  if (!requireNamespace("Banksy", quietly = TRUE)) return(invisible(NULL))
+
+  pca <- tryCatch(
+    Banksy::runBanksyPCA(aug_spe, lambda = lambda, npcs = n_pcs),
+    error = function(e) {
+      cat("    Warning: runBanksyPCA failed: ", conditionMessage(e), "\n",
+          sep = "")
+      NULL
+    }
+  )
+  if (is.null(pca)) return(invisible(NULL))
+  pca_mat <- SingleCellExperiment::reducedDim(
+    pca, paste0("PCA_M0_lam", lambda))
+  if (is.null(pca_mat)) {
+    rd_names <- SingleCellExperiment::reducedDimNames(pca)
+    pca_mat <- SingleCellExperiment::reducedDim(pca, rd_names[1])
+  }
+
+  if (!requireNamespace("igraph", quietly = TRUE)) {
+    cat("    Warning: igraph not installed, cannot cluster niches.\n")
+    return(invisible(NULL))
+  }
+  knn <- tryCatch(
+    BiocNeighbors::findKNN(pca_mat, k = k_nn),
+    error = function(e) {
+      d <- as.matrix(stats::dist(pca_mat))
+      idx <- t(apply(d, 1, function(r) order(r)[2:(k_nn + 1L)]))
+      list(index = idx)
+    }
+  )
+  el <- do.call(rbind, lapply(seq_len(nrow(knn$index)), function(i) {
+    cbind(i, knn$index[i, ])
+  }))
+  g <- igraph::simplify(igraph::graph_from_edgelist(el, directed = FALSE))
+  comm <- tryCatch(
+    igraph::cluster_leiden(g, resolution_parameter = resolution),
+    error = function(e) {
+      cat("    Warning: Leiden failed (", conditionMessage(e),
+          "), falling back to Louvain.\n", sep = "")
+      igraph::cluster_louvain(g)
+    }
+  )
+  niche_id <- paste0("niche_", igraph::membership(comm))
+
+  acc <- if (requireNamespace("Giotto", quietly = TRUE) &&
+             exists("addCellMetadata", envir = asNamespace("Giotto"),
+                    inherits = FALSE)) {
+    get("addCellMetadata", envir = asNamespace("Giotto"))
+  } else if (requireNamespace("GiottoClass", quietly = TRUE) &&
+             exists("addCellMetadata", envir = asNamespace("GiottoClass"),
+                    inherits = FALSE)) {
+    get("addCellMetadata", envir = asNamespace("GiottoClass"))
+  } else {
+    get("addCellMetadata", mode = "function")
+  }
+  niche_df <- data.frame(cell_ID = colnames(aug_spe), niche_id = niche_id,
+                         stringsAsFactors = FALSE)
+  per_sample_gobj <- tryCatch(
+    acc(per_sample_gobj, new_metadata = niche_df,
+        by_column = TRUE, column_cell_ID = "cell_ID"),
+    error = function(e) {
+      cat("    Warning: addCellMetadata failed for niche_id: ",
+          conditionMessage(e), "\n", sep = "")
+      per_sample_gobj
+    }
+  )
+
+  out_dir <- file.path(output_dir, "14_BANKSY")
+  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  summary_df <- as.data.frame(table(niche_id = niche_df$niche_id))
+  utils::write.csv(summary_df,
+                   file.path(out_dir,
+                             paste0(sample_id, "_niche_summary.csv")),
+                   row.names = FALSE)
+  cat("  BANKSY niche labels (", length(unique(niche_id)),
+      " niches) written for ", sample_id, ".\n", sep = "")
+
+  .banksy_plot_niche_polygons(per_sample_gobj, niche_df, sample_id, out_dir)
+
+  invisible(per_sample_gobj)
+}
+
+# Polygon-coloured niche plot. Resolves .extract_polygon_df via runtime_env (defined in 07_Annotation.R). Falls back to a centroid scatter if polygons are unavailable.
+.banksy_plot_niche_polygons <- function(gobj, niche_df, sample_id, out_dir) {
+  if (!requireNamespace("ggplot2", quietly = TRUE)) return(invisible(NULL))
+  poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+  out_path <- file.path(out_dir, paste0(sample_id, "_niche_spatial.png"))
+
+  niche_lookup <- setNames(niche_df$niche_id, niche_df$cell_ID)
+  n_niches <- length(unique(niche_df$niche_id))
+
+  p <- if (!is.null(poly_df) && nrow(poly_df) > 0) {
+    poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
+                                 poly_df$part, sep = "_")
+    poly_df$niche_id <- niche_lookup[as.character(poly_df$cell_ID)]
+    poly_df <- poly_df[!is.na(poly_df$niche_id), , drop = FALSE]
+    ggplot2::ggplot(poly_df,
+                    ggplot2::aes(x = x, y = y,
+                                 group = poly_group, fill = niche_id)) +
+      ggplot2::geom_polygon(colour = "grey30", linewidth = 0.05) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(
+        title = paste0(sample_id, ": BANKSY niches (", n_niches, ")"),
+        x = "X", y = "Y", fill = "Niche"
+      ) +
+      ggplot2::theme_minimal(base_size = 11) +
+      ggplot2::theme(panel.grid = ggplot2::element_blank())
+  } else {
+    locs <- tryCatch(.banksy_get_spatial_locs(gobj), error = function(e) NULL)
+    if (is.null(locs)) return(invisible(NULL))
+    locs_df <- as.data.frame(locs)
+    locs_df$niche_id <- niche_lookup[as.character(locs_df$cell_ID)]
+    locs_df <- locs_df[!is.na(locs_df$niche_id), , drop = FALSE]
+    ggplot2::ggplot(locs_df,
+                    ggplot2::aes(x = sdimx, y = sdimy, colour = niche_id)) +
+      ggplot2::geom_point(size = 0.4) +
+      ggplot2::coord_fixed() +
+      ggplot2::labs(
+        title = paste0(sample_id, ": BANKSY niches (", n_niches,
+                       ", centroid fallback)"),
+        x = "X", y = "Y", colour = "Niche"
+      ) +
+      ggplot2::theme_minimal(base_size = 11) +
+      ggplot2::theme(panel.grid = ggplot2::element_blank())
+  }
+
+  tryCatch({
+    ggplot2::ggsave(out_path, p, width = 10, height = 8, dpi = 150)
+    cat("  BANKSY niche spatial plot saved: ", out_path, "\n", sep = "")
+  }, error = function(e) {
+    cat("    Warning: niche spatial plot failed: ",
+        conditionMessage(e), "\n", sep = "")
+  })
+  invisible(out_path)
+}
+
+#' Mode-dispatch wrapper. `mode = "per_sample"` (default) loops
+#' `cluster_banksy_single_sample()` per sample. `mode = "merged"` calls the
+#' existing `cluster_banksy_niches()` after concatenating the augmented SPEs.
+run_banksy <- function(per_sample_gobjs,
+                       mode = c("per_sample", "merged"),
+                       merged_gobj = NULL,
+                       output_dir,
+                       k_geom = 18,
+                       lambda = 0.2,
+                       resolution = 0.4,
+                       n_pcs = 30,
+                       k_nn = 30,
+                       batch_col = "sample_id") {
+  mode <- match.arg(mode)
+  aug <- compute_banksy_per_sample(per_sample_gobjs, k_geom = k_geom,
+                                    lambda = lambda)
+  if (is.null(aug)) return(invisible(NULL))
+
+  if (mode == "per_sample") {
+    out <- list()
+    for (nm in names(aug)) {
+      out[[nm]] <- cluster_banksy_single_sample(
+        aug_spe          = aug[[nm]],
+        sample_id        = nm,
+        per_sample_gobj  = per_sample_gobjs[[nm]],
+        lambda           = lambda,
+        resolution       = resolution,
+        n_pcs            = n_pcs,
+        k_nn             = k_nn,
+        output_dir       = output_dir
+      )
+    }
+    invisible(out)
+  } else {
+    if (is.null(merged_gobj))
+      stop("run_banksy(mode = 'merged') requires merged_gobj.")
+    cluster_banksy_niches(
+      merged_gobj     = merged_gobj,
+      banksy_aug_list = aug,
+      batch_col       = batch_col,
+      resolution      = resolution,
+      lambda          = lambda,
+      output_dir      = output_dir,
+      n_pcs           = n_pcs,
+      k_nn            = k_nn
+    )
+  }
 }
