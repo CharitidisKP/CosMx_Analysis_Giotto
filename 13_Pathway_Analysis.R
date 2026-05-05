@@ -201,6 +201,10 @@ if ((!exists("presentation_theme") ||
   for (spec in dbs) {
     coll <- spec$collection
     subs <- spec$subcollections
+    # Per-spec routing: which plot track + which tests are eligible.
+    # Defaults preserve pre-split behaviour for any config without these fields.
+    group <- spec$group %||% "main_ora"
+    tests <- spec$tests %||% c("ora", "gsea")
     if (is.null(subs) || length(subs) == 0) {
       subs <- list(NULL)   # pull the whole collection
     }
@@ -236,14 +240,16 @@ if ((!exists("presentation_theme") ||
         collection    = coll,
         subcollection = sub %||% "",
         description   = as.character(df[[id_col]]),
+        plot_group    = group,
         stringsAsFactors = FALSE
       ))
       meta$clean_name <- vapply(seq_len(nrow(meta)), function(i) {
         .pathway_clean_name(meta$pathway[i], meta$collection[i],
                             meta$subcollection[i], meta$description[i])
       }, character(1))
-      out[[db_key]] <- list(by_id = by_id, meta = meta)
-      cat("  ✓ Loaded ", length(by_id), " gene sets for ", db_key, "\n",
+      out[[db_key]] <- list(by_id = by_id, meta = meta, tests = tests)
+      cat("  ✓ Loaded ", length(by_id), " gene sets for ", db_key,
+          " [group=", group, ", tests=", paste(tests, collapse = "+"), "]\n",
           sep = "")
     }
   }
@@ -859,6 +865,7 @@ if ((!exists("presentation_theme") ||
   out_list <- list()
   for (db_key in names(genesets_by_db)) {
     entry <- genesets_by_db[[db_key]]
+    if (!"gsea" %in% (entry$tests %||% c("ora", "gsea"))) next
     res <- tryCatch(
       suppressWarnings(fgsea::fgsea(
         pathways  = entry$by_id,
@@ -894,7 +901,8 @@ if ((!exists("presentation_theme") ||
   if (length(out_list) == 0) return(NULL)
   do.call(rbind, lapply(out_list, function(d) {
     d[, c("pathway", "pval", "padj", "ES", "NES", "size",
-          "leadingEdge", "collection", "subcollection", "clean_name")]
+          "leadingEdge", "collection", "subcollection", "clean_name",
+          "plot_group")]
   }))
 }
 
@@ -920,6 +928,7 @@ if ((!exists("presentation_theme") ||
     out <- list()
     for (db_key in names(genesets_by_db)) {
       entry <- genesets_by_db[[db_key]]
+      if (!"ora" %in% (entry$tests %||% c("ora", "gsea"))) next
       t2g <- do.call(rbind, lapply(names(entry$by_id), function(p) {
         data.frame(term = p, gene = entry$by_id[[p]], stringsAsFactors = FALSE)
       }))
@@ -945,7 +954,7 @@ if ((!exists("presentation_theme") ||
       df$direction <- direction
       meta <- entry$meta
       df <- merge(df, meta[, c("pathway", "collection", "subcollection",
-                               "clean_name")],
+                               "clean_name", "plot_group")],
                   by.x = "ID", by.y = "pathway", all.x = TRUE, sort = FALSE)
       out[[db_key]] <- df
     }
@@ -1632,17 +1641,6 @@ if ((!exists("presentation_theme") ||
         utils::write.csv(gsea_df,
                          file.path(lvl_dir, "gsea_all.csv"),
                          row.names = FALSE)
-        title_main <- sprintf("%s | %s | %s", sample_id, st, lvl)
-        tryCatch(
-          .pathway_plot_gsea_top_bar(gsea_df,
-            file.path(lvl_dir, "gsea_top20_bar.png"), title_main),
-          error = function(e) NULL
-        )
-        tryCatch(
-          .pathway_plot_gsea_volcano(gsea_df,
-            file.path(lvl_dir, "gsea_volcano.png"), title_main),
-          error = function(e) NULL
-        )
       }
 
       ora_df <- tryCatch(
@@ -1653,6 +1651,48 @@ if ((!exists("presentation_theme") ||
         utils::write.csv(ora_df,
                          file.path(lvl_dir, "ora_all.csv"),
                          row.names = FALSE)
+      }
+
+      # Per-group plotting (sample-level scope): split GSEA + ORA by plot_group.
+      plot_groups <- unique(c(
+        if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df))
+          as.character(gsea_df$plot_group) else character(0),
+        if (!is.null(ora_df) && "plot_group" %in% names(ora_df))
+          as.character(ora_df$plot_group) else character(0)
+      ))
+      plot_groups <- plot_groups[!is.na(plot_groups) & nzchar(plot_groups)]
+      for (grp in plot_groups) {
+        title_grp <- sprintf("%s | %s | %s [%s]", sample_id, st, lvl, grp)
+        if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df)) {
+          gsea_grp <- gsea_df[!is.na(gsea_df$plot_group) &
+                                gsea_df$plot_group == grp, , drop = FALSE]
+          if (nrow(gsea_grp) > 0) {
+            tryCatch(
+              .pathway_plot_gsea_top_bar(gsea_grp,
+                file.path(lvl_dir, paste0(grp, "_gsea_top20_bar.png")),
+                title_grp),
+              error = function(e) NULL
+            )
+            tryCatch(
+              .pathway_plot_gsea_volcano(gsea_grp,
+                file.path(lvl_dir, paste0(grp, "_gsea_volcano.png")),
+                title_grp),
+              error = function(e) NULL
+            )
+          }
+        }
+        if (!is.null(ora_df) && "plot_group" %in% names(ora_df)) {
+          ora_grp <- ora_df[!is.na(ora_df$plot_group) &
+                              ora_df$plot_group == grp, , drop = FALSE]
+          if (nrow(ora_grp) > 0) {
+            tryCatch(
+              .pathway_plot_ora_top_bar(ora_grp,
+                file.path(lvl_dir, paste0(grp, "_ora_top20_bar.png")),
+                title_grp),
+              error = function(e) NULL
+            )
+          }
+        }
       }
 
       written[[length(written) + 1L]] <- list(
@@ -2072,53 +2112,6 @@ run_pathway_analysis <- function(gobj,
           gsea_df$stratum      <- lvl
           all_results[[length(all_results) + 1]] <- transform_gsea_to_tidy(gsea_df)
           cross_stratum_gsea[[st_type]][[lvl]] <- gsea_df
-
-          title_main <- sprintf("%s | %s", cp$label, stratum_tag)
-          p1 <- .pathway_plot_gsea_top_bar(
-            gsea_df,
-            file.path(stratum_dir,
-                      paste0(stratum_tag, "_gsea_top20_bar.png")),
-            title_main)
-          p3 <- .pathway_plot_gsea_volcano(
-            gsea_df,
-            file.path(stratum_dir,
-                      paste0(stratum_tag, "_gsea_volcano.png")),
-            title_main)
-          p4 <- .pathway_plot_dotplot_by_db(
-            gsea_df,
-            file.path(stratum_dir,
-                      paste0(stratum_tag, "_dotplot_by_db.png")),
-            title_main)
-
-          # Leading-edge heatmaps (top N GSEA hits, guarded by cap)
-          cap <- cfg_p$leading_edge_top_n %||% 5
-          if (cap > 0 && !is.null(de)) {
-            le_dir <- file.path(comp_dir, "leading_edge")
-            dir.create(le_dir, recursive = TRUE, showWarnings = FALSE)
-            df_top <- gsea_df[!is.na(gsea_df$padj), , drop = FALSE]
-            df_top <- df_top[order(df_top$padj), , drop = FALSE]
-            df_top <- head(df_top, cap)
-            for (r in seq_len(nrow(df_top))) {
-              pid <- df_top$pathway[r]
-              .pathway_plot_leading_edge(
-                de, pid, df_top$leadingEdge[r], expr_mat, meta,
-                sample_col = "sample_id",
-                group_col = celltype_column,
-                outfile = file.path(le_dir,
-                                    paste0(stratum_tag, "_",
-                                           .pathway_safe_name(pid),
-                                           ".png")),
-                title = df_top$clean_name[r]
-              )
-            }
-          }
-
-          # Collect for B-cell-focused PDF
-          if (st_type == "celltype" &&
-              grepl(focus_celltype, lvl, ignore.case = TRUE)) {
-            if (!is.null(p1)) bcell_plot_paths <- c(bcell_plot_paths, p1)
-            if (!is.null(p3)) bcell_plot_paths <- c(bcell_plot_paths, p3)
-          }
         }
 
         ora_df <- .pathway_run_ora(de, genesets_by_db, cfg_p)
@@ -2133,35 +2126,115 @@ run_pathway_analysis <- function(gobj,
           ora_tidy$stratum_type <- st_type
           ora_tidy$stratum      <- lvl
           all_results[[length(all_results) + 1]] <- transform_ora_to_tidy(ora_tidy)
+        }
 
-          title_main <- sprintf("%s | %s", cp$label, stratum_tag)
-          p2 <- .pathway_plot_ora_top_bar(
-            ora_df,
-            file.path(stratum_dir,
-                      paste0(stratum_tag, "_ora_top20_bar.png")),
-            title_main)
-          if (st_type == "celltype" &&
-              grepl(focus_celltype, lvl, ignore.case = TRUE) &&
-              !is.null(p2)) {
-            bcell_plot_paths <- c(bcell_plot_paths, p2)
+        # Per-group plotting: split GSEA + ORA tracks by plot_group so
+        # main_ora / hallmark / immune / celltype each get their own files.
+        plot_groups <- unique(c(
+          if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df))
+            as.character(gsea_df$plot_group) else character(0),
+          if (!is.null(ora_df) && "plot_group" %in% names(ora_df))
+            as.character(ora_df$plot_group) else character(0)
+        ))
+        plot_groups <- plot_groups[!is.na(plot_groups) & nzchar(plot_groups)]
+        for (grp in plot_groups) {
+          out_pre   <- paste0(stratum_tag, "_", grp)
+          title_grp <- sprintf("%s | %s [%s]", cp$label, stratum_tag, grp)
+
+          if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df)) {
+            gsea_grp <- gsea_df[!is.na(gsea_df$plot_group) &
+                                  gsea_df$plot_group == grp, , drop = FALSE]
+            if (nrow(gsea_grp) > 0) {
+              p1 <- .pathway_plot_gsea_top_bar(
+                gsea_grp,
+                file.path(stratum_dir, paste0(out_pre, "_gsea_top20_bar.png")),
+                title_grp)
+              p3 <- .pathway_plot_gsea_volcano(
+                gsea_grp,
+                file.path(stratum_dir, paste0(out_pre, "_gsea_volcano.png")),
+                title_grp)
+              p4 <- .pathway_plot_dotplot_by_db(
+                gsea_grp,
+                file.path(stratum_dir, paste0(out_pre, "_dotplot_by_db.png")),
+                title_grp)
+
+              # Leading-edge heatmaps (top N GSEA hits per group, guarded by cap)
+              cap <- cfg_p$leading_edge_top_n %||% 5
+              if (cap > 0 && !is.null(de)) {
+                le_dir <- file.path(comp_dir, "leading_edge")
+                dir.create(le_dir, recursive = TRUE, showWarnings = FALSE)
+                df_top <- gsea_grp[!is.na(gsea_grp$padj), , drop = FALSE]
+                df_top <- df_top[order(df_top$padj), , drop = FALSE]
+                df_top <- head(df_top, cap)
+                for (r in seq_len(nrow(df_top))) {
+                  pid <- df_top$pathway[r]
+                  .pathway_plot_leading_edge(
+                    de, pid, df_top$leadingEdge[r], expr_mat, meta,
+                    sample_col = "sample_id",
+                    group_col = celltype_column,
+                    outfile = file.path(le_dir,
+                                        paste0(out_pre, "_",
+                                               .pathway_safe_name(pid),
+                                               ".png")),
+                    title = df_top$clean_name[r]
+                  )
+                }
+              }
+
+              if (st_type == "celltype" &&
+                  grepl(focus_celltype, lvl, ignore.case = TRUE)) {
+                if (!is.null(p1)) bcell_plot_paths <- c(bcell_plot_paths, p1)
+                if (!is.null(p3)) bcell_plot_paths <- c(bcell_plot_paths, p3)
+              }
+            }
+          }
+
+          if (!is.null(ora_df) && "plot_group" %in% names(ora_df)) {
+            ora_grp <- ora_df[!is.na(ora_df$plot_group) &
+                                ora_df$plot_group == grp, , drop = FALSE]
+            if (nrow(ora_grp) > 0) {
+              p2 <- .pathway_plot_ora_top_bar(
+                ora_grp,
+                file.path(stratum_dir, paste0(out_pre, "_ora_top20_bar.png")),
+                title_grp)
+              if (st_type == "celltype" &&
+                  grepl(focus_celltype, lvl, ignore.case = TRUE) &&
+                  !is.null(p2)) {
+                bcell_plot_paths <- c(bcell_plot_paths, p2)
+              }
+            }
           }
         }
       }
     }
 
-    # P5 / P6 - per-comparison cross-stratum heatmaps
+    # P5 / P6 - per-comparison cross-stratum heatmaps, split by plot_group so
+    # hallmark / main_ora / immune / celltype each get their own heatmap.
     for (st_type in names(cross_stratum_gsea)) {
       store <- cross_stratum_gsea[[st_type]]
       if (length(store) < 2) next
       long <- do.call(rbind, lapply(names(store), function(nm) {
         d <- store[[nm]]; d$stratum <- nm; d
       }))
-      outfile <- file.path(comp_dir, paste0("_cross_", st_type, "_heatmap.png"))
-      .pathway_plot_cross_stratum_heatmap(
-        long, outfile,
-        title = sprintf("%s - top pathways across %s strata",
-                        cp$label, st_type)
-      )
+      if (is.null(long) || nrow(long) == 0) next
+      groups_in_long <- if ("plot_group" %in% names(long))
+        unique(as.character(long$plot_group)) else NA_character_
+      groups_in_long <- groups_in_long[!is.na(groups_in_long) & nzchar(groups_in_long)]
+      if (length(groups_in_long) == 0) groups_in_long <- "all"
+      for (grp in groups_in_long) {
+        long_grp <- if (grp == "all") long
+                    else long[!is.na(long$plot_group) & long$plot_group == grp,
+                              , drop = FALSE]
+        if (nrow(long_grp) == 0) next
+        outfile <- file.path(comp_dir,
+                             paste0("_cross_", grp, "_", st_type,
+                                    "_heatmap.png"))
+        .pathway_plot_cross_stratum_heatmap(
+          long_grp, outfile,
+          title = sprintf("%s [%s] - top pathways across %s strata",
+                          cp$label, grp, st_type)
+        )
+      }
     }
 
     # Stash per-comparison GSEA for P7 later
@@ -2184,13 +2257,30 @@ run_pathway_analysis <- function(gobj,
     st_type <- parts[1]; lvl <- parts[2]
     store <- cross_comp_store[[key]]
     if (length(store) < 2) next
-    outfile <- file.path(
-      out_root,
-      paste0("_cross_comparison_pathway_heatmap_",
-             .pathway_safe_name(st_type), "_",
-             .pathway_safe_name(lvl), ".png")
-    )
-    .pathway_plot_cross_comparison_heatmap(store, lvl, outfile)
+    # Determine plot_groups present across this comparison store's frames.
+    groups_in_store <- unique(unlist(lapply(store, function(d) {
+      if (is.null(d) || !"plot_group" %in% names(d)) character(0)
+      else as.character(d$plot_group)
+    })))
+    groups_in_store <- groups_in_store[!is.na(groups_in_store) & nzchar(groups_in_store)]
+    if (length(groups_in_store) == 0) groups_in_store <- "all"
+    for (grp in groups_in_store) {
+      store_grp <- if (grp == "all") store else lapply(store, function(d) {
+        if (is.null(d) || !"plot_group" %in% names(d)) return(NULL)
+        d[!is.na(d$plot_group) & d$plot_group == grp, , drop = FALSE]
+      })
+      store_grp <- store_grp[vapply(store_grp,
+                                    function(d) !is.null(d) && nrow(d) > 0,
+                                    logical(1))]
+      if (length(store_grp) < 2) next
+      outfile <- file.path(
+        out_root,
+        paste0("_cross_comparison_pathway_heatmap_", grp, "_",
+               .pathway_safe_name(st_type), "_",
+               .pathway_safe_name(lvl), ".png")
+      )
+      .pathway_plot_cross_comparison_heatmap(store_grp, lvl, outfile)
+    }
   }
   # P8 - union upset across the 4 comparisons, aggregated across ALL strata
   # (pool any significant pathway from any stratum into the comparison's set).

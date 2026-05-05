@@ -307,18 +307,19 @@ pathway:
   # for any pseudobulk inferential test.
   de_min_pseudobulk_per_group: 2
   species: "Homo sapiens"
-  # All MSigDB collections to pull (human). Leave subcollections null to include
-  # every subcollection within the collection.
+  # MSigDB collections to pull (human). Each entry carries a `group` (used to
+  # split visualisations) and `tests` (which of {ora, gsea} to run on it).
+  # Defaults if omitted: group="main_ora", tests=["ora","gsea"] (back-compat).
+  # Mirrors SLE/My_R workflow: ORA on GO+KEGG+Reactome+C7+C8; GSEA on Hallmark only.
   databases:
-    - { collection: "H",  subcollections: null }
-    # MSigDB v2024.1+ split CP:KEGG into CP:KEGG_LEGACY (the classic curated
-    # KEGG sets) and CP:KEGG_MEDICUS (the newer KEGG MEDICUS expansion).
-    # Use both for full KEGG coverage; CP:KEGG alone now resolves to "Unknown
-    # subcollection." in current msigdbr.
-    - { collection: "C2", subcollections: ["CP:KEGG_LEGACY", "CP:KEGG_MEDICUS", "CP:REACTOME", "CP:WIKIPATHWAYS", "CP:BIOCARTA", "CP:PID"] }
-    - { collection: "C5", subcollections: ["GO:BP", "GO:MF", "GO:CC"] }
-    - { collection: "C7", subcollections: null }
-    - { collection: "C8", subcollections: null }
+    # ORA track - GO:BP/MF/CC + KEGG_LEGACY + Reactome (replicates 3_Enchancement_Analysis.Rmd)
+    - { collection: "C5", subcollections: ["GO:BP", "GO:MF", "GO:CC"], group: "main_ora", tests: ["ora"] }
+    - { collection: "C2", subcollections: ["CP:KEGG_LEGACY", "CP:REACTOME"], group: "main_ora", tests: ["ora"] }
+    # GSEA track - Hallmark only (replicates 4_GSEA_Analysis.Rmd)
+    - { collection: "H",  subcollections: null, group: "hallmark", tests: ["gsea"] }
+    # Specialised ORA-only tracks - separate visualisations
+    - { collection: "C7", subcollections: null, group: "immune",   tests: ["ora"] }
+    - { collection: "C8", subcollections: null, group: "celltype", tests: ["ora"] }
   gsea:
     min_size: 10
     max_size: 500
