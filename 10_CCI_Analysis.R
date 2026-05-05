@@ -1315,6 +1315,13 @@ plot_insitucor_results <- function(cor_results,
             weight = mc[idx],
             stringsAsFactors = FALSE
           )
+          # Restrict edges to the top-module vertex set. igraph rejects edges with endpoints absent from the vertices frame.
+          top_set <- top_modules$module
+          mod_net_edges <- mod_net_edges[
+            mod_net_edges$from %in% top_set & mod_net_edges$to %in% top_set, ,
+            drop = FALSE
+          ]
+          if (nrow(mod_net_edges) == 0) mod_net_edges <- NULL
         }
       }
       if (is.null(mod_net_edges)) {
@@ -1427,7 +1434,7 @@ plot_insitucor_results <- function(cor_results,
 # (thick blue border) on top of a base polygon map coloured by `value`.
 # ==============================================================================
 
-.resolve_bcell_ids <- function(gobj, celltype_col, focus_celltype = "\\bB.cell\\b") {
+.resolve_bcell_ids <- function(gobj, celltype_col, focus_celltype = "\\bB[ ._-]?cells?\\b") {
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (is.null(celltype_col) || !celltype_col %in% names(meta)) return(character(0))
   hit <- grepl(focus_celltype, as.character(meta[[celltype_col]]),
@@ -3031,7 +3038,7 @@ run_liana <- function(gobj,
                       celltype_col      = NULL,
                       methods           = NULL,
                       expr_cache        = NULL,
-                      focus_celltype    = "\\bB.cell\\b",
+                      focus_celltype    = "\\bB[ ._-]?cells?\\b",
                       min_cells_liana   = 10,
                       sig_threshold     = 0.05,
                       min_sig_pairs     = 25,
@@ -3783,7 +3790,7 @@ run_misty <- function(gobj,
                       n_cores        = 4,
                       expr_cache     = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "\\bB.cell\\b",
+                      focus_celltype = "\\bB[ ._-]?cells?\\b",
                       model_function = NULL,
                       bypass_intra   = FALSE) {
   
@@ -4001,9 +4008,17 @@ run_misty <- function(gobj,
       cat("\u26A0 MISTy view_contributions plot failed:",
           conditionMessage(e), "\n")
     })
-    for (misty_view in c(paste0("juxtaview_", juxta_radius),
-                         paste0("paraview_", para_radius),
-                         "ctype_para")) {
+    # Discover view names from the results table, mistyR's real view names
+    # (juxtaview.50, paraview.200, ctype) do not match the constructed forms.
+    imp_for_views <- if (!is.null(misty_results$importances.aggregated)) {
+      misty_results$importances.aggregated
+    } else {
+      misty_results$importances
+    }
+    view_names <- if (!is.null(imp_for_views)) {
+      unique(as.data.frame(imp_for_views)$view)
+    } else character(0)
+    for (misty_view in view_names) {
       tryCatch({
         grDevices::png(
           file.path(out_dir, sprintf("%s_misty_interaction_heatmap_%s.png",
@@ -4014,7 +4029,7 @@ run_misty <- function(gobj,
         grDevices::dev.off()
       }, error = function(e) {
         try(grDevices::dev.off(), silent = TRUE)
-        cat("\u26A0 MISTy interaction_heatmap (", misty_view,
+        cat("Warning: MISTy interaction_heatmap (", misty_view,
             ") failed: ", conditionMessage(e), "\n", sep = "")
       })
     }
@@ -4028,7 +4043,14 @@ run_misty <- function(gobj,
           !is.null(misty_results$improvements)) {
         poly_df <- .bcell_polygon_base(poly_df, bcell_ids)
         imp_df  <- as.data.frame(misty_results$improvements)
-        
+        # Original expression matrix (pre make.names rename), needed by both P9 and P10 below.
+        expr_mat_orig <- if (!is.null(expr_cache) &&
+                             !is.null(expr_cache$normalized)) {
+          expr_cache$normalized
+        } else {
+          .giotto_get_expression(gobj, values = "normalized", output = "matrix")
+        }
+
         # P9: top-9 paraview-boosted targets, polygon grid with expression
         gain_col <- intersect(c("gain.R2", "gain"), names(imp_df))[1]
         tgt_col  <- intersect(c("target", "Target"), names(imp_df))[1]
@@ -4046,13 +4068,6 @@ run_misty <- function(gobj,
               idx <- match(top_tgts_safe, nm$safe)
               top_tgts <- ifelse(is.na(idx), top_tgts_safe, nm$original[idx])
             }
-          }
-          # Original expression matrix (before the make.names rename).
-          expr_mat_orig <- if (!is.null(expr_cache) &&
-                               !is.null(expr_cache$normalized)) {
-            expr_cache$normalized
-          } else {
-            .giotto_get_expression(gobj, values = "normalized", output = "matrix")
           }
           .plot_bcell_polygon_grid(
             poly_df   = poly_df,
@@ -4129,7 +4144,7 @@ run_misty_bcell <- function(gobj,
                             sample_id,
                             output_dir,
                             celltype_col   = NULL,
-                            focus_celltype = "\\bB.cell\\b",
+                            focus_celltype = "\\bB[ ._-]?cells?\\b",
                             target_genes   = NULL,
                             juxta_radius   = 50,
                             para_radius    = 200,
@@ -4442,7 +4457,7 @@ run_nnsvg <- function(gobj,
                       n_cores    = 4,
                       expr_cache = NULL,
                       celltype_col   = NULL,
-                      focus_celltype = "\\bB.cell\\b",
+                      focus_celltype = "\\bB[ ._-]?cells?\\b",
                       raster_resolution = "auto") {
   
   if (!requireNamespace("nnSVG", quietly = TRUE))
@@ -5293,7 +5308,7 @@ run_cci_analysis <- function(gobj,
                              sample_id,
                              output_dir,
                              celltype_col       = NULL,
-                             focus_celltype     = "\\bB.cell\\b",
+                             focus_celltype     = "\\bB[ ._-]?cells?\\b",
                              sender_celltypes   = NULL,
                              receiver_celltype  = NULL,
                              target_genes       = NULL,
