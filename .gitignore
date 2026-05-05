@@ -56,3 +56,4 @@ Helper_Scripts/Legacy_EdgeR_DE.R
 # Local-only consolidated dependency installer (replaces per-stage Install_*.R)
 Install_Dependencies_Local.R
 Error_Messages/
+Run_Scripts/Verify_Parallelism.md
