@@ -292,7 +292,7 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
     ) +
     ggplot2::labs(
       title = sample_plot_title(sample_id, "Spatial Proximity Enrichment Heatmap"),
-      subtitle = "Red indicates enriched neighborhoods; blue indicates depleted neighborhoods",
+      subtitle = NULL,
       x = "Interacting Cell Type",
       y = "Interacting Cell Type"
     ) +
@@ -429,7 +429,7 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
     } +
     ggplot2::labs(
       title = sample_plot_title(sample_id, "Spatial Proximity Network"),
-      subtitle = "Top neighborhood enrichments shown; edge color marks enrichment vs depletion",
+      subtitle = NULL,
       x = NULL,
       y = NULL
     ) +
@@ -647,7 +647,7 @@ plot_bcell_spatial_and_markers <- function(gobj,
     is_per_fov   <- !is.null(fov_tag)
     bg_lw        <- if (is_per_fov) PER_FOV_LINEWIDTH else 0.08
     focus_lw     <- if (is_per_fov) 0.60 else 0.15
-    title_txt <- paste0(sample_id, " - ", gene, " expression",
+    title_txt <- paste0(display_sample_label(sample_id), " - ", gene, " expression",
                         if (is_per_fov) paste0(" (FOV ", fov_tag, ")") else "")
     subtitle_txt <- paste0(.pretty(highlight_label), " highlighted from ",
                            .pretty(annotation_column), " annotation")
@@ -825,7 +825,7 @@ plot_bcell_neighbourhoods <- function(gobj,
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, " - ", tag$display, " cluster ", i, " neighbourhood"),
+        title = paste0(display_sample_label(sample_id), " - ", tag$display, " cluster ", i, " neighbourhood"),
         subtitle = paste0(row$n_bcells, " ", tag$display, "(s), k = ", k, " - ",
                           subtitle_common),
         x = NULL, y = NULL
@@ -872,8 +872,8 @@ plot_bcell_neighbourhoods <- function(gobj,
         ggplot2::geom_col() +
         ggplot2::scale_y_continuous(labels = scales::percent_format()) +
         ggplot2::labs(
-          title    = paste0(sample_id, " - neighbourhood composition"),
-          subtitle = "Neighbour cell-type fractions per cluster",
+          title    = paste0(display_sample_label(sample_id), " - neighbourhood composition"),
+          subtitle = NULL,
           x = NULL, y = "Fraction of neighbours",
           fill = "Cell type"
         ) +
@@ -1019,7 +1019,7 @@ plot_bcell_niches <- function(gobj,
                                   labels = .pretty) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, " - spatial niches", title_suffix),
+        title = paste0(display_sample_label(sample_id), " - spatial niches", title_suffix),
         subtitle = subtitle_common,
         x = NULL, y = NULL
       ) +
@@ -1067,7 +1067,7 @@ plot_bcell_niches <- function(gobj,
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, " - distance to nearest ", tag$display,
+        title = paste0(display_sample_label(sample_id), " - distance to nearest ", tag$display,
                        title_suffix),
         subtitle = paste0(.pretty(highlight_label), " defined by ",
                           .pretty(annotation_column),
@@ -1420,7 +1420,7 @@ run_bcell_subclustering <- function(gobj,
                                        drop = FALSE) +
             ggplot2::coord_fixed() +
             ggplot2::labs(
-              title    = paste0(sample_id, " - ", tag$display,
+              title    = paste0(display_sample_label(sample_id), " - ", tag$display,
                                 " subclusters - FOV ", fv),
               subtitle = NULL, x = NULL, y = NULL
             ) +
@@ -1512,7 +1512,7 @@ run_bcell_subclustering <- function(gobj,
             name = "Mean fraction\n(k neighbours)"
           ) +
           ggplot2::labs(
-            title = paste0(sample_id, " - ", tag$display, " subcluster x proximity"),
+            title = paste0(display_sample_label(sample_id), " - ", tag$display, " subcluster x proximity"),
             subtitle = sprintf(paste0("Mean cell-type composition of k = %d nearest non-",
                                       tag$display, " neighbours"),
                                k_prox),

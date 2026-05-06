@@ -61,6 +61,11 @@ if (!exists("RankNorm")) {
   }
 }
 
+# Ensure a per-plot-type subdirectory exists under <output_dir>/plots/<kind>/.
+.plot_subdir <- function(output_dir, kind) {
+  ensure_dir(file.path(output_dir, "plots", kind))
+}
+
 # Builds a smiDE model formula with an optional paired-blocking fixed effect.
 # Decides per-stratum whether the block can be applied: if `block_col` is
 # missing from `metadata`, NA-only, or has < 2 distinct values in the
@@ -850,9 +855,7 @@ guess_significance_column <- function(result_df) {
   if (length(candidates) == 0) NULL else candidates[1]
 }
 
-# Emit smiDE-paper-style DE visualisations (volcano + top-hits bar plot) plus
-# a lightweight FDR-distribution diagnostic. Publication plots go into a
-# `plots/` subdirectory; the FDR histogram stays in `diagnostics/`.
+# Emit smiDE-paper-style DE visualisations under <output_dir>/plots/<plot_type>/.
 # Graceful no-op when expected columns are missing.
 .save_spatial_de_plots <- function(result_df, output_dir, file_stub,
                                    fdr_threshold = 0.05,
@@ -869,12 +872,6 @@ guess_significance_column <- function(result_df) {
     fc_col   <- .guess_fc_column(result_df)
     gene_col <- .guess_gene_column(result_df)
 
-    plots_dir <- file.path(output_dir, "plots")
-    diag_dir  <- file.path(output_dir, "diagnostics")
-    dir.create(plots_dir, recursive = TRUE, showWarnings = FALSE)
-    dir.create(diag_dir,  recursive = TRUE, showWarnings = FALSE)
-
-    # --- 1. FDR / p-value histogram (diagnostic) ---
     if (!is.null(sig_col)) {
       sig_vals <- as.numeric(result_df[[sig_col]])
       sig_df <- data.frame(value = sig_vals[!is.na(sig_vals)])
@@ -886,16 +883,14 @@ guess_significance_column <- function(result_df) {
                               colour = "#C44E52") +
           ggplot2::labs(
             title    = paste0(file_stub, " - ", sig_col, " distribution"),
-            subtitle = sprintf("n = %d genes; %d with %s < %g",
-                               nrow(sig_df),
-                               sum(sig_df$value < fdr_threshold, na.rm = TRUE),
-                               sig_col, fdr_threshold),
+            subtitle = NULL,
             x = sig_col, y = "Genes"
           ) +
           presentation_theme(base_size = 11)
         save_presentation_plot(
           plot     = p_fdr,
-          filename = file.path(diag_dir, paste0(file_stub, "_fdr_hist.png")),
+          filename = file.path(.plot_subdir(output_dir, "fdr_hist"),
+                               paste0(file_stub, "_fdr_hist.png")),
           width    = 8, height = 5, dpi = 300
         )
       }
@@ -956,10 +951,9 @@ guess_significance_column <- function(result_df) {
         ) +
         ggplot2::labs(
           title    = paste0(file_stub, " volcano"),
-          subtitle = sprintf("%s < %g and |%s| >= %.2f flagged",
-                             sig_col, fdr_threshold, fc_col, lfc_threshold),
+          subtitle = NULL,
           x = fc_col,
-          y = paste0("-log10(", sig_col, ")")
+          y = paste0("-log<sub>10</sub>(", sig_col, ")")
         ) +
         presentation_theme(base_size = 11)
 
@@ -983,7 +977,8 @@ guess_significance_column <- function(result_df) {
       }
       save_presentation_plot(
         plot     = p_vol,
-        filename = file.path(plots_dir, paste0(file_stub, "_volcano.png")),
+        filename = file.path(.plot_subdir(output_dir, "volcano"),
+                             paste0(file_stub, "_volcano.png")),
         width    = 10, height = 8, dpi = 300
       )
     }
@@ -1007,14 +1002,14 @@ guess_significance_column <- function(result_df) {
         ) +
         ggplot2::labs(
           title    = paste0(file_stub, " - top ", nrow(hits_df), " hits"),
-          subtitle = sprintf("Ranked by |%s|; %s < %g",
-                             fc_col, sig_col, fdr_threshold),
+          subtitle = NULL,
           x = fc_col, y = NULL
         ) +
         presentation_theme(base_size = 11)
       save_presentation_plot(
         plot     = p_hits,
-        filename = file.path(plots_dir, paste0(file_stub, "_top_hits.png")),
+        filename = file.path(.plot_subdir(output_dir, "top_hits"),
+                             paste0(file_stub, "_top_hits.png")),
         width    = 9,
         height   = max(5, 0.28 * nrow(hits_df) + 2),
         dpi      = 300
@@ -1062,14 +1057,14 @@ guess_significance_column <- function(result_df) {
           ggplot2::labs(
             title    = paste0(file_stub, " - top ", nrow(sig_forest),
                               " hits (effect +/- 95% CI)"),
-            subtitle = sprintf("Lower/upper from %s / %s; %s < %g",
-                               ci_cols[1], ci_cols[2], sig_col, fdr_threshold),
+            subtitle = NULL,
             x = fc_col, y = NULL
           ) +
           presentation_theme(base_size = 11)
         save_presentation_plot(
           plot     = p_forest,
-          filename = file.path(plots_dir, paste0(file_stub, "_forest.png")),
+          filename = file.path(.plot_subdir(output_dir, "forest"),
+                               paste0(file_stub, "_forest.png")),
           width    = 9,
           height   = max(5, 0.30 * nrow(sig_forest) + 2),
           dpi      = 300
@@ -1104,7 +1099,7 @@ guess_significance_column <- function(result_df) {
         presentation_theme(base_size = 11)
       save_presentation_plot(
         plot     = p_hist,
-        filename = file.path(plots_dir,
+        filename = file.path(.plot_subdir(output_dir, "log2fc_histogram"),
                              paste0(file_stub, "_log2fc_histogram.png")),
         width    = 9, height = 5, dpi = 300
       )
@@ -1144,8 +1139,7 @@ guess_significance_column <- function(result_df) {
             ) +
             ggplot2::labs(
               title    = paste0(file_stub, " - neighbour vs self expression"),
-              subtitle = paste0("Self: ", ns_cols$self,
-                                " | Neighbour: ", ns_cols$neighbour),
+              subtitle = NULL,
               x = "Self mean expression",
               y = "Neighbour mean expression"
             ) +
@@ -1163,7 +1157,7 @@ guess_significance_column <- function(result_df) {
           }
           save_presentation_plot(
             plot     = p_ns,
-            filename = file.path(plots_dir,
+            filename = file.path(.plot_subdir(output_dir, "neighbour_vs_self"),
                                  paste0(file_stub, "_neighbour_vs_self.png")),
             width    = 9, height = 8, dpi = 300
           )
@@ -1198,7 +1192,7 @@ guess_significance_column <- function(result_df) {
             genes       = overlay_genes,
             expr_mat    = expr_mat,
             polygon_df  = polygon_df,
-            plots_dir   = plots_dir,
+            plots_dir   = .plot_subdir(output_dir, "top_gene_overlay"),
             file_stub   = file_stub
           )
         }
@@ -1321,7 +1315,7 @@ guess_significance_column <- function(result_df) {
       ggplot2::labs(
         title    = sample_plot_title(run_label,
                                      "Spatial DE: significant genes per cell type"),
-        subtitle = "Gene counts with FDR < 0.05 (each bar = one contrast)",
+        subtitle = NULL,
         x = "Significant genes (FDR < 0.05)",
         y = NULL
       ) +
@@ -1336,9 +1330,10 @@ guess_significance_column <- function(result_df) {
     }
 
     n_bars <- nrow(df)
+    summary_dir <- ensure_dir(file.path(plots_dir, "spatial_de_summary"))
     save_presentation_plot(
       plot     = p,
-      filename = file.path(plots_dir, paste0(run_label, "_spatial_de_summary.png")),
+      filename = file.path(summary_dir, paste0(run_label, "_spatial_de_summary.png")),
       width    = 11,
       height   = max(6, 0.35 * n_bars + 2),
       dpi      = 300
@@ -1359,7 +1354,8 @@ guess_significance_column <- function(result_df) {
                                      output_path,
                                      cell_type_col = "celltype",
                                      ratio_col = "ratio",
-                                     subtitle = NULL) {
+                                     sample_display = NULL,
+                                     cell_type = NULL) {
   tryCatch({
     if (is.null(overlap_df) || nrow(overlap_df) == 0) return(invisible(NULL))
     df <- as.data.frame(overlap_df, stringsAsFactors = FALSE)
@@ -1371,22 +1367,41 @@ guess_significance_column <- function(result_df) {
     if (nrow(df) == 0) return(invisible(NULL))
     thr_log2 <- log2(max(threshold, .Machine$double.eps))
 
+    title_parts <- c("Overlap-ratio eCDF",
+                     if (!is.null(sample_display) && nzchar(sample_display)) sample_display,
+                     if (!is.null(cell_type) && nzchar(cell_type)) cell_type)
+    plot_title <- paste(title_parts, collapse = " - ")
+
+    n_facets <- length(unique(df[[cell_type_col]]))
+    facet_ncol <- if (n_facets <= 1) 1 else min(4, ceiling(sqrt(n_facets)))
+    facet_nrow <- ceiling(n_facets / facet_ncol)
+    panel_w <- 3.2
+    panel_h <- 2.6
+    plot_width  <- max(8, panel_w * facet_ncol + 2)
+    plot_height <- max(5, panel_h * facet_nrow + 1.5)
+
     p <- ggplot2::ggplot(df, ggplot2::aes(x = log2_ratio)) +
       ggplot2::stat_ecdf(geom = "step", linewidth = 0.6, colour = "grey30") +
       ggplot2::geom_vline(xintercept = thr_log2,
                           linetype = "dashed", colour = "firebrick") +
       ggplot2::facet_wrap(stats::as.formula(paste("~", cell_type_col)),
-                          scales = "free_y") +
+                          ncol = facet_ncol, scales = "free_y",
+                          labeller = ggplot2::label_wrap_gen(width = 22)) +
       ggplot2::labs(
-        title    = "Overlap-ratio eCDF (smiDE prefilter)",
-        subtitle = subtitle,
-        x = expression(log[2] ~ "(neighbour mean / focal mean)"),
+        title    = plot_title,
+        subtitle = NULL,
+        x = "log<sub>2</sub>(neighbour mean / focal mean)",
         y = "Cumulative fraction of genes"
       ) +
-      presentation_theme(base_size = 11)
+      presentation_theme(base_size = 11) +
+      ggplot2::theme(
+        strip.text = ggplot2::element_text(size = 9, lineheight = 0.95),
+        strip.background = ggplot2::element_rect(fill = "grey95", colour = NA),
+        panel.spacing = grid::unit(0.6, "lines")
+      )
 
     save_presentation_plot(p, output_path,
-                           width = 8, height = 6, dpi = 200)
+                           width = plot_width, height = plot_height, dpi = 200)
   }, error = function(e) {
     message("  Overlap-ratio eCDF skipped: ", conditionMessage(e))
   })
@@ -1607,6 +1622,45 @@ run_smide_sample_backend <- function(expr_mat,
                             metadata[[annotation_column]], mean)
   tc_scalefactors <- tc_scalefactors[!is.na(tc_scalefactors)]
 
+  overlap_df <- tryCatch(
+    coerce_overlap_metric_table(
+      smiDE::overlap_ratio_metric(
+        assay_matrix = counts_dense_full,
+        metadata = metadata,
+        cluster_col = annotation_column,
+        cellid_col = "cell_ID",
+        sdimx_col = "sdimx",
+        sdimy_col = "sdimy",
+        split_neighbors_by_colname = split_col,
+        radius = smide_radius,
+        verbose = FALSE
+      )
+    ),
+    error = function(e) {
+      message("Could not compute overlap ratio metric for ", run_label, ": ",
+              conditionMessage(e))
+      NULL
+    }
+  )
+  run_stub <- paste(gsub("[^A-Za-z0-9]+", "_", run_label), "sample", sep = "_")
+  if (!is.null(overlap_df)) {
+    utils::write.csv(
+      overlap_df,
+      file.path(tables_dir, paste0(run_stub, "_overlap_ratio_metric.csv")),
+      row.names = FALSE
+    )
+    ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots", "overlap_ratio_ecdf"))
+    .plot_overlap_ratio_ecdf(
+      overlap_df, threshold = smide_overlap_threshold,
+      output_path = file.path(
+        ecdf_plots_dir, paste0(run_stub, "_overlap_ratio_ecdf.png")
+      ),
+      cell_type_col = annotation_column,
+      sample_display = display_sample_label(run_label),
+      cell_type = NULL
+    )
+  }
+
   for (cell_type in candidate_cell_types) {
     cell_meta <- metadata[metadata[[annotation_column]] == cell_type, , drop = FALSE]
     n_cells_total <- nrow(cell_meta)
@@ -1684,26 +1738,6 @@ run_smide_sample_backend <- function(expr_mat,
       next
     }
     
-    overlap_df <- tryCatch(
-      coerce_overlap_metric_table(
-        smiDE::overlap_ratio_metric(
-          assay_matrix = counts_dense_full,
-          metadata = metadata,
-          cluster_col = annotation_column,
-          cellid_col = "cell_ID",
-          sdimx_col = "sdimx",
-          sdimy_col = "sdimy",
-          split_neighbors_by_colname = split_col,
-          radius = smide_radius,
-          verbose = FALSE
-        )
-      ),
-      error = function(e) {
-        message("Could not compute overlap ratio metric for ", run_label, " / ", cell_type, ": ", conditionMessage(e))
-        NULL
-      }
-    )
-    
     file_stub_base <- paste(
       gsub("[^A-Za-z0-9]+", "_", run_label),
       "sample",
@@ -1711,25 +1745,9 @@ run_smide_sample_backend <- function(expr_mat,
       "smide",
       sep = "_"
     )
-    
+
     if (isTRUE(smide_save_raw)) {
       saveRDS(pre_obj, file.path(tables_dir, paste0(file_stub_base, "_pre_de.rds")))
-    }
-    if (!is.null(overlap_df)) {
-      utils::write.csv(
-        overlap_df,
-        file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
-        row.names = FALSE
-      )
-      ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots"))
-      .plot_overlap_ratio_ecdf(
-        overlap_df, threshold = smide_overlap_threshold,
-        output_path = file.path(
-          ecdf_plots_dir, paste0(file_stub_base, "_overlap_ratio_ecdf.png")
-        ),
-        cell_type_col = annotation_column,
-        subtitle = paste(run_label, "-", cell_type)
-      )
     }
 
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)
@@ -2109,6 +2127,41 @@ run_smide_merged_backend <- function(expr_mat,
                             metadata[[annotation_column]], mean)
   tc_scalefactors <- tc_scalefactors[!is.na(tc_scalefactors)]
 
+  overlap_df <- tryCatch(
+    coerce_overlap_metric_table(
+      smiDE::overlap_ratio_metric(
+        assay_matrix = counts_dense_full,
+        metadata = metadata,
+        cluster_col = annotation_column,
+        cellid_col = "cell_ID",
+        sdimx_col = "sdimx",
+        sdimy_col = "sdimy",
+        split_neighbors_by_colname = sample_column,
+        radius = smide_radius,
+        verbose = FALSE
+      )
+    ),
+    error = function(e) NULL
+  )
+  run_stub <- paste(gsub("[^A-Za-z0-9]+", "_", run_label), "merged", sep = "_")
+  if (!is.null(overlap_df)) {
+    utils::write.csv(
+      overlap_df,
+      file.path(tables_dir, paste0(run_stub, "_overlap_ratio_metric.csv")),
+      row.names = FALSE
+    )
+    ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots", "overlap_ratio_ecdf"))
+    .plot_overlap_ratio_ecdf(
+      overlap_df, threshold = smide_overlap_threshold,
+      output_path = file.path(
+        ecdf_plots_dir, paste0(run_stub, "_overlap_ratio_ecdf.png")
+      ),
+      cell_type_col = annotation_column,
+      sample_display = display_sample_label(run_label),
+      cell_type = NULL
+    )
+  }
+
   summary_rows <- list()
   all_results  <- list()
   skipped_cell_types <- character(0)
@@ -2188,23 +2241,6 @@ run_smide_merged_backend <- function(expr_mat,
       gc(verbose = FALSE); next
     }
 
-    overlap_df <- tryCatch(
-      coerce_overlap_metric_table(
-        smiDE::overlap_ratio_metric(
-          assay_matrix = counts_dense_full,
-          metadata = metadata,
-          cluster_col = annotation_column,
-          cellid_col = "cell_ID",
-          sdimx_col = "sdimx",
-          sdimy_col = "sdimy",
-          split_neighbors_by_colname = sample_column,
-          radius = smide_radius,
-          verbose = FALSE
-        )
-      ),
-      error = function(e) NULL
-    )
-
     file_stub_base <- paste(
       gsub("[^A-Za-z0-9]+", "_", run_label),
       "merged",
@@ -2214,20 +2250,6 @@ run_smide_merged_backend <- function(expr_mat,
     )
     if (isTRUE(smide_save_raw)) {
       saveRDS(pre_obj, file.path(tables_dir, paste0(file_stub_base, "_pre_de.rds")))
-    }
-    if (!is.null(overlap_df)) {
-      utils::write.csv(overlap_df,
-                       file.path(tables_dir, paste0(file_stub_base, "_overlap_ratio_metric.csv")),
-                       row.names = FALSE)
-      ecdf_plots_dir <- ensure_dir(file.path(dirname(tables_dir), "plots"))
-      .plot_overlap_ratio_ecdf(
-        overlap_df, threshold = smide_overlap_threshold,
-        output_path = file.path(
-          ecdf_plots_dir, paste0(file_stub_base, "_overlap_ratio_ecdf.png")
-        ),
-        cell_type_col = annotation_column,
-        subtitle = paste(run_label, "-", cell_type)
-      )
     }
 
     targets <- extract_overlap_targets(overlap_df, threshold = smide_overlap_threshold)

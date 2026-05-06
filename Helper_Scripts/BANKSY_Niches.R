@@ -412,7 +412,7 @@ cluster_banksy_single_sample <- function(aug_spe,
       ggplot2::geom_polygon(colour = "grey30", linewidth = 0.05) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, ": BANKSY niches (", n_niches, ")"),
+        title = paste0(display_sample_label(sample_id), ": BANKSY niches (", n_niches, ")"),
         x = "X", y = "Y", fill = "Niche"
       ) +
       ggplot2::theme_minimal(base_size = 11) +
@@ -428,7 +428,7 @@ cluster_banksy_single_sample <- function(aug_spe,
       ggplot2::geom_point(size = 0.4) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(sample_id, ": BANKSY niches (", n_niches,
+        title = paste0(display_sample_label(sample_id), ": BANKSY niches (", n_niches,
                        ", centroid fallback)"),
         x = "X", y = "Y", colour = "Niche"
       ) +

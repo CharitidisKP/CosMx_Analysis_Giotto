@@ -1,5 +1,5 @@
 ---
-title: "Paired Merged Analysis - CART T0 vs T12 (patient S1)"
+title: "Paired Merged Analysis - CART T0 vs T06 (patient S1)"
 author: "K. Charitidis"
 date: "`r format(Sys.Date(), '%Y-%m-%d')`"
 output:
@@ -39,7 +39,13 @@ suppressPackageStartupMessages({
   library(BiocNeighbors)
   library(uwot)
   library(igraph)
+  library(ggtext)
 })
+md_axes <- ggplot2::theme(
+  axis.title.x = ggtext::element_markdown(),
+  axis.title.y = ggtext::element_markdown(),
+  legend.title = ggtext::element_markdown()
+)
 ```
 
 ```{r config}
@@ -50,7 +56,7 @@ output_root <- cfg$paths$output_dir %||% file.path(project_dir, "Output")
 ## Pair selection
 
 ```{r pair_samples}
-pair_ids <- c("CART_T0_S1", "CART_T12_S1")
+pair_ids <- c("CART_T0_S1", "CART_T06_S1")
 
 samples <- readr::read_csv(
   file.path(scripts_dir, "Parameters", "sample_sheet.csv"),
@@ -232,8 +238,8 @@ print(ggplot(qc_all, aes(total_expr)) +
   geom_vline(xintercept = qc$min_count, linetype = "dashed") +
   scale_x_log10() +
   facet_wrap(~ sample_id, scales = "free_y") +
-  labs(x = "nCount_RNA (log10)", y = "Density",
-       title = "Transcripts per cell"))
+  labs(x = "nCount_RNA (log<sub>10</sub>)", y = "Density",
+       title = "Transcripts per cell") + md_axes)
 
 print(ggplot(qc_all, aes(nr_feats)) +
   geom_density(fill = "grey80", colour = NA) +
@@ -241,8 +247,8 @@ print(ggplot(qc_all, aes(nr_feats)) +
              linetype = "dashed") +
   scale_x_log10() +
   facet_wrap(~ sample_id, scales = "free_y") +
-  labs(x = "nFeature_RNA (log10)", y = "Density",
-       title = "Features per cell"))
+  labs(x = "nFeature_RNA (log<sub>10</sub>)", y = "Density",
+       title = "Features per cell") + md_axes)
 
 print(ggplot(qc_all, aes(nr_feats, total_expr, colour = qc_pass)) +
   geom_point(size = 0.3, alpha = 0.5) +
@@ -252,8 +258,8 @@ print(ggplot(qc_all, aes(nr_feats, total_expr, colour = qc_pass)) +
   scale_x_log10() + scale_y_log10() +
   scale_colour_manual(values = pass_pal) +
   facet_wrap(~ sample_id) +
-  labs(x = "nFeature_RNA (log10)", y = "nCount_RNA (log10)",
-       colour = "QC pass", title = "Joint count/feature distribution"))
+  labs(x = "nFeature_RNA (log<sub>10</sub>)", y = "nCount_RNA (log<sub>10</sub>)",
+       colour = "QC pass", title = "Joint count/feature distribution") + md_axes)
 
 print(ggplot(qc_all, aes(sdimx, sdimy, colour = qc_pass)) +
   geom_point(size = 0.2, alpha = 0.5) +
@@ -270,8 +276,8 @@ if (nrow(qc_neg) > 0L) {
     scale_colour_viridis_c(option = "magma") +
     coord_fixed() +
     facet_wrap(~ sample_id) +
-    labs(colour = "log2(NegPrb / Total)",
-         title = "Negative-probe ratio per cell"))
+    labs(colour = "log<sub>2</sub>(NegPrb / Total)",
+         title = "Negative-probe ratio per cell") + md_axes)
 }
 
 upset_input           <- as.data.frame(qc_all[, flag_cols])

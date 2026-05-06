@@ -276,7 +276,7 @@ perform_clustering <- function(gobj,
         ggplot2::scale_x_continuous(breaks = sweep_df$resolution) +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "Leiden resolution sweep"),
-          subtitle = "Red point = primary resolution",
+          subtitle = NULL,
           x = "Resolution", y = "Number of clusters"
         ) +
         presentation_theme(base_size = 12)
@@ -319,7 +319,7 @@ perform_clustering <- function(gobj,
         gobject = gobj,
         cluster_column = "leiden_clust",
         custom_colors = clus_colour_map,
-        title_suffix = paste0(" - ", sample_id, " Leiden Clusters"),
+        title_suffix = paste0(" - ", display_sample_label(sample_id), " Leiden Clusters"),
         save_plots = TRUE,
         save_dir = results_folder,
         prefix = paste0(sample_id, "_custom_clusters")
@@ -508,7 +508,7 @@ perform_clustering <- function(gobj,
             ) +
             ggplot2::labs(
               title    = sample_plot_title(sample_id, "Mean silhouette per Leiden cluster"),
-              subtitle = sprintf("PCA space (first %d PCs); subsampled to %d cells",
+              subtitle = sprintf("PCA space (first %d PCs), subsampled to %d cells",
                                  ncol(pca_sub), nrow(pca_sub)),
               x = "Leiden cluster", y = "Mean silhouette width"
             ) +

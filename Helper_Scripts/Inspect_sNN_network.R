@@ -276,7 +276,7 @@ inspect_nn_network <- function(gobject,
   # Combine edge distribution plots
   combined_plot <- (p1 | p2) / (p3 | p4)
   combined_plot <- combined_plot + 
-    plot_annotation(title = paste("sNN Network Edge Attributes -", sample_id),
+    plot_annotation(title = paste("sNN Network Edge Attributes -", display_sample_label(sample_id)),
                     theme = theme(plot.title = element_text(hjust = 0.5, size = 16, face = "bold")))
   
   ## 4.2 Degree Distribution
@@ -289,7 +289,7 @@ inspect_nn_network <- function(gobject,
     annotate("text", x = mean(degree_dist) + 2, y = Inf, 
              label = paste("Mean =", round(mean(degree_dist), 2)), 
              vjust = 2, color = "red", fontface = "bold") +
-    labs(title = paste("Degree Distribution -", sample_id),
+    labs(title = paste("Degree Distribution -", display_sample_label(sample_id)),
          x = "Number of Neighbors (Degree)",
          y = "Frequency") +
     theme_minimal() +
@@ -362,9 +362,9 @@ inspect_nn_network <- function(gobject,
                alpha = 0.7) +
     scale_size_continuous(range = c(0.5, 3), name = "Degree") +
     scale_color_discrete(name = "Community") +
-    labs(title = paste("sNN Network with Community Detection -", sample_id),
-         subtitle = paste("Showing", n_sample, 
-                          "random cells | Node size = degree | Colour = community | Number of communities: ", 
+    labs(title = paste("sNN Network with Community Detection -", display_sample_label(sample_id)),
+         subtitle = paste("Showing", n_sample,
+                          "random cells, Node size = degree, Colour = community, Number of communities: ",
                           length(unique(communities$membership)))) +
     theme_void() +
     theme(legend.position = "none",

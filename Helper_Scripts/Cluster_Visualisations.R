@@ -211,7 +211,7 @@ create_clustering_plots <- function(umap_df,
     ) +
     labs(
       title    = paste0("UMAP projection", title_suffix),
-      subtitle = "UMAP",
+      subtitle = NULL,
       x        = "UMAP dimension 1",
       y        = "UMAP dimension 2"
     ) +
@@ -228,7 +228,7 @@ create_clustering_plots <- function(umap_df,
     ) +
     labs(
       title    = paste0("t-SNE projection", title_suffix),
-      subtitle = "t-SNE",
+      subtitle = NULL,
       x        = "t-SNE dimension 1",
       y        = "t-SNE dimension 2"
     ) +

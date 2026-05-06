@@ -711,21 +711,22 @@ batch_correct_merged_object <- function(gobj,
     umap_df    <- embedding_to_tibble(gobj, reduction_method = "umap",
                                       name = "umap",    color_columns = batch_plot_cols)
 
+    sample_disp <- display_sample_label(sample_id)
     save_embedding_plot(pca_df,
       color_column = batch_column,
-      title = paste(sample_id, "- PCA by", batch_column, "(before Harmony)"),
+      title = paste(sample_disp, "- PCA by", batch_column, "(before Harmony)"),
       output_file  = file.path(results_dir, paste0(sample_id, "_pca_by_", batch_column, ".png")))
     save_embedding_plot(harmony_df,
       color_column = batch_column,
-      title = paste(sample_id, "- Harmony dims by", batch_column),
+      title = paste(sample_disp, "- Harmony dims by", batch_column),
       output_file  = file.path(results_dir, paste0(sample_id, "_harmony_by_", batch_column, ".png")))
     save_embedding_plot(umap_df,
       color_column = batch_column,
-      title = paste(sample_id, "- UMAP by", batch_column),
+      title = paste(sample_disp, "- UMAP by", batch_column),
       output_file  = file.path(results_dir, paste0(sample_id, "_umap_by_", batch_column, ".png")))
     save_embedding_plot(umap_df,
       color_column = "leiden_clust",
-      title = paste(sample_id, "- UMAP by Leiden cluster"),
+      title = paste(sample_disp, "- UMAP by Leiden cluster"),
       output_file  = file.path(results_dir, paste0(sample_id, "_umap_by_leiden_clust.png")))
 
     # Validation: UMAP coloured by cell type - confirms Harmony preserved biology.
@@ -742,7 +743,7 @@ batch_correct_merged_object <- function(gobj,
       for (ann_col in ann_cols_present) {
         save_embedding_plot(umap_ann,
           color_column = ann_col,
-          title = paste(sample_id, "- UMAP by", ann_col, "(biology check)"),
+          title = paste(sample_disp, "- UMAP by", ann_col, "(biology check)"),
           output_file  = file.path(results_dir,
                                    paste0(sample_id, "_umap_by_", ann_col, ".png")))
       }
@@ -753,7 +754,7 @@ batch_correct_merged_object <- function(gobj,
                                          color_columns = "sample_id")
       save_embedding_plot(umap_sample,
         color_column = "sample_id",
-        title = paste(sample_id, "- UMAP by sample_id (mixing check)"),
+        title = paste(sample_disp, "- UMAP by sample_id (mixing check)"),
         output_file  = file.path(results_dir,
                                  paste0(sample_id, "_umap_by_sample_id.png")))
     }

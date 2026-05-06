@@ -421,11 +421,10 @@ marker_analysis <- function(gobj,
                               linetype = "dashed", colour = "grey40") +
           ggplot2::labs(
             title    = sample_plot_title(sample_id,
-                                         paste0("Volcano \u2014 cluster ", cl)),
-            subtitle = sprintf("%s vs. %s; %d genes",
-                               lfc_col, sig_col, nrow(df_cl)),
+                                         paste0("Volcano - cluster ", cl)),
+            subtitle = NULL,
             x = paste0("log fold-change (", lfc_col, ")"),
-            y = paste0("-log10(", sig_col, ")")
+            y = paste0("-log<sub>10</sub>(", sig_col, ")")
           ) +
           presentation_theme(base_size = 11)
         save_presentation_plot(

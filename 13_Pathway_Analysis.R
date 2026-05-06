@@ -1097,9 +1097,10 @@ if ((!exists("presentation_theme") ||
     ggplot2::coord_flip() +
     ggplot2::scale_fill_viridis_c(option = "D") +
     ggplot2::labs(title = title, x = NULL,
-                  y = "-log10(p.adjust)", fill = "gene count") +
+                  y = "-log<sub>10</sub>(p.adjust)", fill = "gene count") +
     ggplot2::facet_wrap(~ direction, ncol = 1, scales = "free_y") +
-    ggplot2::theme_minimal(base_size = 10)
+    ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(axis.title.y = element_markdown_safe())
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1124,14 +1125,15 @@ if ((!exists("presentation_theme") ||
     ggplot2::scale_colour_manual(values = c(`TRUE` = "firebrick",
                                             `FALSE` = "grey60"),
                                  name = "padj<=0.05") +
-    ggplot2::labs(title = title, x = "NES", y = "-log10(padj)")
+    ggplot2::labs(title = title, x = "NES", y = "-log<sub>10</sub>(padj)")
   if (requireNamespace("ggrepel", quietly = TRUE) && nrow(top) > 0) {
     p <- p + ggrepel::geom_text_repel(
       data = top, ggplot2::aes(label = label), size = 2.5,
       max.overlaps = 30, colour = "grey20"
     )
   }
-  p <- p + ggplot2::theme_minimal(base_size = 10)
+  p <- p + ggplot2::theme_minimal(base_size = 10) +
+    ggplot2::theme(axis.title.y = element_markdown_safe())
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1163,11 +1165,12 @@ if ((!exists("presentation_theme") ||
     ggplot2::geom_point() +
     ggplot2::scale_colour_gradient2(low = "steelblue", mid = "grey85",
                                     high = "firebrick", midpoint = 0) +
-    ggplot2::scale_size_continuous(name = "-log10(padj)") +
+    ggplot2::scale_size_continuous(name = "-log<sub>10</sub>(padj)") +
     ggplot2::facet_wrap(~ db, scales = "free_y", ncol = 2) +
     ggplot2::labs(title = title, x = "NES", y = NULL) +
     ggplot2::theme_minimal(base_size = 9) +
-    ggplot2::theme(strip.text = ggplot2::element_text(face = "bold"))
+    ggplot2::theme(strip.text = ggplot2::element_text(face = "bold"),
+                   legend.title = element_markdown_safe())
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1201,12 +1204,13 @@ if ((!exists("presentation_theme") ||
     ggplot2::geom_tile(colour = "white", linewidth = 0.15) +
     ggplot2::scale_fill_gradient2(
       low = "steelblue", mid = "white", high = "firebrick",
-      midpoint = 0, name = "sign(NES) * -log10(padj)"
+      midpoint = 0, name = "sign(NES) * -log<sub>10</sub>(padj)"
     ) +
     ggplot2::labs(title = title, x = NULL, y = NULL) +
     ggplot2::theme_minimal(base_size = 9) +
     ggplot2::theme(axis.text.x = ggplot2::element_text(
-      angle = 45, hjust = 1, vjust = 1))
+      angle = 45, hjust = 1, vjust = 1),
+      legend.title = element_markdown_safe())
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1247,9 +1251,10 @@ if ((!exists("presentation_theme") ||
     ggplot2::labs(title = paste0("Cross-comparison pathway heatmap - ",
                                  stratum_label),
                   x = NULL, y = NULL,
-                  fill = "sign(NES) * -log10(padj)") +
+                  fill = "sign(NES) * -log<sub>10</sub>(padj)") +
     ggplot2::theme_minimal(base_size = 9) +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1))
+    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1),
+                   legend.title = element_markdown_safe())
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1662,7 +1667,7 @@ if ((!exists("presentation_theme") ||
       ))
       plot_groups <- plot_groups[!is.na(plot_groups) & nzchar(plot_groups)]
       for (grp in plot_groups) {
-        title_grp <- sprintf("%s | %s | %s [%s]", sample_id, st, lvl, grp)
+        title_grp <- sprintf("%s, %s, %s [%s]", display_sample_label(sample_id), st, lvl, grp)
         if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df)) {
           gsea_grp <- gsea_df[!is.na(gsea_df$plot_group) &
                                 gsea_df$plot_group == grp, , drop = FALSE]

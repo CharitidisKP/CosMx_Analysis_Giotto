@@ -201,9 +201,9 @@ cci:
 pathway:
   enabled: true
   # Comparisons:
-  #   1. CART_before_vs_after  — paired by patient (CART_pt1, CART_pt2 across T0/T12)
+  #   1. CART_before_vs_after  — paired by patient (CART_pt1, CART_pt2 across T0/T06)
   #   2. Conv_before_vs_after  — paired by patient (Conv_pt1 = pair_Conv_31_32,
-  #                              Conv_pt2 = pair_Conv_3_4, each across T0/T12)
+  #                              Conv_pt2 = pair_Conv_3_4, each across T0/T06)
   #   3a/b. CART vs Conv at each timepoint — unpaired, n=2 vs n=2
   #   4. CART_baseline_vs_Control — descriptive only (n=1 Control, no p-values)
   #   5. CART_after_vs_Control    — descriptive only (n=1 Control, no p-values)
@@ -262,26 +262,26 @@ pathway:
   comparisons:
     - label: "CART_before_vs_after"
       group_a: { treatment: "CART",         timepoint: "T0" }
-      group_b: { treatment: "CART",         timepoint: "T12" }
+      group_b: { treatment: "CART",         timepoint: "T06" }
       design: "paired"
     - label: "Conv_before_vs_after"
       group_a: { treatment: "Conventional", timepoint: "T0" }
-      group_b: { treatment: "Conventional", timepoint: "T12" }
+      group_b: { treatment: "Conventional", timepoint: "T06" }
       design: "paired"
     - label: "CART_vs_Conv_before"
       group_a: { treatment: "CART",         timepoint: "T0" }
       group_b: { treatment: "Conventional", timepoint: "T0" }
       design: "unpaired"
     - label: "CART_vs_Conv_after"
-      group_a: { treatment: "CART",         timepoint: "T12" }
-      group_b: { treatment: "Conventional", timepoint: "T12" }
+      group_a: { treatment: "CART",         timepoint: "T06" }
+      group_b: { treatment: "Conventional", timepoint: "T06" }
       design: "unpaired"
     - label: "CART_baseline_vs_Control"
       group_a: { treatment: "CART",         timepoint: "T0" }
       group_b: { treatment: "Control" }
       design: "descriptive"
     - label: "CART_after_vs_Control"
-      group_a: { treatment: "CART",         timepoint: "T12" }
+      group_a: { treatment: "CART",         timepoint: "T06" }
       group_b: { treatment: "Control" }
       design: "descriptive"
   # "celltype" uses celltype_column (auto-detected celltype_*_supervised if null).

@@ -681,7 +681,7 @@ plot_insitucor_results <- function(cor_results,
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "InSituCor Modules"),
         subtitle = paste0("Top ", nrow(top_modules),
-                          " modules by gene count; top-3 weighted genes annotated"),
+                          " modules by gene count, top-3 weighted genes annotated"),
         x = NULL, y = "Number of genes"
       ) +
       presentation_theme(base_size = 12)
@@ -871,7 +871,7 @@ plot_insitucor_results <- function(cor_results,
               title    = sample_plot_title(sample_id,
                            paste0("InSituCor Module: ", mod_id)),
               subtitle = paste0(length(genes_in_mod),
-                                " genes; weighted log1p aggregate expression")
+                                " genes, weighted log1p aggregate expression")
             ) +
             presentation_theme(base_size = 11, legend_position = "right") +
             ggplot2::theme(
@@ -1023,7 +1023,7 @@ plot_insitucor_results <- function(cor_results,
                   title    = sample_plot_title(sub_id,
                                paste0("InSituCor Module: ", mod_id)),
                   subtitle = paste0(length(genes_in_mod),
-                                    " genes; weighted log1p aggregate expression")
+                                    " genes, weighted log1p aggregate expression")
                 ) +
                 presentation_theme(base_size = 11, legend_position = "right") +
                 ggplot2::theme(
@@ -1150,7 +1150,7 @@ plot_insitucor_results <- function(cor_results,
         ggplot2::labs(
           title    = sample_plot_title(sample_id,
                        "InSituCor Module Correlation Matrix"),
-          subtitle = "Pairwise module-score correlations (diverging palette)",
+          subtitle = NULL,
           x = NULL, y = NULL
         ) +
         presentation_theme(base_size = 11, legend_position = "right") +
@@ -1370,7 +1370,7 @@ plot_insitucor_results <- function(cor_results,
           ggplot2::labs(
             title    = sample_plot_title(sample_id,
                          "InSituCor Module Co-expression Network"),
-            subtitle = "Nodes = modules (sized by gene count); edges weighted by module correlation or shared genes"
+            subtitle = NULL
           ) +
           ggraph::theme_graph(background = "white", base_size = 11) +
           ggplot2::theme(
@@ -1641,9 +1641,9 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
         subtitle = paste0("Top ", top_n,
-                          " interactions + best per sender (\u2212log\u2081\u2080; taller = more significant)"),
-        x        = "Interaction (Ligand \u2192 Receptor)",
-        y        = "\u2212log\u2081\u2080(Aggregate Rank)",
+                          " interactions + best per sender (-log<sub>10</sub>, taller = more significant)"),
+        x        = "Interaction (Ligand to Receptor)",
+        y        = "-log<sub>10</sub>(Aggregate Rank)",
         fill     = "Sender"
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
@@ -1812,7 +1812,7 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::scale_fill_viridis_c(option = "plasma", name = "Interactions (n)") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
-        subtitle = "Number of significant L-R pairs per sender-receiver combination",
+        subtitle = NULL,
         x        = "Sender",
         y        = "Receiver"
       ) +
@@ -2025,7 +2025,7 @@ plot_liana_extended <- function(liana_agg,
             title    = sample_plot_title(sample_id, "B-cell CCI Network"),
             subtitle = paste0("All edges where ",
                               paste(focus_celltype, collapse = "/"),
-                              " is sender or receiver; edge width \u221D ",
+                              " is sender or receiver, edge width proportional to ",
                               "N significant L-R pairs")
           ) +
           ggraph::theme_graph(background = "white", base_size = 11) +
@@ -2133,7 +2133,7 @@ plot_liana_extended <- function(liana_agg,
                          "B-cell CCI Network (top interactions)"),
             subtitle = paste0("Top ", top_n_bcell_pairs,
                               " ", paste(focus_celltype, collapse = "/"),
-                              " L-R pairs by LIANA aggregate_rank; ",
+                              " L-R pairs by LIANA aggregate_rank, ",
                               "edge width = N pairs per partner")
           ) +
           ggraph::theme_graph(background = "white", base_size = 11) +
@@ -2188,7 +2188,7 @@ plot_liana_extended <- function(liana_agg,
                      count_df$target %in% focus_celltype, ]
         }
         if (nrow(chord_df) == 0) chord_df <- count_df  # fallback
-        chord_title <- paste0(sample_id, " \u2014 B-cell CCI Chord (top ",
+        chord_title <- paste0(display_sample_label(sample_id), " - B-cell CCI Chord (top ",
                               min(top_n_chord, nrow(bcell_agg_full)),
                               " L-R pairs)")
         chord_path <- file.path(bcell_dir,
@@ -2198,7 +2198,7 @@ plot_liana_extended <- function(liana_agg,
         keep_cts     <- unique(c(top_ct_pairs$source, top_ct_pairs$target))
         chord_df     <- count_df[count_df$source %in% keep_cts &
                                     count_df$target %in% keep_cts, ]
-        chord_title  <- paste0(sample_id, " \u2014 CCI Chord Diagram")
+        chord_title  <- paste0(display_sample_label(sample_id), " - CCI Chord Diagram")
         chord_path   <- file.path(out_dir, paste0(sample_id, "_liana_chord.png"))
       }
       mat <- stats::xtabs(n_interactions ~ source + target, data = chord_df)
@@ -2395,7 +2395,7 @@ plot_liana_extended <- function(liana_agg,
           title    = sample_plot_title(.title_id,
                        paste0("Spatial Expression: ",
                               ligand_gene, " \u2192 ", receptor_gene)),
-          subtitle = paste0(sender_ct, " (ligand) \u2192 ",
+          subtitle = paste0(sender_ct, " (ligand) to ",
                             receiver_ct, " (receptor)"),
           x = "x", y = "y"
         ) +
@@ -2523,7 +2523,7 @@ plot_liana_extended <- function(liana_agg,
                            gsub("[^A-Za-z0-9]", "_", rec_g), ".png")
               ok <- render_lr_pair(pair, file.path(fov_root, fn),
                                    cell_ids_subset = fv_cells,
-                                   title_sample_id = paste0(sample_id, " FOV ", fv))
+                                   title_sample_id = paste0(display_sample_label(sample_id), " FOV ", fv))
               if (isTRUE(ok)) n_fov_saved <- n_fov_saved + 1L
             }, error = function(e) {
               cat("    \u26a0 FOV ", fv, " pair ", i,
@@ -2644,7 +2644,7 @@ plot_liana_extended <- function(liana_agg,
                              gsub("[^A-Za-z0-9]", "_", rec_g), ".png")
                 ok <- render_lr_pair(pair, file.path(fov_root_b, fn),
                                      cell_ids_subset = fv_cells,
-                                     title_sample_id = paste0(sample_id, " FOV ", fv))
+                                     title_sample_id = paste0(display_sample_label(sample_id), " FOV ", fv))
                 if (isTRUE(ok)) n_b_fov_saved <- n_b_fov_saved + 1L
               }, error = function(e) {
                 cat("    \u26A0 FOV ", fv, " b-cell pair ", i,
@@ -3536,7 +3536,7 @@ run_nichenet <- function(gobj,
         outfile  = file.path(out_dir,
                              paste0(sample_id, "_nichenet_bcell_top_ligand_expr.png")),
         ncol_grid = 3, width = 12, height = 8,
-        title = sprintf("%s \u2014 top-6 NicheNet ligands", sample_id)
+        title = sprintf("%s - top-6 NicheNet ligands", display_sample_label(sample_id))
       )
       
       # P5: top-6 target gene expression on polygons
@@ -3811,7 +3811,10 @@ run_misty <- function(gobj,
 
   out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty", sample_id)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  
+  tables_dir <- ensure_dir(file.path(out_dir, "tables"))
+  plot_dir <- function(kind) ensure_dir(file.path(out_dir, "plots", kind))
+  sample_display <- display_sample_label(sample_id)
+
   # Expression matrix (cells x genes) - log-normalised
   # FIX #6: Use pre-extracted cache when available.
   norm_mat <- if (!is.null(expr_cache) && !is.null(expr_cache$normalized)) {
@@ -3820,7 +3823,7 @@ run_misty <- function(gobj,
     .giotto_get_expression(gobj, values = "normalized", output = "matrix")
   }
   expr_mat <- t(as.matrix(norm_mat))
-  
+
   # Target genes: use HVGs if available, else top variable genes
   if (is.null(target_genes)) {
     target_genes <- tryCatch({
@@ -3833,7 +3836,7 @@ run_misty <- function(gobj,
     cat("  Target genes: top", length(target_genes),
         "highly variable genes\n")
   }
-  
+
   target_genes <- intersect(target_genes, colnames(expr_mat))
   feature_name_map <- data.frame(
     original = colnames(expr_mat),
@@ -3845,7 +3848,7 @@ run_misty <- function(gobj,
   target_genes <- unique(target_genes[!is.na(target_genes)])
   write.csv(
     feature_name_map,
-    file.path(out_dir, paste0(sample_id, "_misty_feature_name_map.csv")),
+    file.path(tables_dir, paste0(sample_id, "_misty_feature_name_map.csv")),
     row.names = FALSE
   )
   
@@ -3979,17 +3982,25 @@ run_misty <- function(gobj,
     # Save improvement summary
     if (!is.null(misty_results$improvements)) {
       write.csv(misty_results$improvements,
-                file.path(out_dir, paste0(sample_id, "_misty_improvements.csv")),
+                file.path(tables_dir, paste0(sample_id, "_misty_improvements.csv")),
                 row.names = FALSE)
     }
-    
+
     # --- P6, P7, P8: mistyR native plots ---
     tryCatch({
       grDevices::png(
-        file.path(out_dir, paste0(sample_id, "_misty_improvement_stats.png")),
+        file.path(plot_dir("improvement_stats"),
+                  paste0(sample_id, "_misty_improvement_stats.png")),
         width = 900, height = 600, res = 150
       )
-      print(mistyR::plot_improvement_stats(misty_results, "gain.R2"))
+      g_imp <- mistyR::plot_improvement_stats(misty_results, "gain.R2") +
+        ggplot2::labs(
+          title    = paste("MISTy improvement stats -", sample_display),
+          subtitle = NULL,
+          y        = "Gain in R<sup>2</sup>"
+        ) +
+        ggplot2::theme(axis.title.y = element_markdown_safe())
+      print(g_imp)
       grDevices::dev.off()
     }, error = function(e) {
       try(grDevices::dev.off(), silent = TRUE)
@@ -3998,10 +4009,16 @@ run_misty <- function(gobj,
     })
     tryCatch({
       grDevices::png(
-        file.path(out_dir, paste0(sample_id, "_misty_view_contributions.png")),
+        file.path(plot_dir("view_contributions"),
+                  paste0(sample_id, "_misty_view_contributions.png")),
         width = 900, height = 600, res = 150
       )
-      print(mistyR::plot_view_contributions(misty_results))
+      g_vc <- mistyR::plot_view_contributions(misty_results) +
+        ggplot2::labs(
+          title    = paste("MISTy view contributions -", sample_display),
+          subtitle = NULL
+        )
+      print(g_vc)
       grDevices::dev.off()
     }, error = function(e) {
       try(grDevices::dev.off(), silent = TRUE)
@@ -4021,11 +4038,18 @@ run_misty <- function(gobj,
     for (misty_view in view_names) {
       tryCatch({
         grDevices::png(
-          file.path(out_dir, sprintf("%s_misty_interaction_heatmap_%s.png",
-                                     sample_id, misty_view)),
+          file.path(plot_dir("interaction_heatmap"),
+                    sprintf("%s_misty_interaction_heatmap_%s.png",
+                            sample_id, misty_view)),
           width = 900, height = 900, res = 150
         )
-        print(mistyR::plot_interaction_heatmap(misty_results, misty_view))
+        g_ih <- mistyR::plot_interaction_heatmap(misty_results, misty_view) +
+          ggplot2::labs(
+            title    = sprintf("MISTy interaction heatmap (%s) - %s",
+                               misty_view, sample_display),
+            subtitle = NULL
+          )
+        print(g_ih)
         grDevices::dev.off()
       }, error = function(e) {
         try(grDevices::dev.off(), silent = TRUE)
@@ -4058,8 +4082,13 @@ run_misty <- function(gobj,
           imp_ord <- imp_df[order(-imp_df[[gain_col]]), , drop = FALSE]
           top_tgts_safe <- utils::head(unique(as.character(imp_ord[[tgt_col]])), 9L)
           # Map safe names back to original panel names
-          name_map_path <- file.path(out_dir,
+          name_map_path <- file.path(tables_dir,
                                      paste0(sample_id, "_misty_feature_name_map.csv"))
+          if (!file.exists(name_map_path)) {
+            legacy <- file.path(out_dir,
+                                paste0(sample_id, "_misty_feature_name_map.csv"))
+            if (file.exists(legacy)) name_map_path <- legacy
+          }
           top_tgts <- top_tgts_safe
           if (file.exists(name_map_path)) {
             nm <- tryCatch(read.csv(name_map_path, stringsAsFactors = FALSE),
@@ -4075,11 +4104,12 @@ run_misty <- function(gobj,
             genes     = as.character(top_tgts),
             bcell_ids = bcell_ids,
             outfile   = file.path(
-              out_dir, paste0(sample_id, "_misty_bcell_top_targets_spatial.png")
+              plot_dir("bcell_top_targets_spatial"),
+              paste0(sample_id, "_misty_bcell_top_targets_spatial.png")
             ),
             ncol_grid = 3, width = 12, height = 12,
-            title = sprintf("%s \u2014 MISTy top-9 paraview-boosted targets",
-                            sample_id)
+            title = sprintf("MISTy top-9 paraview-boosted targets - %s",
+                            sample_display)
           )
         }
         
@@ -4105,17 +4135,14 @@ run_misty <- function(gobj,
               weights  <- per_target_mean[genes_in_mat]
               per_cell_score <- as.numeric(weights %*% as.matrix(expr_sub))
               names(per_cell_score) <- colnames(expr_sub)
-              bcell_mean <- mean(per_cell_score[intersect(names(per_cell_score),
-                                                          bcell_ids)],
-                                 na.rm = TRUE)
               p_score <- .plot_bcell_polygon_panel(
                 poly_df = poly_df, values = per_cell_score,
-                title = sprintf("%s \u2014 MISTy paraview score", sample_id),
-                subtitle = sprintf("Mean B-cell score: %.3f", bcell_mean),
+                title = paste("MISTy paraview score -", sample_display),
+                subtitle = NULL,
                 fill_label = "score"
               )
               ggplot2::ggsave(
-                file.path(out_dir,
+                file.path(plot_dir("bcell_neighbourhood_score"),
                           paste0(sample_id, "_misty_bcell_neighbourhood_score.png")),
                 p_score, width = 9, height = 8, dpi = 150
               )
@@ -4181,6 +4208,9 @@ run_misty_bcell <- function(gobj,
 
   out_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell", sample_id)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  tables_dir <- ensure_dir(file.path(out_dir, "tables"))
+  plot_dir <- function(kind) ensure_dir(file.path(out_dir, "plots", kind))
+  sample_display <- display_sample_label(sample_id)
 
   # FULL-tissue expression and coords - do not subset to B cells before
   # view construction; the row filter happens after add_juxtaview/add_paraview.
@@ -4270,7 +4300,7 @@ run_misty_bcell <- function(gobj,
   target_genes <- unique(target_genes[!is.na(target_genes)])
   write.csv(
     feature_name_map,
-    file.path(out_dir, paste0(sample_id, "_misty_bcell_feature_name_map.csv")),
+    file.path(tables_dir, paste0(sample_id, "_misty_bcell_feature_name_map.csv")),
     row.names = FALSE
   )
 
@@ -4366,17 +4396,25 @@ run_misty_bcell <- function(gobj,
   if (!is.null(misty_results$improvements)) {
     write.csv(
       misty_results$improvements,
-      file.path(out_dir, paste0(sample_id, "_misty_bcell_improvements.csv")),
+      file.path(tables_dir, paste0(sample_id, "_misty_bcell_improvements.csv")),
       row.names = FALSE
     )
   }
 
   tryCatch({
     grDevices::png(
-      file.path(out_dir, paste0(sample_id, "_misty_bcell_improvement_stats.png")),
+      file.path(plot_dir("improvement_stats"),
+                paste0(sample_id, "_misty_bcell_improvement_stats.png")),
       width = 900, height = 600, res = 150
     )
-    print(mistyR::plot_improvement_stats(misty_results, "gain.R2"))
+    g_imp <- mistyR::plot_improvement_stats(misty_results, "gain.R2") +
+      ggplot2::labs(
+        title    = paste("MISTy B-cell improvement stats -", sample_display),
+        subtitle = NULL,
+        y        = "Gain in R<sup>2</sup>"
+      ) +
+      ggplot2::theme(axis.title.y = element_markdown_safe())
+    print(g_imp)
     grDevices::dev.off()
   }, error = function(e) {
     try(grDevices::dev.off(), silent = TRUE)
@@ -4385,10 +4423,16 @@ run_misty_bcell <- function(gobj,
   })
   tryCatch({
     grDevices::png(
-      file.path(out_dir, paste0(sample_id, "_misty_bcell_view_contributions.png")),
+      file.path(plot_dir("view_contributions"),
+                paste0(sample_id, "_misty_bcell_view_contributions.png")),
       width = 900, height = 600, res = 150
     )
-    print(mistyR::plot_view_contributions(misty_results))
+    g_vc <- mistyR::plot_view_contributions(misty_results) +
+      ggplot2::labs(
+        title    = paste("MISTy B-cell view contributions -", sample_display),
+        subtitle = NULL
+      )
+    print(g_vc)
     grDevices::dev.off()
   }, error = function(e) {
     try(grDevices::dev.off(), silent = TRUE)
@@ -4400,11 +4444,18 @@ run_misty_bcell <- function(gobj,
                        "ctype_para")) {
     tryCatch({
       grDevices::png(
-        file.path(out_dir, sprintf("%s_misty_bcell_interaction_heatmap_%s.png",
-                                    sample_id, misty_view)),
+        file.path(plot_dir("interaction_heatmap"),
+                  sprintf("%s_misty_bcell_interaction_heatmap_%s.png",
+                          sample_id, misty_view)),
         width = 900, height = 900, res = 150
       )
-      print(mistyR::plot_interaction_heatmap(misty_results, misty_view))
+      g_ih <- mistyR::plot_interaction_heatmap(misty_results, misty_view) +
+        ggplot2::labs(
+          title    = sprintf("MISTy B-cell interaction heatmap (%s) - %s",
+                             misty_view, sample_display),
+          subtitle = NULL
+        )
+      print(g_ih)
       grDevices::dev.off()
     }, error = function(e) {
       try(grDevices::dev.off(), silent = TRUE)
@@ -4803,7 +4854,7 @@ run_nnsvg <- function(gobj,
           ) +
           ggplot2::labs(
             x = "nnSVG rank", y = lr_col,
-            title = sprintf("%s - top-20 spatially variable genes", sample_id)
+            title = sprintf("%s - top-20 spatially variable genes", display_sample_label(sample_id))
           ) +
           ggplot2::theme_minimal(base_size = 11)
         if (requireNamespace("ggrepel", quietly = TRUE)) {
@@ -4844,7 +4895,7 @@ run_nnsvg <- function(gobj,
           outfile   = file.path(out_dir,
                                 paste0(sample_id, "_nnSVG_top20_spatial_grid.png")),
           ncol_grid = 5, width = 20, height = 16,
-          title = sprintf("%s - nnSVG top-20 SVGs", sample_id)
+          title = sprintf("%s - nnSVG top-20 SVGs", display_sample_label(sample_id))
         )
       }
 
@@ -5551,7 +5602,7 @@ run_cci_analysis <- function(gobj,
 
   if (isTRUE(run_sections["misty"])) {
     misty_dir <- file.path(output_dir, "10_CCI_Analysis", "misty", sample_id)
-    misty_sentinel <- paste0(sample_id, "_misty_improvements.csv")
+    misty_sentinel <- file.path("tables", paste0(sample_id, "_misty_improvements.csv"))
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(misty_dir, misty_sentinel)) {
       cat("  ↻ MISTy section skipped: ", misty_sentinel,
@@ -5606,7 +5657,7 @@ run_cci_analysis <- function(gobj,
       # B-cell-targeted MISTy run (curated B-cell signature targets, B-cell row mask
       # over full-tissue views so cross-celltype neighbours stay in the kernel).
       misty_bcell_dir <- file.path(output_dir, "10_CCI_Analysis", "misty_bcell", sample_id)
-      misty_bcell_sentinel <- paste0(sample_id, "_misty_bcell_improvements.csv")
+      misty_bcell_sentinel <- file.path("tables", paste0(sample_id, "_misty_bcell_improvements.csv"))
       if (!isTRUE(overwrite_existing) &&
           section_outputs_exist(misty_bcell_dir, misty_bcell_sentinel)) {
         cat("  ↻ MISTy (B-cell) section skipped: ", misty_bcell_sentinel,

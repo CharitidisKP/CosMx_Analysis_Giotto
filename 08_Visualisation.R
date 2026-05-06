@@ -778,7 +778,7 @@ create_visualizations <- function(gobj,
         ) +
           patchwork::plot_annotation(
             title = sample_plot_title(sample_id, "Sample overview"),
-            subtitle = paste0("Coloured by: ", colour_col)
+            subtitle = NULL
           )
         save_presentation_plot(
           plot     = overview,

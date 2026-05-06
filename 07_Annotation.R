@@ -732,7 +732,7 @@ select_best_annotation <- function(gobj,
                                                height = 14,
                                                dpi    = 600) {
   # Hyphen (not em dash) so pipeline plot text stays clean.
-  title_txt <- paste0(sample_id, " - ", profile_name, " (", ann_type, ")")
+  title_txt <- paste0(display_sample_label(sample_id), " - ", profile_name, " (", ann_type, ")")
   fname     <- paste0(sample_id, "_spatial_", profile_name, "_", ann_type, ".png")
 
   # 1) Primary path: Giotto spatInSituPlotPoints with outlined styling.
@@ -999,7 +999,7 @@ select_best_annotation <- function(gobj,
                                  drop = FALSE, name = "Cell type") +
       ggplot2::coord_equal() +
       ggplot2::labs(
-        title    = paste0(sample_id, " - ", profile_name, " (", ann_type, ") - FOV ", fv),
+        title    = paste0(display_sample_label(sample_id), " - ", profile_name, " (", ann_type, ") - FOV ", fv),
         subtitle = NULL, x = NULL, y = NULL
       ) +
       ggplot2::guides(fill = ggplot2::guide_legend(ncol = 1,
@@ -1275,7 +1275,7 @@ plot_giotto_umap <- function(gobj,
     ) +
     ggplot2::labs(
       title = title_txt,
-      subtitle = "Cells are colored by annotation, with median cluster labels shown for readability.",
+      subtitle = NULL,
       x = embedding_axis_label("UMAP", 1),
       y = embedding_axis_label("UMAP", 2),
       colour = "Cell Type") +
@@ -1592,7 +1592,7 @@ plot_custom_flightpath <- function(insitu_result,
   ann_col     <- data.frame(CellType = ct_ordered, row.names = ct_ordered)
   ann_colours <- list(CellType = colour_map[ct_ordered])
   
-  title_txt <- paste0(sample_id, " \u2014 ", profile_name,
+  title_txt <- paste0(display_sample_label(sample_id), " - ", profile_name,
                       " ", ann_type, "\nMarker gene mean expression (z-score)")
   fname <- paste0(sample_id, "_heatmap_", profile_name, "_", ann_type, ".png")
   
@@ -1726,7 +1726,7 @@ plot_custom_flightpath <- function(insitu_result,
     ) +
     ggplot2::labs(
       title = title_txt,
-      subtitle = "Point size reflects the fraction of cells expressing each marker within a cell type.",
+      subtitle = NULL,
       x = "Marker gene",
       y = "Cell Type"
     ) +
@@ -2011,8 +2011,8 @@ refine_annotation <- function(gobj,
         summary_df   = ref_summary,
         celltype_col = celltype_col_ref,
         colour_map   = colour_map_ref,
-        title        = paste0(sample_id, " - ", profile_name,
-                              " (refined, conf \u2265 ", conf_threshold, ")"),
+        title        = paste0(display_sample_label(sample_id), " - ", profile_name,
+                              " (refined, conf >= ", conf_threshold, ")"),
         out_path     = file.path(refined_folder,
                                  paste0(sample_id,
                                         "_proportions_supervised_refined.png"))
@@ -2664,7 +2664,7 @@ annotate_cells <- function(gobj,
             summary_df   = sup_summary,
             celltype_col = celltype_col_sup,
             colour_map   = colour_map_sup,
-            title        = paste0(sample_id, " - ", profile_name,
+            title        = paste0(display_sample_label(sample_id), " - ", profile_name,
                                   " (supervised)"),
             out_path     = file.path(profile_folder,
                                      paste0(sample_id,
@@ -2766,7 +2766,7 @@ annotate_cells <- function(gobj,
                 summary_df   = semi_summary,
                 celltype_col = celltype_col_semi,
                 colour_map   = colour_map_semi,
-                title        = paste0(sample_id, " - ", profile_name,
+                title        = paste0(display_sample_label(sample_id), " - ", profile_name,
                                       " (semi-supervised)"),
                 out_path     = file.path(profile_folder,
                                          paste0(sample_id,

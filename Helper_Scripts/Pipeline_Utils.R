@@ -58,7 +58,7 @@ sample_plot_title <- function(sample_id, title) {
   if (is.null(sample_id) || !nzchar(sample_id)) {
     return(title)
   }
-  paste(sample_id, title, sep = " - ")
+  paste(display_sample_label(sample_id), title, sep = " - ")
 }
 
 # Run an I/O / plot block with uniform error logging. On error, prints
@@ -90,17 +90,8 @@ section_outputs_exist <- function(out_dir, sentinels) {
   all(file.info(paths)$size > 0)
 }
 
-# Build a human-friendly plot title from a sample_sheet row. Examples:
-#   CART_pt1   T0      -> "CART S1 - Before treatment - <subtitle>"
-#   CART_pt2   T12     -> "CART S2 - After treatment - <subtitle>"
-#   Conv_pt1   T0      -> "Conventional S1 - Before treatment - <subtitle>"
-#   Control_pt1 (any)  -> "Healthy Control - <subtitle>"
-#
-# sample_row is a one-row data.frame / named list from sample_sheet.csv with
-# columns group_id, patient_id, timepoint. Unrecognised groups fall back to
-# sample_plot_title().
-plot_title_for_sample <- function(sample_row, subtitle,
-                                   sample_id_fallback = NULL) {
+# Build the prefix portion of a plot title from a sample_sheet row.
+sample_display_prefix <- function(sample_row, sample_id_fallback = NULL) {
   pick <- function(field) {
     if (is.null(sample_row)) return(NA_character_)
     val <- tryCatch(as.character(sample_row[[field]])[1],
@@ -113,12 +104,13 @@ plot_title_for_sample <- function(sample_row, subtitle,
   pid <- pick("patient_id")
 
   if (is.na(grp)) {
-    # No sample-sheet context: fall back to "sample_id - subtitle"
-    return(sample_plot_title(sample_id_fallback, subtitle))
+    if (is.null(sample_id_fallback) || !nzchar(sample_id_fallback)) return(NA_character_)
+    return(sample_id_fallback)
   }
 
   tp_label <- switch(as.character(tp),
                      "T0"  = "Before treatment",
+                     "T06" = "After treatment",
                      "T12" = "After treatment",
                      "")
 
@@ -129,14 +121,13 @@ plot_title_for_sample <- function(sample_row, subtitle,
                       "Control"      = "Healthy Control",
                       as.character(grp))
 
-  # S-tag: CART_pt1 -> S1 ; Conv_pt2 -> S2 ; else blank.
   s_tag <- NA_character_
   if (!is.na(pid)) {
     m <- regmatches(pid, regexec("_pt(\\d+)$", pid))[[1]]
     if (length(m) == 2L) s_tag <- paste0("S", m[2])
   }
 
-  prefix <- if (grp_label == "Healthy Control") {
+  if (grp_label == "Healthy Control") {
     "Healthy Control"
   } else if (!is.na(s_tag) && nzchar(tp_label)) {
     paste(grp_label, s_tag, "-", tp_label)
@@ -145,8 +136,58 @@ plot_title_for_sample <- function(sample_row, subtitle,
   } else {
     grp_label
   }
+}
 
+# Build a human-friendly plot title from a sample_sheet row + subtitle.
+plot_title_for_sample <- function(sample_row, subtitle,
+                                   sample_id_fallback = NULL) {
+  prefix <- sample_display_prefix(sample_row, sample_id_fallback)
+  if (is.na(prefix) || !nzchar(prefix)) return(sample_plot_title(sample_id_fallback, subtitle))
   paste(prefix, subtitle, sep = " - ")
+}
+
+# Display-friendly run-label conversion; CART splits become "Sample N baseline"
+# / "Sample N after treatment", others fall back to sample-sheet prefix logic.
+format_sample_display <- function(run_label, sample_sheet = NULL) {
+  if (is.null(run_label) || !nzchar(run_label)) return(run_label)
+  m_t0 <- regmatches(run_label, regexec("(?:^|_)T0_S([0-9]+)$", run_label))[[1]]
+  if (length(m_t0) == 2L) return(paste0("Sample ", m_t0[2], " baseline"))
+  m_t06 <- regmatches(run_label, regexec("(?:^|_)T06_S([0-9]+)$", run_label))[[1]]
+  if (length(m_t06) == 2L) return(paste0("Sample ", m_t06[2], " after treatment"))
+  m_t12 <- regmatches(run_label, regexec("(?:^|_)T12_S([0-9]+)$", run_label))[[1]]
+  if (length(m_t12) == 2L) return(paste0("Sample ", m_t12[2], " after treatment"))
+  if (!is.null(sample_sheet) && is.data.frame(sample_sheet) &&
+      "sample_id" %in% names(sample_sheet)) {
+    hit <- sample_sheet[as.character(sample_sheet$sample_id) == run_label, , drop = FALSE]
+    if (nrow(hit) > 0L) {
+      prefix <- sample_display_prefix(hit[1, , drop = FALSE], run_label)
+      if (!is.na(prefix) && nzchar(prefix)) return(prefix)
+    }
+  }
+  run_label
+}
+
+# Memoised sample-sheet loader; returns NULL when the file is absent.
+cached_sample_sheet <- local({
+  cache <- NULL
+  resolved <- FALSE
+  function(path = NULL) {
+    if (resolved) return(cache)
+    resolved <<- TRUE
+    candidate <- path %||% file.path(getwd(), "Parameters", "sample_sheet.csv")
+    if (!file.exists(candidate)) return(NULL)
+    cache <<- tryCatch(
+      utils::read.csv(candidate, stringsAsFactors = FALSE,
+                      na.strings = c("", "NA")),
+      error = function(e) NULL
+    )
+    cache
+  }
+})
+
+# Convenience wrapper that combines the cached sheet with format_sample_display().
+display_sample_label <- function(run_label) {
+  format_sample_display(run_label, sample_sheet = cached_sample_sheet())
 }
 
 has_ggtext <- function() {

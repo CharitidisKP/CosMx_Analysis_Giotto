@@ -1734,6 +1734,20 @@ run_pipeline <- function(cli_opts) {
   if (nrow(selected_samples) == 0) {
     stop("No samples matched the selected filters.")
   }
+
+  # Warn when --sample-steps is used without --samples: the step restriction
+  # does not limit sample selection, so all default-selected samples will run.
+  if (!is.null(cli_opts$sample_steps) && length(cli_opts$sample_steps) > 0 &&
+      !explicit_samples && nrow(selected_samples) > 1) {
+    warning(
+      "--sample-steps was specified without --samples. ",
+      "Step(s) [", paste(cli_opts$sample_steps, collapse = ", "), "] ",
+      "will run for ALL ", nrow(selected_samples), " selected samples: ",
+      paste(selected_samples$sample_id, collapse = ", "), ".\n",
+      "To target a single sample, add: --samples <sample_id>",
+      call. = FALSE
+    )
+  }
   
   # When --split is requested, expand composite-slide rows (those with a
   # subsample_id) into per-subsample rows, each with its own sample_id and

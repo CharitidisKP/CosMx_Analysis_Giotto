@@ -243,7 +243,7 @@ normalize_expression <- function(gobj,
       scale_y_log10() +
       labs(
         title = sample_plot_title(sample_id, "Raw Vs Normalized Gene Expression"),
-        subtitle = "Each point represents one gene. The dashed line marks equal mean expression before and after normalization.",
+        subtitle = NULL,
         x = log10_axis_label("Raw Mean Expression"),
         y = log10_axis_label("Normalized Mean Expression")
       ) +

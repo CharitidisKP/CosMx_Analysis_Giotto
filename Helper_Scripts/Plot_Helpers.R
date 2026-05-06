@@ -390,7 +390,7 @@ clean_plot_text <- function(x) {
 .DISPLAY_PRESERVE_TOKENS <- c(
   "UMAP", "PCA", "tSNE", "t-SNE", "FOV", "FOVs", "L-R", "LR",
   "QC", "RNA", "DNA", "HCA", "CART", "CCI", "DE", "GSEA", "ORA",
-  "T0", "T12", "S1", "S2", "BCR", "TCR", "MHC", "ID", "IDs", "FDR",
+  "T0", "T06", "T12", "S1", "S2", "BCR", "TCR", "MHC", "ID", "IDs", "FDR",
   "log2FC", "log2", "CD4", "CD8", "B", "T", "NK", "GO", "KEGG",
   "MSigDB", "GO:BP", "PROGENy", "II", "III", "IV"
 )

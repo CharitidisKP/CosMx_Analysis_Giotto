@@ -103,7 +103,7 @@ sparse_row_var <- function(x) {
     scale_color_manual(values = c("FALSE" = "grey75", "TRUE" = "firebrick")) +
     labs(
       title = sample_plot_title(sample_id, "Highly Variable Genes"),
-      subtitle = "Top genes selected by sparse variance on normalized expression",
+      subtitle = NULL,
       x = log10_axis_label("Mean Expression"),
       y = log10_axis_label("Variance"),
       color = "Selected\nas HVG"

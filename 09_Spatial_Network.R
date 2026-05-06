@@ -362,7 +362,7 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   # matrix (significance masking still applied via NA breaks).
   .plot_proximity_heatmap_complex(
     mat        = mat_masked,
-    title      = paste0(sample_id, " - Cell-type neighbourhood enrichment"),
+    title      = paste0(display_sample_label(sample_id), " - Cell-type neighbourhood enrichment"),
     subtitle   = NULL,
     focus_label = NULL,
     filename   = save_path,
@@ -692,7 +692,7 @@ build_spatial_network <- function(gobj,
         ggplot2::labs(
           title    = sample_plot_title(sample_id,
                         paste0("Edge-length distribution - ", primary_network)),
-          subtitle = sprintf("n = %d edges; median = %.1f; max = %.1f",
+          subtitle = sprintf("n = %d edges, median = %.1f, max = %.1f",
                              nrow(elen_df), stats::median(elen),
                              max(elen, na.rm = TRUE)),
           x = "Edge length (um)", y = "Edges"
@@ -736,7 +736,7 @@ build_spatial_network <- function(gobj,
             ggplot2::labs(
               title    = sample_plot_title(sample_id,
                            paste0("Edge-length - FOV ", fv)),
-              subtitle = sprintf("n = %d within-FOV edges; median = %.1f",
+              subtitle = sprintf("n = %d within-FOV edges, median = %.1f",
                                  nrow(sub_df), stats::median(sub_df$.elen)),
               x = "Edge length (um)", y = "Edges"
             ) +
