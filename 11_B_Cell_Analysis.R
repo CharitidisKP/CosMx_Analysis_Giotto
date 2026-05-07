@@ -1825,7 +1825,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
       focus_label       = focus_label
     )
   }, error = function(e) {
-    message(tag$display, " spatial/marker plots skipped: ", conditionMessage(e))
+    message(env_tag$display, " spatial/marker plots skipped: ", conditionMessage(e))
   })
 
   tryCatch({
@@ -1838,7 +1838,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
       focus_label       = focus_label
     )
   }, error = function(e) {
-    message(tag$display, " neighbourhood plots skipped: ", conditionMessage(e))
+    message(env_tag$display, " neighbourhood plots skipped: ", conditionMessage(e))
   })
 
   tryCatch({
@@ -1851,7 +1851,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
       focus_label       = focus_label
     )
   }, error = function(e) {
-    message(tag$display, " niche plots skipped: ", conditionMessage(e))
+    message(env_tag$display, " niche plots skipped: ", conditionMessage(e))
   })
 
   if (isTRUE(bcell_subcluster_enabled)) {
@@ -1879,7 +1879,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         seed                = seed
       )
     }, error = function(e) {
-      message(tag$display, " subclustering skipped: ", conditionMessage(e))
+      message(env_tag$display, " subclustering skipped: ", conditionMessage(e))
     })
   }
 

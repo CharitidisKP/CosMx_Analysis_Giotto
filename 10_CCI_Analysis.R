@@ -1312,7 +1312,7 @@ plot_insitucor_results <- function(cor_results,
           mod_net_edges <- data.frame(
             from   = rownames(mc)[idx[, 1]],
             to     = colnames(mc)[idx[, 2]],
-            weight = mc[idx],
+            weight = abs(mc[idx]),
             stringsAsFactors = FALSE
           )
           # Restrict edges to the top-module vertex set. igraph rejects edges with endpoints absent from the vertices frame.
@@ -4440,14 +4440,24 @@ run_misty_bcell <- function(gobj,
     cat("Warning: B-cell MISTy view_contributions plot failed:",
         conditionMessage(e), "\n")
   })
-  for (misty_view in c(paste0("juxtaview_", juxta_radius),
-                       paste0("paraview_", para_radius),
-                       "ctype_para")) {
+  # Discover view names from the results table; mistyR uses dot-separated
+  # names (juxtaview.50, paraview.200, ctype_para) which do not match the
+  # underscore form used at view-construction time.
+  bcell_imp_for_views <- if (!is.null(misty_results$importances.aggregated)) {
+    misty_results$importances.aggregated
+  } else {
+    misty_results$importances
+  }
+  bcell_view_names <- if (!is.null(bcell_imp_for_views)) {
+    unique(as.data.frame(bcell_imp_for_views)$view)
+  } else character(0)
+  for (misty_view in bcell_view_names) {
+    filename_tag <- gsub("\\.", "_", misty_view)
     tryCatch({
       grDevices::png(
         file.path(plot_dir("interaction_heatmap"),
                   sprintf("%s_misty_bcell_interaction_heatmap_%s.png",
-                          sample_id, misty_view)),
+                          sample_id, filename_tag)),
         width = 900, height = 900, res = 150
       )
       g_ih <- mistyR::plot_interaction_heatmap(misty_results, misty_view) +
@@ -5069,7 +5079,7 @@ run_nnsvg <- function(gobj,
                       ggplot2::aes(x = px_x, y = px_y, fill = value)) +
               ggplot2::geom_tile() +
               ggplot2::coord_fixed() +
-              ggplot2::facet_grid(gene ~ layer, scales = "free") +
+              ggplot2::facet_grid(gene ~ layer) +
               ggplot2::scale_fill_viridis_c(option = "magma",
                                             na.value = "grey92") +
               ggplot2::labs(
