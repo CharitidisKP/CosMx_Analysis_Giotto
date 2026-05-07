@@ -187,7 +187,7 @@ kable(qc_df, caption = "Per-sample QC metrics")
 clust_df <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
-    p <- file.path(sample_dir, "05_Clustering", "results", paste0(sample_id, "_cluster_stats.csv"))
+    p <- file.path(sample_dir, "05_Clustering", paste0(sample_id, "_cluster_stats.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
     df |>
@@ -205,10 +205,17 @@ kable(head(clust_df, 30), caption = "Cluster sizes per sample (top 30 rows)")
 ```{r annotation}
 read_selected_profile <- function(json_path) {
   if (!file.exists(json_path)) return(NA_character_)
-  j <- tryCatch(jsonlite::read_json(json_path), error = function(e) NULL)
+  j <- tryCatch(jsonlite::read_json(json_path, simplifyVector = FALSE), error = function(e) NULL)
   if (is.null(j)) return(NA_character_)
-  cand <- j$selected_profile %||% j$profile %||% j$selection$profile %||% j$best_profile
-  if (is.null(cand) || !nzchar(cand)) NA_character_ else cand
+  pick <- function(x) if (!is.null(x) && length(x) == 1L && nzchar(as.character(x))) as.character(x) else NULL
+  col <- pick(j$selected_annotation_column) %||%
+         pick(j$selected_col) %||%
+         pick(j$default_profile) %||%
+         (if (length(j$selected_annotation_columns) > 0) pick(j$selected_annotation_columns[[1]]) else NULL)
+  if (is.null(col)) return(NA_character_)
+  prof <- sub("^celltype_", "", col)
+  prof <- sub("_supervised_refined$|_supervised$|_semi$", "", prof)
+  if (!nzchar(prof)) NA_character_ else prof
 }
 
 annot_df <- samples_df |>
@@ -252,12 +259,20 @@ markers_all <- samples_df |>
 markers_all |> write_summary("04_marker_summary_all.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(markers_all) > 0) {
-  rank_col <- intersect(c("padj", "pval"), names(markers_all))[1]
-  markers_capped <- markers_all |>
-    group_by(sample_id, cluster) |>
-    arrange(.data[[rank_col]], desc(if ("logFC" %in% names(markers_all)) logFC else 0), .by_group = TRUE) |>
-    slice_head(n = top_n_markers) |>
-    ungroup()
+  rank_col <- intersect(c("FDR", "padj", "p.value", "p_val", "pval"), names(markers_all))[1]
+  if (is.na(rank_col)) rank_col <- intersect(c("Top"), names(markers_all))[1]
+  lfc_col <- intersect(c("summary.logFC", "summary_logFC", "logFC", "median.logFC.other"), names(markers_all))[1]
+  if (!is.na(rank_col)) {
+    markers_capped <- markers_all |>
+      group_by(sample_id, cluster) |>
+      arrange(.data[[rank_col]],
+              if (!is.na(lfc_col)) desc(.data[[lfc_col]]) else 0,
+              .by_group = TRUE) |>
+      slice_head(n = top_n_markers) |>
+      ungroup()
+  } else {
+    markers_capped <- markers_all
+  }
 } else {
   markers_capped <- markers_all
 }
@@ -272,10 +287,9 @@ kable(head(markers_capped, 50), caption = paste0("Top ", top_n_markers, " marker
 smide_all <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
-    sde_dir <- file.path(sample_dir, "12_Spatial_DE")
+    sde_dir <- file.path(sample_dir, "12_Spatial_Differential_Expression", "tables")
     if (!dir.exists(sde_dir)) return(NULL)
-    pat <- paste0(".*_", sample_id, "_spatial_de\\.csv$")
-    hits <- list.files(sde_dir, pattern = pat, full.names = TRUE, recursive = FALSE)
+    hits <- list.files(sde_dir, pattern = "_spatial_de\\.csv$", full.names = TRUE, recursive = FALSE)
     if (length(hits) == 0) {
       message("[skip] no smiDE output for ", sample_id)
       return(NULL)
@@ -289,12 +303,16 @@ smide_all <- samples_df |>
 
 smide_all |> write_summary("05_spatial_de_summary_all.csv", n_samples_expected = nrow(samples_df))
 
-if (nrow(smide_all) > 0 && "padj" %in% names(smide_all)) {
+# Significance + fold-change column detection mirrors guess_significance_column() / .guess_fc_column() in 12_Spatial_Differential_Expression.R.
+smide_sig_col <- if (nrow(smide_all) > 0) intersect(c("FDR", "padj", "p.adj", "qval", "p.value", "pvalue", "pval", "p_val"), names(smide_all))[1] else NA_character_
+smide_fc_col  <- if (nrow(smide_all) > 0) intersect(c("log2fc", "log2FoldChange", "logFC", "estimate", "beta"), names(smide_all))[1] else NA_character_
+
+if (nrow(smide_all) > 0 && !is.na(smide_sig_col)) {
   group_cols <- intersect(c("sample_id", "run_label", "annotation"), names(smide_all))
   smide_capped <- smide_all |>
-    filter(!is.na(padj), padj < 0.05) |>
+    filter(!is.na(.data[[smide_sig_col]]), .data[[smide_sig_col]] < 0.05) |>
     group_by(across(all_of(group_cols))) |>
-    arrange(desc(abs(if ("log2fc" %in% names(smide_all)) log2fc else 0)), .by_group = TRUE) |>
+    arrange(if (!is.na(smide_fc_col)) desc(abs(.data[[smide_fc_col]])) else 0, .by_group = TRUE) |>
     slice_head(n = top_n_smide) |>
     ungroup()
 } else {
@@ -307,7 +325,7 @@ kable(head(smide_capped, 50), caption = paste0("Top ", top_n_smide, " spatially 
 
 # 7. CCI - LIANA
 
-```{r liana}
+```{r liana, results = "asis"}
 liana_all <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
@@ -336,7 +354,16 @@ if (nrow(liana_all) > 0) {
 }
 
 liana_capped |> write_summary("06_liana_summary.csv", n_samples_expected = nrow(samples_df))
-kable(head(liana_capped, 50), caption = paste0("Top ", top_n_liana, " LR interactions per sample (head 50)"))
+
+if (nrow(liana_capped) > 0) {
+  for (sid in unique(liana_capped$sample_id)) {
+    cat("\n\n#### ", sid, "\n\n", sep = "")
+    print(kable(liana_capped |> filter(sample_id == sid),
+                caption = paste0("Top ", top_n_liana, " LR interactions - ", sid)))
+  }
+} else {
+  cat("\n\n_No LIANA results found across samples._\n\n")
+}
 ```
 
 # 8. CCI - NicheNet (B-cell receivers)
@@ -345,12 +372,16 @@ kable(head(liana_capped, 50), caption = paste0("Top ", top_n_liana, " LR interac
 nn_df <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
-    cmp_path <- file.path(sample_dir, "10_CCI_Analysis", "nichenet",
-                          paste0(sample_id, "_nichenet_spatially_retained_comparisons.csv"))
-    act_path <- file.path(sample_dir, "10_CCI_Analysis", paste0(sample_id, "_ligand_activities.csv"))
+    nn_root <- file.path(sample_dir, "10_CCI_Analysis", "nichenet")
+    cmp_path <- file.path(nn_root, paste0(sample_id, "_nichenet_spatially_retained_comparisons.csv"))
+    if (!file.exists(cmp_path)) {
+      cmp_path <- file.path(nn_root, paste0(sample_id, "_nichenet_requested_comparisons.csv"))
+    }
+    act_path <- file.path(nn_root, paste0(sample_id, "_ligand_activities.csv"))
     cmp <- read_csv_safe(cmp_path)
     act <- read_csv_safe(act_path)
     if (is.null(act)) return(NULL)
+    if ("...1" %in% names(act)) act <- act |> select(-`...1`)
     bcell_senders <- if (!is.null(cmp) && "receiver" %in% names(cmp)) {
       unique(cmp$sender_label[cmp$receiver == bcell_label])
     } else character(0)
@@ -378,12 +409,16 @@ kable(head(nn_df, 50), caption = paste0("Top ", top_n_ligands, " NicheNet ligand
 misty_df <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
-    p <- file.path(sample_dir, "10_CCI_Analysis", "misty", "tables",
+    p <- file.path(sample_dir, "10_CCI_Analysis", "misty", sample_id, "tables",
                    paste0(sample_id, "_misty_improvements.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
+    if ("...1" %in% names(df)) df <- df |> select(-`...1`)
+    # mistyR::collect_results() emits lower-case 'view'; fold any legacy 'View' to match.
+    df <- df |> rename_with(~ tolower(.x), .cols = any_of(c("View")))
     df |>
-      select(any_of(c("View", "target", "gain.R2", "gain.RMSE", "gain.R2.adj"))) |>
+      select(any_of(c("view", "target", "gain.R2", "gain.RMSE", "gain.R2.adj",
+                      "intra.R2", "multi.R2"))) |>
       mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
@@ -401,11 +436,9 @@ kable(head(misty_df, 50), caption = "MISTy view improvements per (sample, target
 pathway_all <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
-    pw_dir <- file.path(sample_dir, "13_Pathway")
+    pw_dir <- file.path(sample_dir, "13_Pathway_Sample")
     if (!dir.exists(pw_dir)) return(NULL)
-    merged <- list.files(pw_dir, pattern = "_all_results_merged\\.csv$", recursive = TRUE, full.names = TRUE)
-    hits <- if (length(merged) > 0) merged else
-      list.files(pw_dir, pattern = "_gsea_all\\.csv$", recursive = TRUE, full.names = TRUE)
+    hits <- list.files(pw_dir, pattern = "^gsea_all\\.csv$", recursive = TRUE, full.names = TRUE)
     if (length(hits) == 0) {
       message("[skip] no pathway output for ", sample_id)
       return(NULL)
