@@ -36,7 +36,14 @@ render_results_summary <- function(project_dir = NULL,
   }
 
   if (is.null(output_dir) || !nzchar(output_dir)) {
-    output_dir <- file.path(project_dir, "Output", "results_summary")
+    cfg_path <- file.path(project_dir, "Parameters", "config.yaml")
+    cfg <- if (file.exists(cfg_path) && requireNamespace("yaml", quietly = TRUE)) {
+      yaml::read_yaml(cfg_path)
+    } else list()
+    out_root <- if (!is.null(cfg$paths$output_dir) && nzchar(cfg$paths$output_dir)) {
+      normalizePath(file.path(dirname(cfg_path), cfg$paths$output_dir), mustWork = FALSE)
+    } else file.path(project_dir, "Output")
+    output_dir <- file.path(out_root, "results_summary")
   }
   dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 

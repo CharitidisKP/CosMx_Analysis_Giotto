@@ -48,14 +48,27 @@ resolve_project_dir <- function(p) {
   normalizePath(hit[1], mustWork = TRUE)
 }
 
-project_dir     <- resolve_project_dir(params$project_dir)
-output_root_abs <- file.path(project_dir, params$output_root)
-sample_sheet_abs<- file.path(project_dir, params$sample_sheet)
-config_abs      <- file.path(project_dir, params$config_path)
-summary_dir_abs <- file.path(project_dir, params$summary_dir)
-dir.create(summary_dir_abs, recursive = TRUE, showWarnings = FALSE)
-
+project_dir <- resolve_project_dir(params$project_dir)
+config_abs  <- file.path(project_dir, params$config_path)
 cfg <- if (file.exists(config_abs)) yaml::read_yaml(config_abs) else list()
+
+# Config-declared paths in Parameters/config.yaml are resolved relative to the config file.
+resolve_path <- function(cfg_rel, fallback_rel) {
+  if (!is.null(cfg_rel) && nzchar(cfg_rel)) {
+    normalizePath(file.path(dirname(config_abs), cfg_rel), mustWork = FALSE)
+  } else {
+    normalizePath(file.path(project_dir, fallback_rel), mustWork = FALSE)
+  }
+}
+
+output_root_abs  <- resolve_path(cfg$paths$output_dir,   params$output_root)
+sample_sheet_abs <- resolve_path(cfg$paths$sample_sheet, params$sample_sheet)
+summary_dir_abs  <- if (!is.null(cfg$paths$summary_dir) && nzchar(cfg$paths$summary_dir)) {
+  normalizePath(file.path(dirname(config_abs), cfg$paths$summary_dir), mustWork = FALSE)
+} else {
+  file.path(output_root_abs, "results_summary")
+}
+dir.create(summary_dir_abs, recursive = TRUE, showWarnings = FALSE)
 
 top_n_markers  <- (cfg$parameters$markers$top_n %||% params$top_n_markers)
 top_n_pathways <- params$top_n_pathways
