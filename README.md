@@ -91,10 +91,10 @@ Each per-sample run lives in its own R / Apptainer process and writes to
 | `slide_id` | yes | Slide / batch identifier |
 | `split_role` | no | `composite`, `split`, or empty - which view a row belongs to (see below) |
 | `patient_id` | no | Patient identifier |
-| `pair_id` | no | Links T0 / T12 biopsies from the same patient |
+| `pair_id` | no | Links pre / post biopsies from the same patient (T0/T06 for CART, T0/T12 for Conventional) |
 | `group_id` | no | Treatment group (`CART`, `Control`, `Conventional`) |
 | `treatment` | no | Treatment label |
-| `timepoint` | no | `T0`, `T12` - informational |
+| `timepoint` | no | `T0`, `T06`, `T12` - informational |
 | `include` | no | `FALSE` to exclude without deleting the row |
 | `fov_min`, `fov_max` | no | Inclusive FOV bounds, applied at load time when `--split` is on |
 | `notes` | no | Free-text |
@@ -122,9 +122,9 @@ Sample selection rules:
 | sample_id | subsample_id | slide_num | slide_id | group_id | timepoint | fov_min | fov_max |
 |---|---|---|---|---|---|---|---|
 | 1979_8769_6063_4320 | CART_T0_S1 | 1 | batch_CART | CART | T0 | 55 | 71 |
-| 1979_8769_6063_4320 | CART_T12_S1 | 1 | batch_CART | CART | T12 | 42 | 54 |
+| 1979_8769_6063_4320 | CART_T06_S1 | 1 | batch_CART | CART | T06 | 42 | 54 |
 | 1979_8769_6063_4320 | CART_T0_S2 | 1 | batch_CART | CART | T0 | 29 | 41 |
-| 1979_8769_6063_4320 | CART_T12_S2 | 1 | batch_CART | CART | T12 | 1 | 28 |
+| 1979_8769_6063_4320 | CART_T06_S2 | 1 | batch_CART | CART | T06 | 1 | 28 |
 | 1281 | - | 2 | batch_Control | Control | T0 | - | - |
 | 17H13349 | - | 3 | batch_Conv_1 | Conventional | T0 | - | - |
 | 18H12037 | - | 4 | batch_Conv_1 | Conventional | T12 | - | - |
@@ -137,19 +137,21 @@ Sample selection rules:
 
 | Step ID | Aliases | Script | Description |
 |---|---|---|---|
-| `01_load` | `01_load_data` | `01_Load_data.R` | Load CosMx CSVs to Giotto; FOV subset if `--split` |
-| `02_qc` | `02_quality_control` | `02_Quality_Control.R` | Filter low-quality cells + genes |
-| `03_norm` | `03_normalisation` | `03_Normalisation.R` | Library-size normalise + log-transform |
-| `04_dimred` | `04_dimensionality_reduction` | `04_Dimensionallity_Reduction.R` | HVGs, PCA, UMAP |
-| `05_cluster` | - | `05_Clustering.R` | k-NN + Leiden |
-| `06_markers` | `06_de` | `06_Differential_Expression.R` | Per-cluster marker genes |
-| `07_annotate` | `07_annotation` | `07_Annotation.R` | InSituType reference annotation |
-| `08_visualize` | `08_visualisation` | `08_Visualisation.R` | Feature + cluster plots |
-| `09_spatial` | `09_spatial_network` | `09_Spatial_Network.R` | Delaunay network + cell-proximity enrichment |
-| `10_cci` | `10_cci_analysis` | `10_CCI_Analysis.R` | InSituCor / LIANA / NicheNet / MISTy / nnSVG |
-| `11_bcell` | `11_b_cell_analysis` | `11_B_Cell_Analysis.R` | Focused immune microenvironment |
-| `12_spatial_de` | `12_spatial_differential_expression` | `12_Spatial_Differential_Expression.R` | smiDE niche DE (sample scope) |
-| `13_pathway` | `13_pathway_analysis` | `13_Pathway_Analysis.R` | Per-sample GSEA / ORA on cluster + celltype DE |
+| `01_load` | `01`, `01_load_data` | `01_Load_data.R` | Load CosMx CSVs to Giotto; FOV subset if `--split` |
+| `02_qc` | `02`, `02_quality_control` | `02_Quality_Control.R` | Filter low-quality cells + genes |
+| `03_norm` | `03`, `03_normalisation` | `03_Normalisation.R` | Library-size normalise + log-transform |
+| `04_dimred` | `04`, `04_dimensionality_reduction` | `04_Dimensionallity_Reduction.R` | HVGs, PCA, UMAP |
+| `05_cluster` | `05` | `05_Clustering.R` | k-NN + Leiden |
+| `06_markers` | `06`, `06_de` | `06_Differential_Expression.R` | Per-cluster marker genes |
+| `07_annotate` | `07`, `07_annotation` | `07_Annotation.R` | InSituType reference annotation |
+| `08_visualize` | `08`, `08_visualisation` | `08_Visualisation.R` | Feature + cluster plots |
+| `09_spatial` | `09`, `09_spatial_network` | `09_Spatial_Network.R` | Delaunay network + cell-proximity enrichment |
+| `10_cci` | `10`, `10_cci_analysis` | `10_CCI_Analysis.R` | InSituCor / LIANA / NicheNet / MISTy / nnSVG |
+| `11_bcell` | `11`, `11_b_cell_analysis` | `11_B_Cell_Analysis.R` | Focused immune microenvironment |
+| `12_spatial_de` | `12`, `12_spatial_differential_expression` | `12_Spatial_Differential_Expression.R` | smiDE niche DE (sample scope) |
+| `13_pathway` | `13`, `13_pathway_analysis` | `13_Pathway_Analysis.R` | Per-sample GSEA / ORA on cluster + celltype DE |
+
+Bare-number tokens (`01` through `13`) resolve to the matching step automatically when passed via `--sample-steps`.
 
 ---
 
@@ -313,7 +315,7 @@ Output/
     pipeline_checkpoints/                             - per-step Giotto checkpoints
       <step_id>/manifest.json
     Pipeline_log_<sample>_<timestamp>.log
-  Sample_CART_T12_S1/
+  Sample_CART_T06_S1/
   Sample_1281/
   ...
   pipeline_log_<timestamp>.log                        - global log (tee from launcher)
