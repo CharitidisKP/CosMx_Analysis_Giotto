@@ -146,17 +146,31 @@ kable(samples_df, caption = "Samples included in this summary")
 # 2. QC
 
 ```{r qc}
+# 02_Quality_Control.R writes long-format (metric/value); map labels to canonical wide-schema names.
+qc_metric_map <- c(
+  "Cells (initial)"    = "n_cells_initial",
+  "Cells (final)"      = "n_cells_final",
+  "Cells (removed)"    = "n_cells_removed",
+  "Genes (initial)"    = "n_genes_initial",
+  "Genes (final)"      = "n_genes_final",
+  "Genes (removed)"    = "n_genes_removed",
+  "Median genes/cell"  = "median_genes_per_cell",
+  "Median counts/cell" = "median_counts_per_cell"
+)
+
 qc_df <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "02_QC", "tables", paste0(sample_id, "_qc_summary.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
-    df |>
-      select(any_of(c("n_cells_initial", "n_cells_final",
-                      "n_genes_initial", "n_genes_final",
-                      "median_genes_per_cell", "median_counts_per_cell"))) |>
-      mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+    wide <- if (all(c("metric", "value") %in% names(df))) {
+      hits <- df$metric %in% names(qc_metric_map)
+      tibble::as_tibble(setNames(as.list(df$value[hits]), unname(qc_metric_map[df$metric[hits]])))
+    } else {
+      df |> select(any_of(unname(qc_metric_map)))
+    }
+    wide |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
 if (nrow(qc_df) > 0 && all(c("n_cells_initial", "n_cells_final") %in% names(qc_df))) {
