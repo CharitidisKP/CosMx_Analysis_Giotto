@@ -3785,6 +3785,7 @@ run_misty <- function(gobj,
                       sample_id,
                       output_dir,
                       target_genes   = NULL,
+                      n_target_hvgs  = 100,
                       juxta_radius   = 50,
                       para_radius    = 200,
                       n_cores        = 4,
@@ -3828,10 +3829,10 @@ run_misty <- function(gobj,
   if (is.null(target_genes)) {
     target_genes <- tryCatch({
       hvgs <- getHVFInfo(gobj, var_type = "hvf")
-      head(hvgs[order(-hvgs$hvf_value), "feat_ID"], 200)
+      head(hvgs[order(-hvgs$hvf_value), "feat_ID"], n_target_hvgs)
     }, error = function(e) {
       rv <- apply(expr_mat, 2, var)
-      names(sort(rv, decreasing = TRUE))[1:200]
+      names(sort(rv, decreasing = TRUE))[seq_len(n_target_hvgs)]
     })
     cat("  Target genes: top", length(target_genes),
         "highly variable genes\n")
@@ -5648,7 +5649,8 @@ run_cci_analysis <- function(gobj,
         function() run_misty(gobj, sample_id, output_dir,
                              expr_cache     = .cci_expr_cache,
                              celltype_col   = celltype_col,
-                             focus_celltype = focus_celltype)
+                             focus_celltype = focus_celltype,
+                             n_target_hvgs  = cfg$cci$misty_n_target_hvgs %||% 100)
       )
       results$misty <- section_out$result
       section_status["misty"] <- section_out$status

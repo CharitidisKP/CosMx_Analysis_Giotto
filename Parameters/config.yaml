@@ -1,7 +1,11 @@
 # ==============================================================================
 # CosMx pipeline configuration
 # Relative paths are resolved from the location of this file.
+# Block order tracks pipeline-step order. Comments describe parameters only.
 # ==============================================================================
+
+
+# === Globals (cross-step) ===
 
 paths:
   project_dir: "../.."
@@ -12,21 +16,14 @@ paths:
   python_path: null
 
 pipeline:
-  # "separate" (default): per-sample pipeline only. "merged" runs only the
-  # cross-sample merge → Harmony → cross-sample DE → pathway pipeline.
-  # "all" runs both. Use --merged on the launcher as a shortcut for "all".
-  # Merged auto-skips when fewer than 2 samples are selected, regardless of
-  # this setting — you can't merge a single sample with itself.
-  mode: "separate"
+  mode: "separate"             # "separate", "merged", or "all"
   save_intermediates: true
   overwrite_existing: false
   skip_on_error: false
   memory_cleanup: true
 
-# Single global seed used before every stochastic call (UMAP, t-SNE, Leiden,
-# InSituType). Change to 43, 44, ... to produce reproducible alternative runs.
 reproducibility:
-  seed: 42
+  seed: 42                     # global seed for UMAP, t-SNE, Leiden, InSituType
 
 paired:
   pair_column: "pair_id"
@@ -34,46 +31,16 @@ paired:
   treatment_column: "treatment"
   patient_column: "patient_id"
 
+# Cross-step merged-mode globals (Merge_Batch_Correction.R + step 13).
 merged:
   input_step: "07_annotate"
   join_method: "shift"
-  # x_padding shifts each sample's coordinates along x by this many microns
-  # so cells from different samples can never sit on top of each other.
-  # 5000 is cheap insurance for any code that uses Euclidean distance on
-  # merged coordinates (neighborhood enrichment, smiDE radius, future plots).
-  x_padding: 5000
-  # Default treatments included in the merged run when --samples is NOT
-  # explicitly set. Control samples (treatment="Control") are excluded by
-  # default because n=1 Control has no estimable variance for any paired
-  # test; Control still runs in the per-sample pipeline. Override:
-  # `--merged --samples 1281,CART_T0_S1,...` runs merged on exactly those
-  # samples regardless of treatment.
-  default_treatments: ["CART", "Conventional"]
-  # Re-normalize the merged object on its joined raw counts (recommended).
-  # Per-sample normalization (step 03) uses each sample's own scale factor;
-  # carrying those values straight into HVG / PCA / Harmony lets per-sample
-  # scale-factor mismatches leak into the integrated embedding. Re-running
-  # normalizeGiotto on the merged raw counts with one global scale factor
-  # gives consistent per-cell scaling across samples. Pseudobulk DE engines
-  # (DESeq2/edgeR in step 13) use raw counts and are unaffected.
-  renormalize: true
-  # null = dynamic, computed as median library size across the merged cells
-  # (recommended; adapts to the merged dataset). Integer = fixed scalefactor
-  # (e.g., 6000 to match step 03's per-sample setting).
-  normalization_scalefactor: null
+  x_padding: 5000              # micron offset between samples on shifted joins
+  default_treatments: ["CART", "Conventional"]   # Control excluded, n=1 has no estimable variance
+  renormalize: true            # re-run normalizeGiotto on merged raw counts
+  normalization_scalefactor: null   # null = median library size, integer = fixed
   normalization_log_transform: true
-  # batch_column controls what Harmony corrects for.
-  # "sample_id" = one Harmony batch per sample. Explicitly accounts for
-  # sample-level wet-lab preparation variation (each biopsy / each slide
-  # cut / each prep gets its own batch).
-  # NOTE: Conv slides 3+4 (samples 17H13349 / 18H12037) and Conv slides
-  # 31+32 (samples 19H28111 / 20H24159) were technically run together but
-  # are no longer paired in batch correction under this setting — accepted
-  # tradeoff per user direction. The hard guard in
-  # Merge_Batch_Correction.R::batch_correct_merged_object() still rejects
-  # any biological column (group_id / treatment / group / arm) with
-  # batch_column, so we cannot accidentally regress out arm here.
-  batch_column: "sample_id"
+  batch_column: "sample_id"    # Harmony batch column
   n_hvgs: 500
   n_pcs: 30
   dimensions_to_use: "1:30"
@@ -85,9 +52,7 @@ merged:
   cohort_column: "leiden_clust"
   run_label: null
 
-  # Nanostring WTx-guide flow knobs. Read by Merged_Scripts/Paired_Merged_Analysis.Rmd
-  # (notebook-only; production pipeline ignores this block).
-  # Source: nanostring-biostats.github.io/CosMx-Analysis-Scratch-Space/guides/the-wtx-guide
+  # Notebook-only WTx-guide flow (Paired_Merged_Analysis.Rmd).
   wtx:
     n_hvgs: 4000
     n_pcs: 40
@@ -103,51 +68,176 @@ merged:
     leiden_n_iterations: 2
     harmony_batch_column: sample_id
 
-# BANKSY (Singhal et al., Nat Genet 2024) spatial-domain niches. Phase 7
-# of Stage 1 reads these. Defaults follow the BANKSY multi-sample vignette;
-# override here without touching code if niche granularity needs tuning.
-banksy:
-  enabled: true   # gate the per-sample BANKSY niche call invoked from inside step 09_spatial
-  k_geom: 18      # spatial-neighborhood size for BANKSY augmentation
-  lambda: 0.2     # spatial weight (0=no spatial; 1=spatial only)
-  resolution: 0.4 # Leiden resolution on the BANKSY+Harmony embedding (single-sample mode skips Harmony)
 
-# FOV subsetting for composite slides (multiple biopsies on one raw slide).
-# Each sample_id listed here will have its Giotto object subset to cells
-# whose FOV falls within [fov_min, fov_max] immediately after loading.
-# The fov_min/fov_max values are read from the sample_sheet columns of
-# the same name. Rows with empty fov_min/fov_max are loaded in full.
+# === Step 01: Load + FOV split ===
+# Composite slides (multiple biopsies on one raw slide) are subset by FOV at load time.
 fov_split:
   enabled: true
-  fov_column: "fov"        # column in CosMx metadata containing the FOV number
-  fov_min_col: "fov_min"   # sample_sheet column with the lower FOV bound
-  fov_max_col: "fov_max"   # sample_sheet column with the upper FOV bound
+  fov_column: "fov"            # CosMx metadata column with the FOV number
+  fov_min_col: "fov_min"       # sample_sheet column, lower FOV bound
+  fov_max_col: "fov_max"       # sample_sheet column, upper FOV bound
 
+
+# === Steps 02-08, 09 (spatial network), 11 (B-cell subclustering) ===
+# Children ordered by pipeline step for readability.
+parameters:
+
+  # Step 02: QC
+  qc:
+    gene_min_cells: 10
+    cell_min_genes: 50
+    cell_max_genes: 5000
+    min_count: 100
+    max_mito_pct: null
+    apply_wtx_outlier: true       # +/- N SD log10 outlier on cells passing the floor
+    wtx_sd_threshold: 2.5
+    apply_split_ratio: true       # SplitRatioToLocal border filter, no-op if no Area column
+    split_ratio_threshold: 0.5
+    negprb_ratio_threshold: null  # null = compute and plot only, no flag
+    apply_gene_filter: true       # notebook-only, set false to align with WTx guide
+
+  # Step 03: Normalization
+  normalization:
+    scalefactor: 6000          # integer = fixed, null = per-sample median library size
+    log_transform: true
+
+  # Step 04: Dimensionality Reduction
+  dim_reduction:
+    n_hvgs: 500                # integer, or null for auto: min(500, max(100, round(0.1 * n_genes)))
+    n_pcs: 30
+    umap_n_neighbors: 30
+    umap_min_dist: 0.3
+    spatial_hvg: false
+
+  # Step 05: Clustering
+  clustering:
+    k_nn: 15                   # kNN graph degree
+    resolution: 0.8            # Leiden resolution
+    n_iterations: 200
+    resolution_sweep: [0.3, 0.5, 0.8, 1.0, 1.5]
+    dimensions_to_use: "1:30"
+
+  # Step 06: Differential expression markers
+  markers:
+    cluster_column: "leiden_clust"
+    top_n: 25
+
+  # Step 07: Annotation (InSituType supervised + optional refinement + unsupervised pass)
+  annotation:
+    profiles:
+      - name: "HCA_Kidney"
+        type: "hca"
+        species: "Human"
+        age_group: "Adult"
+        matrixname: "Kidney_HCA"
+
+      - name: "CosMx_1K_Kidney"
+        type: "url"
+        source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/Kidney_1k/Kidney_1k.profiles.csv"
+
+      - name: "CosMx_6K_Kidney_RCC"
+        type: "url"
+        source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/KidneyRCC_6k/KidneyRCC_6k.profiles.csv"
+
+    default_profile: "HCA_Kidney"
+    align_genes: true
+    n_starts: 10
+    n_clusts_semi: 5
+    cohort_column: "leiden_clust"
+    min_gene_overlap: 100
+    create_plots: true
+    refinement: true              # post-hoc refineClusters() on low-confidence cells
+    conf_threshold: 0.8
+    unsupervised_n_clusts: 16     # integer, "auto", or 0 to skip the unsupervised pass
+    unsupervised_auto_range: [12, 18]    # n_clusts range tested when "auto"
+    profile_strategy: "default"   # "default", "all", or "best_select"
+    score_weights:                # composite score for "best_select" auto-pick
+      confidence: 0.35
+      high_conf_fraction: 0.25
+      composition: 0.30
+      coverage: 0.10
+
+  # Step 08: Visualization
+  visualization:
+    celltype_columns: null
+    cluster_column: "leiden_clust"
+    marker_genes:                # genes missing from the active panel are silently skipped
+      b_cells:           ["CD19", "MS4A1", "CD79A", "CD79B", "IGHM", "IGHG1"]
+      b_cell_subtypes:   ["IGHD", "CD27", "AICDA", "BCL6", "PRDM1", "IRF4", "TBX21", "ITGAX", "MKI67"]
+      t_cells:           ["CD3D", "CD3E", "CD4", "CD8A", "CD8B"]
+      t_cell_subtypes:   ["CXCR5", "PDCD1", "FOXP3", "IL21", "IFNG", "TBX21"]
+      myeloid:           ["CD14", "CD68", "LYZ", "CSF1R"]
+      nk_cells:          ["NCAM1", "KLRF1", "GNLY", "NKG7"]
+      kidney:            ["NPHS1", "NPHS2", "PODXL", "SLC12A1", "UMOD", "CDH1", "KRT8"]
+      tls_markers:       ["CXCL13", "CCL19", "CCL21", "CR2", "FDCSP"]
+      complement_fc:     ["C1QA", "C1QB", "C3", "C4A", "FCGR1A", "FCGR2A", "FCGR3A"]
+      lupus_relevant:    ["BAFF", "TNFSF13", "TNFRSF13B", "TNFRSF13C", "ISG15", "IFI44", "MX1"]
+      t_cell_activation: ["CD69", "CD25", "IFNG", "GZMB", "PRF1", "TNF"]
+      t_cell_exhaustion: ["PDCD1", "LAG3", "HAVCR2", "TIGIT", "TOX", "CTLA4"]
+      proliferation:     ["MKI67", "TOP2A"]
+      tumour_markers:    []
+    max_cells_preview: 50000
+    preview_seed: 1
+
+  # Step 09: Spatial network construction (Delaunay)
+  spatial_network:
+    max_delaunay_distance: 50  # microns, caps Delaunay edge length
+
+  # Step 11: B-cell subclustering
+  bcell_subclustering:
+    enabled: true
+    min_cells: 50              # warn below this, still runs
+    fallback_min_cells: 20     # hard floor, skip subclustering below this
+    n_hvgs: 250
+    n_pcs: 20
+    umap_n_neighbors: 15
+    umap_min_dist: 0.3
+    k_nn: 10
+    resolution: 0.4            # target 3-6 subtypes
+    resolution_sweep: [0.2, 0.4, 0.6, 0.8]
+
+
+# === Step 09: BANKSY niches ===
+# Singhal et al. Nat Genet 2024. Invoked from inside step 09_spatial.
+banksy:
+  enabled: true
+  k_geom: 18                   # spatial neighborhood size for BANKSY augmentation
+  lambda: 0.2                  # spatial weight (0=no spatial, 1=spatial only)
+  resolution: 0.4              # Leiden resolution on BANKSY+Harmony embedding
+
+
+# === Step 10: Cell-Cell Interaction ===
+# InSituCor, LIANA, NicheNet, MISTy, nnSVG.
+cci:
+  run_sections:
+    insitucor: true
+    liana: true
+    nichenet: true
+    misty: true
+    nnsvg: true
+  nichenet_mode: "single"
+  sender_celltypes: null
+  receiver_celltype: "B cell"
+  target_genes: null
+  target_genes_by_receiver: null
+  nichenet_network_dir: null
+  nichenet_spatial_filter: false      # false, true, or "both"
+  nichenet_proximity_enrichment_path: null
+  nichenet_spatial_padj_threshold: 0.05
+  nichenet_min_cells_per_celltype: 5
+  nichenet_include_self_pairs: false
+  cleanup_between_sections: true
+  misty_n_target_hvgs: 100            # MISTy global run, top-N HVGs scored as targets
+  nnsvg_raster_resolution: auto       # SEraster pixel side, "auto" or numeric um (0=disable)
+
+
+# === Step 11: Cell-type interaction (B-cell focus) ===
 interaction:
-  # Set annotation column explicitly instead of relying on fragile
-  # auto-detection. Must match the column produced by step 07_Annotation.
   annotation_column: "celltype_HCA_Kidney_supervised"
-  # Per-focus native Giotto saves (Giotto_Object_<focus>_Analysis/, _Subcluster/).
-  # Wrapped pipeline_checkpoints/11_bcell/ already carries last_gobj for resume;
-  # the per-focus natives are only useful for ad-hoc inspection of a specific
-  # focus. Default false to save disk; flip to true if you load focus-specific
-  # gobjs interactively outside Run_Giotto_Pipeline.sh.
-  save_per_focus_native: false
-  # Generalised cell-type focus regex (legacy single-focus path — used
-  # only when focus_analyses below is empty / missing).
-  # Labels follow smiDE-native NanoString convention: space-separated
-  # sentence case (normalization applied at source in 07_Annotation.R).
-  focus_celltype_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
-  # Narrower regex used by the B-cell subclustering block (step 11
-  # subcluster/). Always B-cell-only.
-  bcell_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
-  # Multi-focus mode: step 11 iterates over this list, writing each
-  # focus to its own results folder (11_{label}_Microenvironment/).
-  # Set run_subclustering: true only on the B-cell pass — that's the
-  # only pass that uses b_cells / b_cell_subtypes marker lists.
-  # Leave empty or remove the block to fall back to single-focus
-  # behaviour via focus_celltype_regex above.
-  focus_analyses:
+  save_per_focus_native: false        # per-focus native Giotto saves under 11_<focus>_Microenvironment/
+  focus_celltype_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'   # legacy single-focus path
+  bcell_regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'             # B-cell subclustering regex
+  focus_analyses:                     # multi-focus iteration, each writes 11_<label>_Microenvironment/
     - label: "BCell"
       regex: '^(B cell|Naive B cell|Memory B cell|Plasma cell|Plasmablast)$'
       run_subclustering: true
@@ -156,102 +246,64 @@ interaction:
       run_subclustering: false
   spatial_network_name: "Delaunay_network"
   number_of_simulations: 250
-  # Cap on edges drawn in the focused cell-type proximity network (step 11).
-  # Raises readability on dense networks; set higher to show more interactions.
-  max_network_edges: 70
+  max_network_edges: 70               # cap on edges drawn in the focused proximity network
 
-cci:
-  run_sections:
-    insitucor: true
-    liana: true
-    nichenet: true
-    misty: true  # enabled 2026-05-04 after celltype-paraview + B-cell row-mask rebuild
-    nnsvg: true
-  nichenet_mode: "single"
-  sender_celltypes: null
-  receiver_celltype: "B cell"
-  target_genes: null
-  target_genes_by_receiver: null
-  nichenet_network_dir: null
-  nichenet_spatial_filter: false  # false, true, or "both"
-  nichenet_proximity_enrichment_path: null
-  nichenet_spatial_padj_threshold: 0.05
-  nichenet_min_cells_per_celltype: 5
-  nichenet_include_self_pairs: false
-  cleanup_between_sections: true
-  # nnSVG rasterization (SEraster). On imaging-based SRT (CosMx/MERFISH) the
-  # per-cell SpatialExperiment is aggregated into square pixels at this side
-  # length BEFORE nnSVG runs. Set to "auto" (recommended) to compute the side
-  # length from the SPE's coordinate extent so it scales correctly whether
-  # coords are µm, mm, or native imaging units (CosMx ships with ~0.12 µm/unit
-  # on this cluster, so a hard-coded value silently no-ops). Set to a numeric
-  # value to override; set to 0 to disable rasterization and use the legacy
-  # random-downsample path. Reference: Pattanayak et al. 2023 (PMC10491191).
-  nnsvg_raster_resolution: auto
 
-# ==============================================================================
-# Step 13 — Pathway enrichment + GSEA.
-# Runs in merged scope because the four comparisons span multiple samples.
+# === Step 12: Spatial Differential Expression (smiDE) ===
+spatial_de:
+  annotation_column: "celltype_HCA_Kidney_supervised"
+  leiden_column: "leiden_clust"
+  stratify_by: ["celltype", "leiden"]      # one smiDE call per (stratifier x comparison), [] = legacy single-call
+  use_pathway_comparisons: true            # mirror pathway.comparisons, set false to use spatial_de.comparisons
+  smide_min_cells_per_stratum: 200
+  smide_max_strata_per_comparison: 30
+  plot_top_n: 30                           # genes labelled in the spatial overlay panel grid
+  plot_max_strata_panels: 12               # cap on spatial overlay grid size
+  sample_column: "sample_id"
+  treatment_column: "treatment"
+  patient_column: "patient_id"
+  spatial_network_name: "Delaunay_network"
+  n_niches: 6
+  min_cells_per_niche: 10
+  min_cells_per_sample: 10
+  min_samples_per_group: 2
+  sample_replicate_column: "fov"
+  sample_contrast: "one_vs_rest"
+  smide_family: "nbinom2"
+  smide_radius: 50                         # microns, cell-cell proximity cutoff
+  smide_ncores: 4                          # only consumed by smiDE::smi_de(nCores=)
+  smide_inner_workers: 1                   # reserved for the per-cell-type parallel refactor
+  smide_overlap_threshold: 0.8             # 1 = disabled, lower = stricter cross-cell contamination filter
+  smide_annotation_subset: null            # legacy filter, used only when stratify_by is empty
+  smide_min_detection_fraction: 0.01
+  smide_custom_predictor: null
+  smide_partner_celltypes: null
+  smide_partner_source: "none"
+  smide_partner_top_n: 5
+  smide_partner_padj_threshold: 0.05
+  smide_include_self_partner: false
+  smide_predictor_mode: "group"            # "count" emits continuous tally per partner (sample-scope only)
+  smide_save_raw: true
+
+
+# === Step 13: Pathway + GSEA ===
+# Merged-scope: comparisons span multiple samples.
 # Required packages: msigdbr, clusterProfiler, fgsea, enrichplot, ReactomePA,
 # org.Hs.eg.db, decoupleR, progeny, presto, pheatmap, UpSetR, ComplexHeatmap.
-# Install with `Rscript Parameters/Install_CCI_dependencies.R msigdbr,clusterprofiler,\
-# fgsea,enrichplot,reactomepa,orghs,annotationdbi,decoupler,gseabase,progeny,presto,\
-# pheatmap,upsetr,complexheatmap`.
-# ==============================================================================
 pathway:
   enabled: true
-  # Comparisons:
-  #   1. CART_before_vs_after  — paired by patient (CART_pt1, CART_pt2 across T0/T06)
-  #   2. Conv_before_vs_after  — paired by patient (Conv_pt1 = pair_Conv_31_32,
-  #                              Conv_pt2 = pair_Conv_3_4, each across T0/T06)
-  #   3a/b. CART vs Conv at each timepoint — unpaired, n=2 vs n=2
-  #   4. CART_baseline_vs_Control — descriptive only (n=1 Control, no p-values)
-  #   5. CART_after_vs_Control    — descriptive only (n=1 Control, no p-values)
-  # Pseudobulk + DESeq2 design is selected per-comparison by the DE engine in
-  # 13_Pathway_Analysis.R; descriptive contrasts skip the model and emit
-  # log2FC only (de_min_pseudobulk_per_group guard, see below).
-  #
-  # Optional per-comparison keys (Stage 1, all default to the global cfg):
-  #   pseudobulk_backend: "pseudobulk_deseq2" (default) | "pseudobulk_edger"
-  #                       | "pseudobulk_limma_voom" | "presto_wilcox"
-  #                       — overrides cfg$pathway$de_engine for this entry.
-  #   block:              column name used as the paired-design fixed effect.
-  #                       Defaults to "patient_id". Honored only when
-  #                       design: "paired" and the column has ≥ 2 distinct
-  #                       values per side; otherwise auto-degrades to unpaired.
-  #   niche_split:        reserved for future use (split paired analysis by a
-  #                       niche stratifier such as BANKSY niche_id). Currently
-  #                       unused; safe to leave unset.
-  # Per-sample pathway analysis (Stage 1, Phase 9). When enabled, the new
-  # 13_pathway step in SAMPLE_STEP_ORDER runs cluster + celltype one-vs-rest
-  # GSEA for each sample. Cluster GSEA is per-sample only (cluster IDs are
-  # not comparable across samples); celltype GSEA feeds the merged
-  # paired-GSEA sub-step below.
+
+  # Per-sample pathway analysis (cluster + celltype one-vs-rest GSEA).
   sample_scope:
     enabled: true
-    stratifications: ["cluster", "celltype"]   # subset of: cluster, celltype
+    stratifications: ["cluster", "celltype"]
 
-  # Merged paired-GSEA-score sub-step (Stage 1, Phase 9). Consumes
-  # per-sample celltype GSEA outputs and runs paired Wilcoxon (or limma
-  # for interaction terms) per (pathway × celltype × comparison) on
-  # per-patient NES deltas. Default OFF — enable after the first merged
-  # run validates per-sample outputs are well-formed.
+  # Merged paired-GSEA-score sub-step, paired Wilcoxon on per-patient NES deltas.
   paired_gsea_scores:
     enabled: false
-    # Template for resolving per-sample directories. {sample_id} is the
-    # only placeholder. Defaults to the existing per-sample output layout
-    # (Output/Sample_<sample_id>/13_Pathway_Sample/celltype/).
-    per_sample_dir_template: null   # null = auto from cfg$paths$output_dir
+    per_sample_dir_template: null          # null = auto from cfg$paths$output_dir
 
-  # 3-backend Spearman sensitivity check (Stage 1, Phase 5). When enabled,
-  # `13_Pathway_Analysis.R::run_pathway_analysis()` re-runs the named
-  # comparison × stratum through every backend in `backends`, writes a
-  # gene-level wide table (one logFC column per backend) to `output`, and
-  # logs a warning when any pairwise Spearman drops below `spearman_threshold`.
-  # Disabled by default; flip on after the first merged run validates the
-  # main DE path. Squair et al. 2021 reported all three backends agree
-  # closely on pseudobulk count data; large deviations indicate a borderline
-  # stratum or implementation bug worth investigating offline.
+  # 3-backend Spearman sensitivity check, re-runs one comparison through every backend.
   de_sensitivity_check:
     enabled: false
     comparison_label: "CART_before_vs_after"
@@ -259,6 +311,8 @@ pathway:
     backends: ["pseudobulk_deseq2", "pseudobulk_edger", "pseudobulk_limma_voom"]
     output: "sensitivity_check.csv"
     spearman_threshold: 0.9
+
+  # Per-comparison optional keys: pseudobulk_backend, block, niche_split.
   comparisons:
     - label: "CART_before_vs_after"
       group_a: { treatment: "CART",         timepoint: "T0" }
@@ -284,41 +338,20 @@ pathway:
       group_a: { treatment: "CART",         timepoint: "T06" }
       group_b: { treatment: "Control" }
       design: "descriptive"
-  # "celltype" uses celltype_column (auto-detected celltype_*_supervised if null).
-  # "leiden" uses leiden_column. List both for double stratification.
-  stratifications: ["celltype", "leiden"]
-  celltype_column: null
+
+  stratifications: ["celltype", "leiden"]   # use celltype_column and/or leiden_column
+  celltype_column: null                     # null = auto-detect celltype_*_supervised
   leiden_column: "leiden_clust"
   focus_celltype: "^B cell$"
-  # Per-stratum cell and gene thresholds — strata that fail are skipped with a log note.
-  min_cells_per_stratum: 30
+  min_cells_per_stratum: 30                 # strata below this are skipped
   min_genes_tested: 50
-  # DE engine — see .pathway_run_de in 13_Pathway_Analysis.R for routing.
-  #   "pseudobulk_deseq2" (default) — DESeq2 on per-(sample × stratum)
-  #     pseudobulk counts. Per-comparison `design:` field selects paired
-  #     (~ patient_id + .group) vs unpaired (~ .group); CART vs Control
-  #     contrasts auto-degrade to descriptive (no inference).
-  #   "pseudobulk_edger" — same shape, edgeR glmQLFit instead.
-  #   "presto_wilcox"    — legacy cell-level Wilcoxon. Anti-conservative on
-  #     n=2 designs (every cell counted as an independent replicate); kept
-  #     for sanity checks and for runs where raw counts are unavailable.
-  de_engine: "pseudobulk_deseq2"
-  # If either side has fewer biological replicates than this, the comparison
-  # silently degrades to descriptive (log2FC only, no p-values). Hard floor
-  # for any pseudobulk inferential test.
-  de_min_pseudobulk_per_group: 2
+  de_engine: "pseudobulk_deseq2"            # pseudobulk_deseq2, pseudobulk_edger, pseudobulk_limma_voom, presto_wilcox
+  de_min_pseudobulk_per_group: 2            # below this, comparison degrades to descriptive
   species: "Homo sapiens"
-  # MSigDB collections to pull (human). Each entry carries a `group` (used to
-  # split visualisations) and `tests` (which of {ora, gsea} to run on it).
-  # Defaults if omitted: group="main_ora", tests=["ora","gsea"] (back-compat).
-  # Mirrors SLE/My_R workflow: ORA on GO+KEGG+Reactome+C7+C8; GSEA on Hallmark only.
-  databases:
-    # ORA track - GO:BP/MF/CC + KEGG_LEGACY + Reactome (replicates 3_Enchancement_Analysis.Rmd)
+  databases:                                # MSigDB collections, each with a group + tests subset
     - { collection: "C5", subcollections: ["GO:BP", "GO:MF", "GO:CC"], group: "main_ora", tests: ["ora"] }
     - { collection: "C2", subcollections: ["CP:KEGG_LEGACY", "CP:REACTOME"], group: "main_ora", tests: ["ora"] }
-    # GSEA track - Hallmark only (replicates 4_GSEA_Analysis.Rmd)
     - { collection: "H",  subcollections: null, group: "hallmark", tests: ["gsea"] }
-    # Specialised ORA-only tracks - separate visualisations
     - { collection: "C7", subcollections: null, group: "immune",   tests: ["ora"] }
     - { collection: "C8", subcollections: null, group: "celltype", tests: ["ora"] }
   gsea:
@@ -329,259 +362,9 @@ pathway:
   ora:
     logfc_threshold: 0.5
     padj_threshold: 0.05
-    universe_source: "tested"   # "tested" = all genes seen in DE; "panel" = full panel
-  # Cap the per-pathway leading-edge heatmaps to avoid file explosion
-  # (set to 0 to disable leading-edge heatmaps entirely).
-  leading_edge_top_n: 5
+    universe_source: "tested"               # "tested" or "panel"
+  leading_edge_top_n: 5                     # cap on per-pathway leading-edge heatmaps, 0 to disable
   progeny:
     enabled: true
     top_n_genes: 500
   pdf_summary: true
-
-spatial_de:
-  annotation_column: "celltype_HCA_Kidney_supervised"
-  # Leiden cluster column used as the alternative stratifier when
-  # stratify_by includes "leiden". Falls back to "leiden_clust" if absent.
-  leiden_column: "leiden_clust"
-  # Per-comparison + multi-stratifier extension. When non-empty, smiDE runs
-  # once per (stratifier × comparison) — see run_smide_per_comparison_backend.
-  # Each label maps to a column: celltype → annotation_column (above);
-  # leiden → leiden_column. Set to [] to fall back to the single-call
-  # run_smide_merged_backend() one_vs_rest pass (per-celltype only).
-  stratify_by: ["celltype", "leiden"]
-  # Use the same comparisons that drive step 13 pathway DE (pathway.comparisons)
-  # so the two steps stay aligned. Set to false + populate spatial_de.comparisons
-  # to override.
-  use_pathway_comparisons: true
-  # Runtime caps. With 4 inferential comparisons × (celltype + leiden) ×
-  # ~20 strata each, smiDE realistically runs for 8–24 h on this cluster.
-  # smide_min_cells_per_stratum skips sparse strata; smide_max_strata_per_comparison
-  # caps the number processed per (stratifier × comparison) iteration.
-  smide_min_cells_per_stratum: 200
-  smide_max_strata_per_comparison: 30
-  # Per-(stratum x comparison) plot caps. plot_top_n controls how many
-  # genes are labelled / shown in the spatial overlay panel grid;
-  # plot_max_strata_panels caps the spatial overlay grid size to keep
-  # runtime + file count predictable.
-  plot_top_n: 30
-  plot_max_strata_panels: 12
-  sample_column: "sample_id"
-  treatment_column: "treatment"
-  patient_column: "patient_id"
-  spatial_network_name: "Delaunay_network"
-  n_niches: 6
-  min_cells_per_niche: 10
-  min_cells_per_sample: 10
-  min_samples_per_group: 2
-  sample_replicate_column: "fov"
-  sample_contrast: "one_vs_rest"
-  smide_family: "nbinom2"
-  # Verify coordinate units. CosMx coordinates are typically in
-  # microns (range ~10,000-50,000). If the coordinates are in microns,
-  # this needs to be 50 (50 um cell-cell proximity). If Giotto has normalized
-  # coordinates to [0,1], 0.05 is appropriate. The script now auto-detects
-  # and warns if the value looks inconsistent with the coordinate range.
-  smide_radius: 50
-  # smide_ncores: only consumed by smiDE::smi_de(nCores=) — the GLM fit.
-  # smiDE::pre_de(), overlap_ratio_metric(), and results() are all
-  # single-threaded internally and ignore this value. The real parallelism
-  # win is per-cell-type via smide_inner_workers (reserved key, wired in
-  # the follow-up PR alongside sample-level parallelism).
-  smide_ncores: 4
-  # Reserved for the per-cell-type parallel refactor (PR 2). Default 1
-  # keeps the loop sequential; setting > 1 will dispatch each cell type's
-  # pre_de + smi_de + results triple to a future worker. No-op until the
-  # backend loop is refactored.
-  smide_inner_workers: 1
-  # Having an overlap threshold of 1 means its disabled. Changed from 0.7 to 
-  # 0.8 to be more laxed filter genes with high cross-cell transcript 
-  # contamination. CosMx has known transcript diffusion
-  # between adjacent cells; a threshold of 0.8 removes genes where >80% of
-  # expression is attributable to neighboring cells.
-  smide_overlap_threshold: 0.8
-  # Legacy single-call cell-type filter — used only when stratify_by is empty
-  # (the per-comparison wrapper above is bypassed). Setting to null lets smiDE
-  # iterate over every cell type in annotation_column; set to a vector like
-  # ["B cell", "Plasma cell"] to restrict. The per-comparison wrapper does NOT
-  # consult this field — it uses smide_min_cells_per_stratum +
-  # smide_max_strata_per_comparison to gate runtime instead.
-  smide_annotation_subset: null
-  # Reduced the lower minimum detection threshold since B cells are rare 
-  smide_min_detection_fraction: 0.01
-  smide_custom_predictor: null
-  smide_partner_celltypes: null
-  smide_partner_source: "none"
-  smide_partner_top_n: 5
-  smide_partner_padj_threshold: 0.05
-  smide_include_self_partner: false
-  # WTX-guide-style continuous predictor: when "count" the partner-celltype
-  # path emits a continuous tally per partner instead of the categorical
-  # hi/lo split. Sample-scope only — merged scope keeps the niche-treatment
-  # categorical predictor regardless.
-  smide_predictor_mode: "group"
-  smide_save_raw: true
-
-parameters:
-  qc:
-    gene_min_cells: 10
-    cell_min_genes: 50
-    cell_max_genes: 5000
-    min_count: 100
-    max_mito_pct: null
-    # WTx-style passes from the Nanostring guide; aligned with merged-notebook QC.
-    apply_wtx_outlier: true         # +/- N SD log10 outlier on cells passing the floor + window
-    wtx_sd_threshold: 2.5
-    apply_split_ratio: true         # SplitRatioToLocal border filter (Area / mean(Area | fov)); silently no-op if no Area column
-    split_ratio_threshold: 0.5
-    negprb_ratio_threshold: null    # null = compute and plot only, do not flag (no universal WTx cutoff)
-    # Notebook-only (Paired_Merged_Analysis.Rmd): set false to skip the
-    # post-merge gene filter and align with WTx guide's "no gene filtering"
-    # stance (preserves rare-cell expression). Default true matches the
-    # production pipeline's behavior.
-    apply_gene_filter: true
-
-  normalization:
-    # Fixed integer = explicit scale factor.
-    # null = dynamic (per-sample median library size), recommended when
-    # mixing panels with different transcript capture depths (e.g. 1K vs 6K).
-    scalefactor: 6000
-    log_transform: true
-
-  dim_reduction:
-    # n_hvgs: integer = explicit count, or null = auto
-    # auto formula: min(500, max(100, round(0.1 * n_genes)))
-    # Prevents selecting ~50% of a 1K panel as "variable".
-    n_hvgs: 500
-    n_pcs: 30
-    umap_n_neighbors: 30
-    umap_min_dist: 0.3
-    spatial_hvg: false
-
-  clustering:
-    k_nn: 15
-    # Increased from 0.3. For ~200k cells from heterogeneous LN
-    # tissue, 0.3 merges distinct immune subsets (e.g. naive B, memory B,
-    # plasmablasts all collapse). 0.8 provides better separation of immune
-    # subtypes while keeping structural clusters coherent.
-    resolution: 0.8
-    n_iterations: 200
-    # Enable resolution sweep so you can compare cluster granularity
-    # across a range and pick the best resolution per sample.
-    resolution_sweep: [0.3, 0.5, 0.8, 1.0, 1.5]
-    dimensions_to_use: "1:30"
-
-  # -----------------------------------------------------------
-  # B-cell subclustering (step 11)
-  # Smaller-population defaults tuned for 100-1000 B cells.
-  # min_cells: below this, a warning is issued but subclustering still runs.
-  # fallback_min_cells: hard floor; below this the stage is skipped.
-  # -----------------------------------------------------------
-  bcell_subclustering:
-    enabled: true
-    min_cells: 50
-    fallback_min_cells: 20
-    n_hvgs: 250              # vs 500 for full-sample step 04
-    n_pcs: 20                # vs 30 for full-sample
-    umap_n_neighbors: 15     # vs 30
-    umap_min_dist: 0.3
-    k_nn: 10                 # vs 15
-    resolution: 0.4          # vs 0.8 - target 3-6 subtypes
-    resolution_sweep: [0.2, 0.4, 0.6, 0.8]
-
-  # -----------------------------------------------------------
-  # Spatial network construction (step 09)
-  # max_delaunay_distance caps Delaunay edge length in the same
-  # units as cell coordinates (um on CosMx). Prevents cross-tissue
-  # edges spanning sparse regions or FOV boundaries. 50 um is
-  # conservative (roughly 2-3 cell diameters); raise for sparser
-  # tissue, lower for denser.
-  # -----------------------------------------------------------
-  spatial_network:
-    max_delaunay_distance: 50
-
-  markers:
-    cluster_column: "leiden_clust"
-    top_n: 25
-
-  annotation:
-    profiles:
-      - name: "HCA_Kidney"
-        type: "hca"
-        species: "Human"
-        age_group: "Adult"
-        matrixname: "Kidney_HCA"
-
-      - name: "CosMx_1K_Kidney"
-        type: "url"
-        source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/Kidney_1k/Kidney_1k.profiles.csv"
-
-      - name: "CosMx_6K_Kidney_RCC"
-        type: "url"
-        source: "https://raw.githubusercontent.com/Nanostring-Biostats/CosMx-Cell-Profiles/main/Human/KidneyRCC_6k/KidneyRCC_6k.profiles.csv"
-
-    default_profile: "HCA_Kidney"
-    align_genes: true
-    n_starts: 10
-    n_clusts_semi: 5
-    cohort_column: "leiden_clust"
-    min_gene_overlap: 100
-    create_plots: true
-    # Post-hoc refinement: when TRUE and conf_threshold > 0, refine_annotation()
-    # re-assigns cells from low-confidence cluster types via InSituType::refineClusters().
-    # Set FALSE to keep raw supervised annotations as-is (skips the refined CSVs/PNGs
-    # and the celltype_*_supervised_refined column).
-    refinement: true
-    conf_threshold: 0.8
-    # Pure-unsupervised InSituType pass for de novo cluster discovery (manual labelling).
-    # Accepted values:
-    #   "auto"  -> run InSituType::chooseClusterNumber() over the range below to
-    #              pick the best N, then run insitutype() with that N. (Default.)
-    #   <int>   -> use that N directly (e.g. 12). Skips the sweep.
-    #   0       -> skip the unsupervised pass entirely.
-    # Output: 07_Annotation/unsupervised_<N>/ + cluster_unsup_<N> col on gobj.
-    # When "auto", a *_n_clusts_sweep.csv is also written for audit.
-    unsupervised_n_clusts: 16          # pinned for current CART run; set to "auto" to use the auto-range below
-    unsupervised_auto_range: [12, 18]  # n_clusts range tested when "auto" (auto picked 4 on default [4,14] - too low for CART)
-    # Which annotation profiles to run and whether to score/select the best:
-    #   "default"     -> only default_profile (HCA_Kidney), supervised + refinement.
-    #                    Both columns kept in pDataDT; no scoring.
-    #   "all"         -> every profile listed above, supervised + refinement each.
-    #                    All columns kept; no scoring.
-    #   "best_select" -> every profile + score them + pick best (legacy behavior).
-    profile_strategy: "default"
-    # Composite score weights for auto-selecting the best annotation column.
-    # Must sum to ~1.0. confidence = mean per-cell posterior; high_conf_fraction
-    # = fraction with posterior >= conf_threshold; composition = how well the
-    # sample matches expected LN cell-type proportions; coverage = fraction of
-    # expected LN categories observed. Omit the block to use defaults.
-    score_weights:
-      confidence: 0.35
-      high_conf_fraction: 0.25
-      composition: 0.30
-      coverage: 0.10
-
-  visualization:
-    celltype_columns: null
-    cluster_column: "leiden_clust"
-    marker_genes:
-      # Expanded marker gene panels for lupus nephritis B-cell
-      # biology. Genes not present on the CosMx panel will be silently
-      # skipped by step 08.
-      b_cells: ["CD19", "MS4A1", "CD79A", "CD79B", "IGHM", "IGHG1"]
-      b_cell_subtypes: ["IGHD", "CD27", "AICDA", "BCL6", "PRDM1", "IRF4", "TBX21", "ITGAX", "MKI67"]
-      t_cells: ["CD3D", "CD3E", "CD4", "CD8A", "CD8B"]
-      t_cell_subtypes: ["CXCR5", "PDCD1", "FOXP3", "IL21", "IFNG", "TBX21"]
-      myeloid: ["CD14", "CD68", "LYZ", "CSF1R"]
-      nk_cells: ["NCAM1", "KLRF1", "GNLY", "NKG7"]
-      kidney: ["NPHS1", "NPHS2", "PODXL", "SLC12A1", "UMOD", "CDH1", "KRT8"]
-      tls_markers: ["CXCL13", "CCL19", "CCL21", "CR2", "FDCSP"]
-      complement_fc: ["C1QA", "C1QB", "C3", "C4A", "FCGR1A", "FCGR2A", "FCGR3A"]
-      lupus_relevant: ["BAFF", "TNFSF13", "TNFRSF13B", "TNFRSF13C", "ISG15", "IFI44", "MX1"]
-      # CART-panel additions — genes missing from the active panel are
-      # silently skipped by step 08's intersect(...) logic.
-      t_cell_activation: ["CD69", "CD25", "IFNG", "GZMB", "PRF1", "TNF"]
-      t_cell_exhaustion: ["PDCD1", "LAG3", "HAVCR2", "TIGIT", "TOX", "CTLA4"]
-      proliferation:     ["MKI67", "TOP2A"]
-      tumour_markers:    []   # populate after inspecting the CART panel gene list
-    max_cells_preview: 50000
-    preview_seed: 1
