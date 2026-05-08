@@ -1021,6 +1021,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
           nnsvg = TRUE
         )),
         nnsvg_raster_resolution = cci_cfg$nnsvg_raster_resolution %||% "auto",
+        misty_n_target_hvgs = cci_cfg$misty_n_target_hvgs %||% 100,
         cleanup_between_sections = cci_cfg$cleanup_between_sections %||% TRUE,
         sample_row                = sample_row,
         sample_sheet_path         = cfg$paths$sample_sheet,

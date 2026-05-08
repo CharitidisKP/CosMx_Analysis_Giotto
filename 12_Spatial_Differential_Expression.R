@@ -753,15 +753,19 @@ coerce_smide_results_table <- function(res_obj) {
     
     df_items <- vapply(res_obj, function(x) is.data.frame(x) || is.matrix(x), logical(1))
     if (any(df_items)) {
+      # Skip 0-row components: assigning a length-1 result_component into a 0-row data.frame raises 'replacement has 1 row, data has 0' and aborts the entire batch even when sibling components carry valid rows.
       out <- lapply(names(res_obj)[df_items], function(nm) {
         df <- as.data.frame(res_obj[[nm]], stringsAsFactors = FALSE)
+        if (nrow(df) == 0L) return(NULL)
         df$result_component <- nm
         df
       })
+      out <- out[!vapply(out, is.null, logical(1))]
+      if (length(out) == 0L) return(NULL)
       return(do.call(rbind, out))
     }
   }
-  
+
   NULL
 }
 
@@ -1850,6 +1854,11 @@ run_smide_sample_backend <- function(expr_mat,
         cell_type = cell_type,
         predictor_label = predictor_label
       )
+      # smiDE expects scalefactor as a per-cell-ID named numeric vector, not the per-celltype tapply mean. Map each cell to its celltype mean scalefactor and key by cell_ID.
+      tc_scale_percell <- setNames(
+        as.numeric(tc_scalefactors[as.character(predictor_meta[[annotation_column]])]),
+        predictor_meta$cell_ID
+      )
       fit <- tryCatch(
         withCallingHandlers(
           {
@@ -1868,7 +1877,7 @@ run_smide_sample_backend <- function(expr_mat,
                 cellid_colname = "cell_ID",
                 neighbor_expr_overlap_agg = "sum",
                 neighbor_expr_totalcount_normalize = TRUE,
-                neighbor_expr_totalcount_scalefactor = tc_scalefactors
+                neighbor_expr_totalcount_scalefactor = tc_scale_percell
               ),
               file = fit_log, append = FALSE, type = "output"
             )
@@ -2310,6 +2319,11 @@ run_smide_merged_backend <- function(expr_mat,
 
     fit_log <- file.path(tables_dir, paste0(file_stub_base, "_smide_fit.log"))
     smide_targets_submitted <- model_inputs$targets
+    # smiDE expects scalefactor as a per-cell-ID named numeric vector, not the per-celltype tapply mean. Map each cell to its celltype mean scalefactor and key by cell_ID.
+    tc_scale_percell <- setNames(
+      as.numeric(tc_scalefactors[as.character(cell_meta_valid[[annotation_column]])]),
+      cell_meta_valid$cell_ID
+    )
 
     fit <- tryCatch(
       withCallingHandlers(
@@ -2329,7 +2343,7 @@ run_smide_merged_backend <- function(expr_mat,
               cellid_colname = "cell_ID",
               neighbor_expr_overlap_agg = "sum",
               neighbor_expr_totalcount_normalize = TRUE,
-              neighbor_expr_totalcount_scalefactor = tc_scalefactors
+              neighbor_expr_totalcount_scalefactor = tc_scale_percell
             ),
             file = fit_log, append = FALSE, type = "output"
           )

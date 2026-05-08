@@ -219,7 +219,18 @@ cci:
   sender_celltypes: null
   receiver_celltype: "B cell"
   target_genes: null
-  target_genes_by_receiver: null
+  target_genes_by_receiver:                  # bypasses .resolve_nichenet_targets_auto() while step 12 smiDE is being repaired
+    "B cell":
+      - IGKC
+      - IGHD
+      - IGHM
+      - IGHA1
+      - JCHAIN
+      - CD19
+      - CD79A
+      - CD79B
+      - MS4A1
+      - CXCR5
   nichenet_network_dir: null
   nichenet_spatial_filter: false      # false, true, or "both"
   nichenet_proximity_enrichment_path: null

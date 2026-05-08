@@ -5268,6 +5268,7 @@ run_nnsvg <- function(gobj,
   # First try: step 12 per-sample DE aggregate, filtered to the receiver celltype.
   de_csv <- file.path(output_dir, "12_Spatial_Differential_Expression",
                       paste0(sample_id, "_all_spatial_de_results.csv"))
+  step12_status <- if (!file.exists(de_csv)) "missing" else "empty"
   if (file.exists(de_csv)) {
     de <- tryCatch(read.csv(de_csv, stringsAsFactors = FALSE),
                    error = function(e) NULL)
@@ -5278,23 +5279,27 @@ run_nnsvg <- function(gobj,
       if (nrow(de) > 0 && !is.na(gene_col) && !is.na(lfc_col)) {
         de <- de[order(-abs(de[[lfc_col]])), , drop = FALSE]
         out <- head(unique(de[[gene_col]]), top_n)
-        if (length(out) > 0) return(out)
+        if (length(out) > 0) {
+          cat(sprintf("  Info: NicheNet auto-targets (step 12 DE): %d genes for receiver '%s'\n",
+                      length(out), receiver_celltype))
+          return(out)
+        }
       }
     }
   }
 
-  # Second try: step 06 cluster markers, filtered to the cluster that is
-  # dominated by the receiver cell type.
+  # Second try: step 06 cluster markers, filtered to clusters where the receiver is at least 20% of cells.
   mk_csv <- file.path(output_dir, "06_Markers", "tables",
                       paste0(sample_id, "_all_markers.csv"))
+  step06_status <- if (!file.exists(mk_csv)) "markers file missing" else "no cluster passed plurality 0.2"
   if (file.exists(mk_csv) && !is.na(celltype_col) && celltype_col %in% names(meta) &&
       "leiden_clust" %in% names(meta)) {
     tab <- table(meta[[celltype_col]], meta$leiden_clust)
     rec_row <- tab[rownames(tab) == receiver_celltype, , drop = FALSE]
     if (nrow(rec_row) > 0 && sum(rec_row) > 0) {
-      # Clusters where receiver is the plurality celltype.
+      # Clusters where receiver is at least 20% of cells (lowered from 0.5 for infiltrating receivers like B cells that cohabit with other immune populations).
       cluster_frac <- rec_row[1, , drop = TRUE] / pmax(1, colSums(tab))
-      receiver_clusters <- names(cluster_frac)[cluster_frac >= 0.5]
+      receiver_clusters <- names(cluster_frac)[cluster_frac >= 0.2]
       if (length(receiver_clusters) > 0) {
         mk <- tryCatch(read.csv(mk_csv, stringsAsFactors = FALSE),
                        error = function(e) NULL)
@@ -5306,13 +5311,19 @@ run_nnsvg <- function(gobj,
             mk <- mk[as.character(mk[[clust_col]]) %in% receiver_clusters, , drop = FALSE]
             mk <- mk[order(-abs(mk[[lfc_col]])), , drop = FALSE]
             out <- head(unique(mk[[gene_col]]), top_n)
-            if (length(out) > 0) return(out)
+            if (length(out) > 0) {
+              cat(sprintf("  Info: NicheNet auto-targets (step 06 markers): %d genes from %d cluster(s) for receiver '%s'\n",
+                          length(out), length(receiver_clusters), receiver_celltype))
+              return(out)
+            }
           }
         }
       }
     }
   }
 
+  cat(sprintf("  Warning: NicheNet auto-targets unavailable for receiver '%s' (step 12 DE: %s, step 06 markers: %s). Set cci.target_genes_by_receiver in config.yaml to bypass.\n",
+              receiver_celltype, step12_status, step06_status))
   character(0)
 }
 
@@ -5400,6 +5411,7 @@ run_cci_analysis <- function(gobj,
                                                     misty     = TRUE,
                                                     nnsvg     = FALSE),
                              nnsvg_raster_resolution = "auto",
+                             misty_n_target_hvgs = 100,
                              cleanup_between_sections = TRUE,
                              sample_row         = NULL,
                              sample_sheet_path  = NULL,
@@ -5537,9 +5549,6 @@ run_cci_analysis <- function(gobj,
       )
       if (length(auto_targets) > 0) {
         target_genes <- auto_targets
-        cat("  \u2139 NicheNet targets (auto): ", length(target_genes),
-            " genes derived from step 06/12 for receiver '",
-            receiver_celltype, "'\n", sep = "")
       }
     }
     nichenet_ready <- .nichenet_section_ready(nichenet_mode, sender_celltypes, receiver_celltype)
@@ -5672,7 +5681,7 @@ run_cci_analysis <- function(gobj,
                              expr_cache     = .cci_expr_cache,
                              celltype_col   = celltype_col,
                              focus_celltype = focus_celltype,
-                             n_target_hvgs  = cfg$cci$misty_n_target_hvgs %||% 100)
+                             n_target_hvgs  = misty_n_target_hvgs)
       )
       results$misty <- section_out$result
       section_status["misty"] <- section_out$status
