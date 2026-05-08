@@ -156,8 +156,8 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
 #' @param banksy_aug_list Output of compute_banksy_per_sample().
 #' @param batch_col Column for Harmony correction (default "sample_id").
 #' @param resolution Leiden resolution.
-#' @param output_dir Merged-pipeline output dir; niche_summary.csv is written
-#'   to <output_dir>/14_BANKSY/.
+#' @param output_dir Merged-pipeline output dir; niche_summary.csv and the
+#'   niche composition heatmap are written to <output_dir>/14_BANKSY/BANKSY/.
 cluster_banksy_niches <- function(merged_gobj,
                                   banksy_aug_list,
                                   batch_col = "sample_id",
@@ -277,19 +277,27 @@ cluster_banksy_niches <- function(merged_gobj,
     }
   )
 
-  # niche_summary.csv: cells per niche per sample.
+  # niche_summary.csv + composition heatmap: cells per niche per sample.
   out_dir <- file.path(output_dir, "14_BANKSY")
-  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  banksy_dir <- file.path(out_dir, "BANKSY")
+  dir.create(banksy_dir, recursive = TRUE, showWarnings = FALSE)
   summary_df <- as.data.frame(table(
     sample_id = merged_meta[match(niche_df$cell_ID, merged_ids), batch_col],
     niche_id  = niche_df$niche_id
   ))
   utils::write.csv(summary_df,
-                   file.path(out_dir, "niche_summary.csv"),
+                   file.path(banksy_dir, "niche_summary.csv"),
                    row.names = FALSE)
-  cat("  ✓ BANKSY niche labels written; ", length(unique(niche_id)),
-      " niches across ", length(unique(merged_meta[[batch_col]])),
-      " samples.\n", sep = "")
+  cat(sprintf("  BANKSY niche labels written; %d niches across %d samples.\n",
+              length(unique(niche_id)),
+              length(unique(merged_meta[[batch_col]]))))
+
+  merged_meta_with_id <- merged_meta
+  if (!"cell_ID" %in% names(merged_meta_with_id)) {
+    merged_meta_with_id$cell_ID <- merged_ids
+  }
+  .banksy_plot_niche_composition(merged_meta_with_id, niche_df,
+                                  sample_id = "merged", out_dir = out_dir)
 
   invisible(merged_gobj)
 }
@@ -378,70 +386,164 @@ cluster_banksy_single_sample <- function(aug_spe,
   )
 
   out_dir <- file.path(output_dir, "14_BANKSY")
-  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+  banksy_dir <- file.path(out_dir, "BANKSY")
+  dir.create(banksy_dir, recursive = TRUE, showWarnings = FALSE)
   summary_df <- as.data.frame(table(niche_id = niche_df$niche_id))
   utils::write.csv(summary_df,
-                   file.path(out_dir,
+                   file.path(banksy_dir,
                              paste0(sample_id, "_niche_summary.csv")),
                    row.names = FALSE)
-  cat("  BANKSY niche labels (", length(unique(niche_id)),
-      " niches) written for ", sample_id, ".\n", sep = "")
+  cat(sprintf("  BANKSY niche labels (%d niches) written for %s.\n",
+              length(unique(niche_id)), sample_id))
 
   .banksy_plot_niche_polygons(per_sample_gobj, niche_df, sample_id, out_dir)
+  per_sample_meta <- tryCatch(as.data.frame(.giotto_pdata_dt(per_sample_gobj)),
+                              error = function(e) NULL)
+  .banksy_plot_niche_composition(per_sample_meta, niche_df, sample_id, out_dir)
 
   invisible(per_sample_gobj)
 }
 
-# Polygon-coloured niche plot. Resolves .extract_polygon_df via runtime_env (defined in 07_Annotation.R). Falls back to a centroid scatter if polygons are unavailable.
+# Polygon-coloured niche plot. Reuses .extract_polygon_df + presentation_theme + save_presentation_plot from the canonical Pipeline_Utils / Plot_Helpers stack. Falls back to a centroid scatter if polygons are unavailable.
 .banksy_plot_niche_polygons <- function(gobj, niche_df, sample_id, out_dir) {
   if (!requireNamespace("ggplot2", quietly = TRUE)) return(invisible(NULL))
   poly_df <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
-  out_path <- file.path(out_dir, paste0(sample_id, "_niche_spatial.png"))
+  banksy_dir <- file.path(out_dir, "BANKSY")
+  ensure_dir(banksy_dir)
+  out_path <- file.path(banksy_dir, paste0(sample_id, "_niche_spatial.png"))
 
   niche_lookup <- setNames(niche_df$niche_id, niche_df$cell_ID)
-  n_niches <- length(unique(niche_df$niche_id))
+  niche_levels <- paste0("niche_", sort(as.integer(sub("^niche_", "",
+                                                        unique(niche_df$niche_id)))))
+  n_niches <- length(niche_levels)
 
   p <- if (!is.null(poly_df) && nrow(poly_df) > 0) {
     poly_df$poly_group <- paste(poly_df$cell_ID, poly_df$geom,
                                  poly_df$part, sep = "_")
-    poly_df$niche_id <- niche_lookup[as.character(poly_df$cell_ID)]
+    poly_df$niche_id <- factor(niche_lookup[as.character(poly_df$cell_ID)],
+                                levels = niche_levels)
     poly_df <- poly_df[!is.na(poly_df$niche_id), , drop = FALSE]
     ggplot2::ggplot(poly_df,
                     ggplot2::aes(x = x, y = y,
                                  group = poly_group, fill = niche_id)) +
       ggplot2::geom_polygon(colour = "grey30", linewidth = 0.05) +
-      ggplot2::coord_fixed() +
-      ggplot2::labs(
-        title = paste0(display_sample_label(sample_id), ": BANKSY niches (", n_niches, ")"),
-        x = "X", y = "Y", fill = "Niche"
-      ) +
-      ggplot2::theme_minimal(base_size = 11) +
-      ggplot2::theme(panel.grid = ggplot2::element_blank())
+      ggplot2::scale_fill_discrete(labels = function(x) pretty_plot_label(x))
   } else {
     locs <- tryCatch(.banksy_get_spatial_locs(gobj), error = function(e) NULL)
     if (is.null(locs)) return(invisible(NULL))
     locs_df <- as.data.frame(locs)
-    locs_df$niche_id <- niche_lookup[as.character(locs_df$cell_ID)]
+    locs_df$niche_id <- factor(niche_lookup[as.character(locs_df$cell_ID)],
+                                levels = niche_levels)
     locs_df <- locs_df[!is.na(locs_df$niche_id), , drop = FALSE]
     ggplot2::ggplot(locs_df,
                     ggplot2::aes(x = sdimx, y = sdimy, colour = niche_id)) +
       ggplot2::geom_point(size = 0.4) +
-      ggplot2::coord_fixed() +
-      ggplot2::labs(
-        title = paste0(display_sample_label(sample_id), ": BANKSY niches (", n_niches,
-                       ", centroid fallback)"),
-        x = "X", y = "Y", colour = "Niche"
-      ) +
-      ggplot2::theme_minimal(base_size = 11) +
-      ggplot2::theme(panel.grid = ggplot2::element_blank())
+      ggplot2::scale_colour_discrete(labels = function(x) pretty_plot_label(x))
   }
 
+  fallback_tag <- if (is.null(poly_df) || !nrow(poly_df)) " (centroid fallback)" else ""
+  p <- p +
+    ggplot2::coord_fixed() +
+    ggplot2::labs(
+      title = sample_plot_title(sample_id,
+        paste0("BANKSY niches (", n_niches, ")", fallback_tag)),
+      x = "Global X Coordinate", y = "Global Y Coordinate",
+      fill = "Niche", colour = "Niche"
+    ) +
+    presentation_theme(base_size = 12, legend_position = "right") +
+    ggplot2::theme(
+      legend.key.height = grid::unit(0.45, "cm"),
+      axis.title.x      = element_markdown_safe(margin = ggplot2::margin(t = 10)),
+      axis.title.y      = element_markdown_safe(margin = ggplot2::margin(r = 10)),
+      plot.margin       = ggplot2::margin(t = 10, r = 20, b = 20, l = 20)
+    )
+
   tryCatch({
-    ggplot2::ggsave(out_path, p, width = 10, height = 8, dpi = 150)
-    cat("  BANKSY niche spatial plot saved: ", out_path, "\n", sep = "")
+    save_presentation_plot(p, out_path, width = 10, height = 8, dpi = 150)
+    cat(sprintf("  BANKSY niche spatial plot saved: %s\n", out_path))
   }, error = function(e) {
-    cat("    Warning: niche spatial plot failed: ",
-        conditionMessage(e), "\n", sep = "")
+    cat(sprintf("    Warning: niche spatial plot failed: %s\n",
+                conditionMessage(e)))
+  })
+  invisible(out_path)
+}
+
+# Auto-resolves a celltype column from a Giotto pData frame. Prefers refined supervised, then supervised, then semi-supervised, then leiden_clust.
+.banksy_resolve_celltype_col <- function(meta) {
+  if (is.null(meta) || !length(meta)) return(NA_character_)
+  candidates <- c(
+    "celltype",
+    grep("^celltype_.+_supervised_refined$", names(meta), value = TRUE),
+    grep("^celltype_.+_supervised$", names(meta), value = TRUE),
+    grep("^celltype_.+_semi$", names(meta), value = TRUE),
+    "leiden_clust"
+  )
+  for (col in candidates) if (col %in% names(meta)) return(col)
+  NA_character_
+}
+
+# Niche x celltype composition heatmap. Builds a log2 fold-enrichment matrix (observed niche-level fraction / sample-wide fraction) and delegates rendering to the shared .plot_proximity_heatmap_complex(). Cells with zero counts become NA so the helper greys them via na_col.
+.banksy_plot_niche_composition <- function(meta, niche_df, sample_id, out_dir,
+                                            celltype_col = NULL) {
+  if (is.null(meta) || !nrow(meta) || is.null(niche_df) || !nrow(niche_df)) {
+    return(invisible(NULL))
+  }
+  if (is.null(celltype_col) || !nzchar(celltype_col)) {
+    celltype_col <- .banksy_resolve_celltype_col(meta)
+  }
+  if (is.na(celltype_col) || !celltype_col %in% names(meta)) {
+    cat("  BANKSY: no celltype column found; skipping composition heatmap.\n")
+    return(invisible(NULL))
+  }
+  if (!exists(".plot_proximity_heatmap_complex", mode = "function")) {
+    cat("  BANKSY: .plot_proximity_heatmap_complex unavailable; skipping composition heatmap.\n")
+    return(invisible(NULL))
+  }
+
+  niche_lookup <- setNames(as.character(niche_df$niche_id),
+                            as.character(niche_df$cell_ID))
+  meta <- as.data.frame(meta)
+  meta$niche_id <- niche_lookup[as.character(meta$cell_ID)]
+  meta <- meta[!is.na(meta$niche_id) & !is.na(meta[[celltype_col]]), , drop = FALSE]
+  if (!nrow(meta)) return(invisible(NULL))
+
+  count_mat <- as.matrix(unclass(table(
+    niche_id = as.character(meta$niche_id),
+    celltype = as.character(meta[[celltype_col]])
+  )))
+  if (!nrow(count_mat) || !ncol(count_mat)) return(invisible(NULL))
+
+  niche_totals <- rowSums(count_mat)
+  obs_frac <- sweep(count_mat, 1, niche_totals, FUN = "/")
+  global_totals <- colSums(count_mat)
+  exp_frac <- global_totals / sum(global_totals)
+  log2fe <- sweep(log2(obs_frac), 2, log2(exp_frac), FUN = "-")
+  log2fe[!is.finite(log2fe)] <- NA_real_
+
+  niche_order <- order(suppressWarnings(as.integer(sub("^niche_", "",
+                                                       rownames(log2fe)))),
+                        rownames(log2fe))
+  log2fe <- log2fe[niche_order, , drop = FALSE]
+
+  banksy_dir <- file.path(out_dir, "BANKSY")
+  ensure_dir(banksy_dir)
+  out_path <- file.path(banksy_dir,
+                        paste0(sample_id, "_niche_composition_heatmap.png"))
+
+  tryCatch({
+    .plot_proximity_heatmap_complex(
+      mat       = log2fe,
+      title     = sample_plot_title(sample_id, "BANKSY niche composition"),
+      subtitle  = "log2 fold-enrichment vs sample-wide cell-type fractions",
+      filename  = out_path,
+      width     = max(10, 0.6 * ncol(log2fe) + 4),
+      height    = max(5, 0.5 * nrow(log2fe) + 3),
+      dpi       = 300
+    )
+    cat(sprintf("  BANKSY niche composition heatmap saved: %s\n", out_path))
+  }, error = function(e) {
+    cat(sprintf("    Warning: niche composition heatmap failed: %s\n",
+                conditionMessage(e)))
   })
   invisible(out_path)
 }
