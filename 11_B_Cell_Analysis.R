@@ -442,7 +442,7 @@ detect_annotation_column <- function(metadata, preferred = NULL) {
       legend.box = "vertical"
     ) +
     ggplot2::guides(
-      fill = ggplot2::guide_legend(ncol = 2, override.aes = list(size = 4.5)),
+      fill = ggplot2::guide_legend(ncol = 1, override.aes = list(size = 4.5)),
       color = ggplot2::guide_legend(override.aes = list(linewidth = 1.2))
     )
   
@@ -537,13 +537,7 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
 .pretty <- function(x) gsub("_", " ", as.character(x), fixed = TRUE)
 
 
-# Resolve a focus label (e.g. "BCell", "TCell", "Plasma") into variants
-# used across this script's console messages and output filenames. Returns:
-#   $snake   - lowercase, filename-safe token ("bcell", "tcell", "plasma")
-#   $display - human-facing tag with a dash at CamelCase boundaries
-#              ("BCell" -> "B-cell", "PlasmaCell" -> "Plasma-cell",
-#               "Plasma" -> "Plasma"). Falls back to the input unchanged
-#               when no CamelCase split exists.
+# Resolve a focus label (e.g. "BCell", "TCell", "Plasma") into variants used across this script's console messages and output filenames. Returns: $snake (lowercase filename token: "bcell"), $display (canonical scientific form with space at CamelCase boundaries: "BCell" -> "B cell", "PlasmaCell" -> "Plasma cell", "Plasma" -> "Plasma").
 .focus_tag <- function(focus_label) {
   raw <- as.character(focus_label)
   if (length(raw) == 0 || !nzchar(raw)) raw <- "BCell"
@@ -551,15 +545,14 @@ ensure_spatial_network <- function(gobj, spatial_network_name = "Delaunay_networ
   snake <- tolower(gsub("[^A-Za-z0-9]+", "", raw))
   if (!nzchar(snake)) snake <- "focus"
 
-  # Insert a dash between lower→upper case transitions (BCell → B-Cell).
-  display <- gsub("([a-z])([A-Z])", "\\1-\\2", raw)
-  parts <- strsplit(display, "-", fixed = TRUE)[[1]]
+  # Insert a space between CamelCase tokens. First pass handles UPPER+UPPER+lower (BCell -> B Cell, ABCell -> AB Cell); second pass handles lower+UPPER (PlasmaCell -> Plasma Cell).
+  display <- gsub("([A-Z]+)([A-Z][a-z])", "\\1 \\2", raw, perl = TRUE)
+  display <- gsub("([a-z])([A-Z])", "\\1 \\2", display, perl = TRUE)
+  parts <- strsplit(display, " ", fixed = TRUE)[[1]]
   parts <- parts[nzchar(parts)]
   if (length(parts) > 1) {
-    # First token keeps its case; subsequent tokens lowercase
-    # ("BCell" -> "B-cell", "PlasmaCell" -> "Plasma-cell").
     parts <- c(parts[1], tolower(parts[-1]))
-    display <- paste(parts, collapse = "-")
+    display <- paste(parts, collapse = " ")
   } else {
     display <- raw
   }
@@ -1067,11 +1060,9 @@ plot_bcell_niches <- function(gobj,
       ) +
       ggplot2::coord_fixed() +
       ggplot2::labs(
-        title = paste0(display_sample_label(sample_id), " - distance to nearest ", tag$display,
-                       title_suffix),
-        subtitle = paste0(.pretty(highlight_label), " defined by ",
-                          .pretty(annotation_column),
-                          ", cap = 90th percentile"),
+        title = sample_plot_title(sample_id,
+                  paste0("Distance to nearest ", tag$display, title_suffix)),
+        subtitle = NULL,
         x = NULL, y = NULL
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
@@ -1737,10 +1728,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
         mat        = mat_b,
         title      = sample_plot_title(sample_id,
                                        "Spatial proximity enrichment heatmap"),
-        subtitle   = paste0("Red = enriched neighborhoods; blue = depleted",
-                            if (!is.null(focus_use))
-                              paste0(" (focus: ", focus_use, ")")
-                            else ""),
+        subtitle   = NULL,
         focus_label = focus_use,
         filename   = file.path(results_dir,
                                paste0(sample_id,

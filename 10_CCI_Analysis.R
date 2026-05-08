@@ -765,11 +765,8 @@ plot_insitucor_results <- function(cor_results,
         ) +
         presentation_theme(base_size = 11, legend_position = "right") +
         ggplot2::theme(
-          axis.text.x  = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
-          axis.text.y  = ggplot2::element_text(size = 9),
-          axis.title.x = element_markdown_safe(margin = ggplot2::margin(t = 12)),
-          axis.title.y = element_markdown_safe(margin = ggplot2::margin(r = 12)),
-          plot.margin  = ggplot2::margin(t = 10, r = 24, b = 24, l = 20)
+          axis.text.x = ggplot2::element_text(angle = 45, hjust = 1, size = 9),
+          axis.text.y = ggplot2::element_text(size = 9)
         )
       save_presentation_plot(
         plot     = p2,
@@ -4935,15 +4932,17 @@ run_nnsvg <- function(gobj,
                                 colour = "grey40") +
             ggplot2::coord_flip() +
             ggplot2::labs(
-              x = NULL, y = "B-cell / overall expression",
-              title = sprintf("%s \u2014 top-20 SVGs: B-cell enrichment",
-                              sample_id)
+              x = NULL, y = "Overall expression: B cell",
+              title = sample_plot_title(sample_id,
+                        "Top 20 SVGs: B cell enrichment")
             ) +
-            ggplot2::theme_minimal(base_size = 11)
-          ggplot2::ggsave(
-            file.path(out_dir,
-                      paste0(sample_id, "_nnSVG_bcell_enrichment_bar.png")),
-            p_enr, width = 7, height = 7, dpi = 150
+            presentation_theme(base_size = 11, legend_position = "right")
+          save_presentation_plot(
+            plot     = p_enr,
+            filename = file.path(out_dir,
+                                 paste0(sample_id,
+                                        "_nnSVG_bcell_enrichment_bar.png")),
+            width = 7, height = 7, dpi = 150
           )
         }
       }
@@ -4989,6 +4988,8 @@ run_nnsvg <- function(gobj,
           cor_long$celltype <- factor(cor_long$celltype,
                                       levels = colnames(cor_mat))
 
+          # Long celltype names rotated 45 deg need extra bottom + left padding so the leftmost label is not clipped past the figure edge.
+          ct_label_pad <- max(40, max(nchar(colnames(cor_mat)), 0) * 4)
           p_cor <- ggplot2::ggplot(cor_long,
                      ggplot2::aes(x = celltype, y = gene, fill = r)) +
             ggplot2::geom_tile(colour = "grey92", linewidth = 0.2) +
@@ -4997,14 +4998,19 @@ run_nnsvg <- function(gobj,
                                           limits = c(-1, 1),
                                           name = "Pearson r") +
             ggplot2::labs(
-              title    = sprintf(
-                "%s - top-20 SVGs x celltype pixel correlation",
-                sample_id),
+              title    = sample_plot_title(sample_id,
+                           "Top 20 SVGs: cell type pixel correlation"),
               subtitle = NULL,
               x = NULL, y = NULL
             ) +
+            ggplot2::coord_cartesian(clip = "off") +
             presentation_theme(base_size = 11, legend_position = "right",
-                               x_angle = 45)
+                               x_angle = 45) +
+            ggplot2::theme(
+              plot.margin = ggplot2::margin(t = 12, r = 16,
+                                            b = ct_label_pad,
+                                            l = ct_label_pad)
+            )
           save_presentation_plot(
             plot     = p_cor,
             filename = file.path(out_dir,

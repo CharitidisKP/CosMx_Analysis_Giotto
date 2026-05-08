@@ -732,16 +732,37 @@ create_visualizations <- function(gobj,
             ncol = 1, override.aes = list(size = 2.5), title = NULL
           ))
 
-        p_spat <- ggplot2::ggplot(ov,
-            ggplot2::aes(x = sdimx, y = sdimy,
-                         colour = .data[[colour_col]])) +
-          ggplot2::geom_point(size = 0.25, alpha = 0.85) +
-          ggplot2::scale_colour_manual(values = panel_cmap, drop = FALSE) +
-          ggplot2::coord_fixed() +
+        # Polygon path mirrors .plot_gene_polygons / 09 proximity visplots; falls back to point scatter when polygon data is unavailable.
+        poly_df_ov <- tryCatch(.extract_polygon_df(gobj), error = function(e) NULL)
+
+        p_spat <- if (!is.null(poly_df_ov) && nrow(poly_df_ov) > 0) {
+          poly_df_ov$poly_group <- paste(poly_df_ov$cell_ID, poly_df_ov$geom,
+                                          poly_df_ov$part, sep = "_")
+          poly_df_ov[[colour_col]] <- factor(
+            ov[[colour_col]][match(poly_df_ov$cell_ID, ov$cell_ID)],
+            levels = ord_lev
+          )
+          poly_df_ov <- poly_df_ov[!is.na(poly_df_ov[[colour_col]]), , drop = FALSE]
+          ggplot2::ggplot(poly_df_ov,
+              ggplot2::aes(x = x, y = y, group = poly_group,
+                           fill = .data[[colour_col]])) +
+            ggplot2::geom_polygon(colour = "grey30", linewidth = 0.05) +
+            ggplot2::scale_fill_manual(values = panel_cmap, drop = FALSE)
+        } else {
+          ggplot2::ggplot(ov,
+              ggplot2::aes(x = sdimx, y = sdimy,
+                           colour = .data[[colour_col]])) +
+            ggplot2::geom_point(size = 0.25, alpha = 0.85) +
+            ggplot2::scale_colour_manual(values = panel_cmap, drop = FALSE)
+        }
+
+        # coord_cartesian(expand = FALSE) drops the aspect-ratio lock so the polygon body fills the BBB slot edge-to-edge, with no axis padding.
+        p_spat <- p_spat +
+          ggplot2::coord_cartesian(expand = FALSE, clip = "off") +
           ggplot2::labs(title = "Spatial", x = NULL, y = NULL) +
           presentation_theme(base_size = 10) +
           ggplot2::theme(legend.position = "none",
-                         axis.text = ggplot2::element_blank(),
+                         axis.text  = ggplot2::element_blank(),
                          axis.ticks = ggplot2::element_blank(),
                          panel.grid = ggplot2::element_blank())
 

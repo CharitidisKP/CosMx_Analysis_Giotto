@@ -4,12 +4,12 @@
 # Spatial-domain niche labels via BANKSY (Singhal et al., Nat Genet 2024).
 #
 # Pipeline (Stage 1, Phase 7):
-#   1. compute_banksy_per_sample() — per-sample Giotto → SpatialExperiment →
+#   1. compute_banksy_per_sample() - per-sample Giotto -> SpatialExperiment ->
 #      Banksy::computeBanksy() with k_geom + lambda. Returns the augmented
 #      matrix list keyed on sample_id (each cell has neighborhood-mean +
 #      AGF-augmented features alongside the per-cell expression).
-#   2. cluster_banksy_niches() — cbind augmented matrices in the order of
-#      the merged Giotto's cell_IDs → PCA → Harmony on sample_id → Leiden.
+#   2. cluster_banksy_niches() - cbind augmented matrices in the order of
+#      the merged Giotto's cell_IDs -> PCA -> Harmony on sample_id -> Leiden.
 #      Writes the resulting `niche_id` column on the merged Giotto's cell
 #      metadata and a niche_summary.csv (cells per niche per sample).
 #
@@ -84,7 +84,7 @@ if (!exists("%||%")) {
   locs_dt <- locs_dt[match(cell_ids, locs_dt$cell_ID), , drop = FALSE]
   coords <- as.matrix(locs_dt[, c("sdimx", "sdimy")])
   rownames(coords) <- cell_ids
-  # Keep colData minimal — only cell_ID + sample_id. Per-sample Giotto
+  # Keep colData minimal - only cell_ID + sample_id. Per-sample Giotto
   # checkpoints carry independent metadata columns (annotation/cluster
   # outputs differ between samples), and SummarizedExperiment::cbind
   # requires identical colData column names across samples. Rich metadata
@@ -116,7 +116,7 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
                                       k_geom = 18,
                                       lambda = 0.2) {
   if (!requireNamespace("Banksy", quietly = TRUE)) {
-    cat("⚠ Banksy not installed — skipping BANKSY niche computation.\n")
+    cat("Warning: Banksy not installed - skipping BANKSY niche computation.\n")
     return(NULL)
   }
 
@@ -126,8 +126,8 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
     spe <- tryCatch(
       .banksy_giotto_to_spe(per_sample_gobjs[[nm]], nm),
       error = function(e) {
-        cat("    ⚠ SPE conversion failed: ", conditionMessage(e), "\n",
-            sep = "")
+        cat(sprintf("    Warning: SPE conversion failed: %s\n",
+                    conditionMessage(e)))
         NULL
       }
     )
@@ -138,8 +138,8 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
                             k_geom = k_geom,
                             compute_agf = TRUE),
       error = function(e) {
-        cat("    ⚠ computeBanksy failed: ", conditionMessage(e), "\n",
-            sep = "")
+        cat(sprintf("    Warning: computeBanksy failed: %s\n",
+                    conditionMessage(e)))
         NULL
       }
     )
@@ -149,7 +149,7 @@ compute_banksy_per_sample <- function(per_sample_gobjs,
   spes
 }
 
-#' Concatenate augmented SPEs, run PCA → Harmony → Leiden, write
+#' Concatenate augmented SPEs, run PCA -> Harmony -> Leiden, write
 #' `niche_id` back to the merged Giotto cell metadata.
 #'
 #' @param merged_gobj Merged Giotto object (post batch_correct_merged_object).
@@ -167,13 +167,13 @@ cluster_banksy_niches <- function(merged_gobj,
                                   n_pcs = 30,
                                   k_nn = 30) {
   if (is.null(banksy_aug_list)) {
-    cat("  BANKSY: no augmented data — skipping niche clustering.\n")
+    cat("  BANKSY: no augmented data - skipping niche clustering.\n")
     return(invisible(NULL))
   }
   if (!requireNamespace("Banksy", quietly = TRUE)) return(invisible(NULL))
 
   # cbind the per-sample augmented SPEs, keep only cells present in the
-  # merged Giotto (defensive — joinGiottoObjects may have dropped some).
+  # merged Giotto (defensive: joinGiottoObjects may have dropped some).
   aug <- do.call(SummarizedExperiment::cbind, unname(banksy_aug_list))
   merged_meta <- as.data.frame(.giotto_pdata_dt(merged_gobj))
   merged_ids <- as.character(merged_meta$cell_ID)
@@ -184,7 +184,7 @@ cluster_banksy_niches <- function(merged_gobj,
   idx <- idx[!is.na(idx)]
   aug <- aug[, idx, drop = FALSE]
   if (ncol(aug) == 0L) {
-    cat("  BANKSY: no overlapping cells with merged object — skipping.\n")
+    cat("  BANKSY: no overlapping cells with merged object - skipping.\n")
     return(invisible(NULL))
   }
 
@@ -192,22 +192,24 @@ cluster_banksy_niches <- function(merged_gobj,
   pca <- tryCatch(
     Banksy::runBanksyPCA(aug, lambda = lambda, npcs = n_pcs),
     error = function(e) {
-      cat("    ⚠ runBanksyPCA failed: ", conditionMessage(e), "\n", sep = "")
+      cat(sprintf("    Warning: runBanksyPCA failed: %s\n",
+                  conditionMessage(e)))
       NULL
     }
   )
   if (is.null(pca)) return(invisible(NULL))
-  pca_mat <- SingleCellExperiment::reducedDim(
-    pca, paste0("PCA_M0_lam", lambda))
+  expected_slot <- paste0("PCA_M0_lam", lambda)
+  pca_mat <- SingleCellExperiment::reducedDim(pca, expected_slot)
   if (is.null(pca_mat)) {
-    # Older Banksy versions name the slot differently.
     rd_names <- SingleCellExperiment::reducedDimNames(pca)
+    cat(sprintf("    Warning: BANKSY PCA slot '%s' not found; using fallback '%s' (available: %s).\n",
+                expected_slot, rd_names[1], paste(rd_names, collapse = ", ")))
     pca_mat <- SingleCellExperiment::reducedDim(pca, rd_names[1])
   }
 
   # Harmony on sample_id. Use the harmony R package directly.
   if (!requireNamespace("harmony", quietly = TRUE)) {
-    cat("    ⚠ harmony not installed — skipping batch correction step.\n")
+    cat("    Warning: harmony not installed - skipping batch correction step.\n")
     harmony_mat <- pca_mat
   } else {
     harmony_mat <- tryCatch(
@@ -219,8 +221,8 @@ cluster_banksy_niches <- function(merged_gobj,
         verbose = FALSE
       ),
       error = function(e) {
-        cat("    ⚠ Harmony failed: ", conditionMessage(e),
-            " — using uncorrected PCs.\n", sep = "")
+        cat(sprintf("    Warning: Harmony failed: %s - using uncorrected PCs.\n",
+                    conditionMessage(e)))
         pca_mat
       }
     )
@@ -228,7 +230,7 @@ cluster_banksy_niches <- function(merged_gobj,
 
   # Leiden on a kNN graph in Harmony space.
   if (!requireNamespace("igraph", quietly = TRUE)) {
-    cat("    ⚠ igraph not installed — cannot cluster niches.\n")
+    cat("    Warning: igraph not installed - cannot cluster niches.\n")
     return(invisible(NULL))
   }
   knn <- tryCatch(
@@ -246,9 +248,11 @@ cluster_banksy_niches <- function(merged_gobj,
   g <- igraph::graph_from_edgelist(el, directed = FALSE)
   g <- igraph::simplify(g)
   comm <- tryCatch(
-    igraph::cluster_leiden(g, resolution_parameter = resolution),
+    igraph::cluster_leiden(g,
+                           objective_function = "modularity",
+                           resolution_parameter = resolution),
     error = function(e) {
-      cat("    ⚠ Leiden failed (", conditionMessage(e),
+      cat("    Warning: Leiden failed (", conditionMessage(e),
           "); falling back to Louvain.\n", sep = "")
       igraph::cluster_louvain(g)
     }
@@ -271,8 +275,8 @@ cluster_banksy_niches <- function(merged_gobj,
     acc(merged_gobj, new_metadata = niche_df,
         by_column = TRUE, column_cell_ID = "cell_ID"),
     error = function(e) {
-      cat("    ⚠ addCellMetadata failed for niche_id: ",
-          conditionMessage(e), "\n", sep = "")
+      cat(sprintf("    Warning: addCellMetadata failed for niche_id: %s\n",
+                  conditionMessage(e)))
       merged_gobj
     }
   )
@@ -329,10 +333,12 @@ cluster_banksy_single_sample <- function(aug_spe,
     }
   )
   if (is.null(pca)) return(invisible(NULL))
-  pca_mat <- SingleCellExperiment::reducedDim(
-    pca, paste0("PCA_M0_lam", lambda))
+  expected_slot <- paste0("PCA_M0_lam", lambda)
+  pca_mat <- SingleCellExperiment::reducedDim(pca, expected_slot)
   if (is.null(pca_mat)) {
     rd_names <- SingleCellExperiment::reducedDimNames(pca)
+    cat(sprintf("    Warning: BANKSY PCA slot '%s' not found; using fallback '%s' (available: %s).\n",
+                expected_slot, rd_names[1], paste(rd_names, collapse = ", ")))
     pca_mat <- SingleCellExperiment::reducedDim(pca, rd_names[1])
   }
 
@@ -353,7 +359,9 @@ cluster_banksy_single_sample <- function(aug_spe,
   }))
   g <- igraph::simplify(igraph::graph_from_edgelist(el, directed = FALSE))
   comm <- tryCatch(
-    igraph::cluster_leiden(g, resolution_parameter = resolution),
+    igraph::cluster_leiden(g,
+                           objective_function = "modularity",
+                           resolution_parameter = resolution),
     error = function(e) {
       cat("    Warning: Leiden failed (", conditionMessage(e),
           "), falling back to Louvain.\n", sep = "")
