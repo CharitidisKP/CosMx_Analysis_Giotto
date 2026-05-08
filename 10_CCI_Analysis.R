@@ -5274,8 +5274,8 @@ run_nnsvg <- function(gobj,
                    error = function(e) NULL)
     if (!is.null(de) && "annotation" %in% names(de)) {
       de <- de[as.character(de$annotation) == receiver_celltype, , drop = FALSE]
-      gene_col <- intersect(c("feats", "feature", "gene"), names(de))[1]
-      lfc_col  <- intersect(c("logFC", "log2FC", "estimate"), names(de))[1]
+      gene_col <- intersect(c("feats", "feature", "gene", "target"), names(de))[1]
+      lfc_col  <- intersect(c("logFC", "log2FC", "estimate", "est"), names(de))[1]
       if (nrow(de) > 0 && !is.na(gene_col) && !is.na(lfc_col)) {
         de <- de[order(-abs(de[[lfc_col]])), , drop = FALSE]
         out <- head(unique(de[[gene_col]]), top_n)

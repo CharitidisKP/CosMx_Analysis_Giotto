@@ -1904,7 +1904,7 @@ run_smide_sample_backend <- function(expr_mat,
       result_families <- if (isTRUE(spec$is_continuous)) {
         "emmeans"
       } else {
-        c("pairwise", "emmeans", "one_vs_rest", "one_vs_all")
+        c("pairwise", "emmeans", "one.vs.rest", "one.vs.all")
       }
       res_obj <- tryCatch(
         smiDE::results(
@@ -2363,7 +2363,7 @@ run_smide_merged_backend <- function(expr_mat,
     }
 
     # WTX-guide alignment: pull every comparison family from one fit.
-    result_families <- c("pairwise", "emmeans", "one_vs_rest", "one_vs_all")
+    result_families <- c("pairwise", "emmeans", "one.vs.rest", "one.vs.all")
     res_obj <- tryCatch(
       smiDE::results(
         smide_results = fit,
