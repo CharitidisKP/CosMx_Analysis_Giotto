@@ -265,6 +265,7 @@ spatial_de:
   spatial_network_name: "Delaunay_network"
   n_niches: 6
   min_cells_per_niche: 10
+  niche_gate_fov_fallback: true            # when a celltype's kmeans niche partition has <2 viable niches, re-assign that celltype's cells to FOV-based niche labels so smiDE has multiple groups
   min_cells_per_sample: 10
   min_samples_per_group: 2
   sample_replicate_column: "fov"

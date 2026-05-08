@@ -2965,6 +2965,7 @@ run_spatial_differential_expression <- function(gobj,
                                                 spatial_network_name = "Delaunay_network",
                                                 n_niches = 6,
                                                 min_cells_per_niche = 30,
+                                                niche_gate_fov_fallback = TRUE,
                                                 min_cells_per_sample = 10,
                                                 min_samples_per_group = 2,
                                                 sample_replicate_column = "fov",
@@ -3153,6 +3154,19 @@ run_spatial_differential_expression <- function(gobj,
   )
   niche_props <- normalise_rows(niche_counts)
   metadata$spatial_niche <- assign_spatial_niches(niche_props, n_niches = n_niches)
+  # FOV fallback for homogeneous celltypes: when kmeans gave <2 viable niches for a celltype, re-assign its cells to FOV-based labels so smiDE has multiple groups to compare. Heterogeneous celltypes keep their kmeans niches.
+  if (isTRUE(niche_gate_fov_fallback) && "fov" %in% names(metadata)) {
+    for (ct in unique(stats::na.omit(metadata[[annotation_column]]))) {
+      ct_idx <- which(metadata[[annotation_column]] == ct)
+      if (length(ct_idx) < 2 * min_cells_per_niche) next
+      ct_niche_counts <- table(metadata$spatial_niche[ct_idx])
+      if (sum(ct_niche_counts >= min_cells_per_niche) < 2L) {
+        metadata$spatial_niche[ct_idx] <- paste0("fov_", metadata$fov[ct_idx])
+        cat(sprintf("  [FOV fallback] '%s': kmeans gave <2 viable niches; re-partitioned %d cells by FOV.\n",
+                    ct, length(ct_idx)))
+      }
+    }
+  }
   cat("Spatial niches identified:", length(unique(metadata$spatial_niche)), "\n\n")
   
   spatial_locations <- get_spatial_locations_df(gobj)

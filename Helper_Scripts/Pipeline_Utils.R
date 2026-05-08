@@ -150,12 +150,32 @@ plot_title_for_sample <- function(sample_row, subtitle,
 # / "Sample N after treatment", others fall back to sample-sheet prefix logic.
 format_sample_display <- function(run_label, sample_sheet = NULL) {
   if (is.null(run_label) || !nzchar(run_label)) return(run_label)
+  resolve_treatment <- function() {
+    if (is.null(sample_sheet) || !is.data.frame(sample_sheet)) return(NA_character_)
+    if (!all(c("sample_id", "treatment") %in% names(sample_sheet))) return(NA_character_)
+    hit <- sample_sheet[as.character(sample_sheet$sample_id) == run_label, , drop = FALSE]
+    if (nrow(hit) == 0L) return(NA_character_)
+    tx <- as.character(hit$treatment[1])
+    if (is.na(tx) || !nzchar(tx)) NA_character_ else tx
+  }
   m_t0 <- regmatches(run_label, regexec("(?:^|_)T0_S([0-9]+)$", run_label))[[1]]
-  if (length(m_t0) == 2L) return(paste0("Sample ", m_t0[2], " baseline"))
+  if (length(m_t0) == 2L) {
+    base <- paste0("Sample ", m_t0[2], " - Baseline")
+    tx <- resolve_treatment()
+    return(if (!is.na(tx)) paste(tx, base) else base)
+  }
   m_t06 <- regmatches(run_label, regexec("(?:^|_)T06_S([0-9]+)$", run_label))[[1]]
-  if (length(m_t06) == 2L) return(paste0("Sample ", m_t06[2], " after treatment"))
+  if (length(m_t06) == 2L) {
+    base <- paste0("Sample ", m_t06[2], " - After treatment")
+    tx <- resolve_treatment()
+    return(if (!is.na(tx)) paste(tx, base) else base)
+  }
   m_t12 <- regmatches(run_label, regexec("(?:^|_)T12_S([0-9]+)$", run_label))[[1]]
-  if (length(m_t12) == 2L) return(paste0("Sample ", m_t12[2], " after treatment"))
+  if (length(m_t12) == 2L) {
+    base <- paste0("Sample ", m_t12[2], " - After treatment")
+    tx <- resolve_treatment()
+    return(if (!is.na(tx)) paste(tx, base) else base)
+  }
   if (!is.null(sample_sheet) && is.data.frame(sample_sheet) &&
       "sample_id" %in% names(sample_sheet)) {
     hit <- sample_sheet[as.character(sample_sheet$sample_id) == run_label, , drop = FALSE]

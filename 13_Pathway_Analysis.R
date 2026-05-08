@@ -1068,6 +1068,7 @@ if ((!exists("presentation_theme") ||
                                   high = "firebrick", midpoint = 0) +
     ggplot2::labs(title = title, x = NULL, y = "NES",
                   fill = "NES") +
+    ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x, 60)) +
     ggplot2::theme_minimal(base_size = 10)
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
@@ -1097,10 +1098,10 @@ if ((!exists("presentation_theme") ||
     ggplot2::coord_flip() +
     ggplot2::scale_fill_viridis_c(option = "D") +
     ggplot2::labs(title = title, x = NULL,
-                  y = "-log<sub>10</sub>(p.adjust)", fill = "gene count") +
+                  y = "-log<sub>10</sub>(p.adjust)", fill = "Gene count") +
     ggplot2::facet_wrap(~ direction, ncol = 1, scales = "free_y") +
-    ggplot2::theme_minimal(base_size = 10) +
-    ggplot2::theme(axis.title.y = element_markdown_safe())
+    ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x, 60)) +
+    presentation_theme(base_size = 10)
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1128,12 +1129,11 @@ if ((!exists("presentation_theme") ||
     ggplot2::labs(title = title, x = "NES", y = "-log<sub>10</sub>(padj)")
   if (requireNamespace("ggrepel", quietly = TRUE) && nrow(top) > 0) {
     p <- p + ggrepel::geom_text_repel(
-      data = top, ggplot2::aes(label = label), size = 2.5,
+      data = top, ggplot2::aes(label = pretty_plot_label(label, 40)), size = 2.5,
       max.overlaps = 30, colour = "grey20"
     )
   }
-  p <- p + ggplot2::theme_minimal(base_size = 10) +
-    ggplot2::theme(axis.title.y = element_markdown_safe())
+  p <- p + presentation_theme(base_size = 10)
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1168,9 +1168,9 @@ if ((!exists("presentation_theme") ||
     ggplot2::scale_size_continuous(name = "-log<sub>10</sub>(padj)") +
     ggplot2::facet_wrap(~ db, scales = "free_y", ncol = 2) +
     ggplot2::labs(title = title, x = "NES", y = NULL) +
-    ggplot2::theme_minimal(base_size = 9) +
-    ggplot2::theme(strip.text = ggplot2::element_text(face = "bold"),
-                   legend.title = element_markdown_safe())
+    ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x, 60)) +
+    presentation_theme(base_size = 9) +
+    ggplot2::theme(strip.text = ggplot2::element_text(face = "bold"))
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1207,10 +1207,8 @@ if ((!exists("presentation_theme") ||
       midpoint = 0, name = "sign(NES) * -log<sub>10</sub>(padj)"
     ) +
     ggplot2::labs(title = title, x = NULL, y = NULL) +
-    ggplot2::theme_minimal(base_size = 9) +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(
-      angle = 45, hjust = 1, vjust = 1),
-      legend.title = element_markdown_safe())
+    ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x, 60)) +
+    presentation_theme(base_size = 9, x_angle = 45)
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1252,9 +1250,8 @@ if ((!exists("presentation_theme") ||
                                  stratum_label),
                   x = NULL, y = NULL,
                   fill = "sign(NES) * -log<sub>10</sub>(padj)") +
-    ggplot2::theme_minimal(base_size = 9) +
-    ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 30, hjust = 1),
-                   legend.title = element_markdown_safe())
+    ggplot2::scale_y_discrete(labels = function(x) pretty_plot_label(x, 60)) +
+    presentation_theme(base_size = 9, x_angle = 30)
   if (exists("save_presentation_plot")) {
     save_presentation_plot(p, outfile, width = width, height = height,
                            dpi = 150)
@@ -1667,7 +1664,8 @@ if ((!exists("presentation_theme") ||
       ))
       plot_groups <- plot_groups[!is.na(plot_groups) & nzchar(plot_groups)]
       for (grp in plot_groups) {
-        title_grp <- sprintf("%s, %s, %s [%s]", display_sample_label(sample_id), st, lvl, grp)
+        title_grp <- paste0(display_sample_label(sample_id), ". ",
+                            tools::toTitleCase(st), ": ", lvl)
         if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df)) {
           gsea_grp <- gsea_df[!is.na(gsea_df$plot_group) &
                                 gsea_df$plot_group == grp, , drop = FALSE]
@@ -2144,7 +2142,7 @@ run_pathway_analysis <- function(gobj,
         plot_groups <- plot_groups[!is.na(plot_groups) & nzchar(plot_groups)]
         for (grp in plot_groups) {
           out_pre   <- paste0(stratum_tag, "_", grp)
-          title_grp <- sprintf("%s | %s [%s]", cp$label, stratum_tag, grp)
+          title_grp <- sprintf("%s | %s", cp$label, stratum_tag)
 
           if (!is.null(gsea_df) && "plot_group" %in% names(gsea_df)) {
             gsea_grp <- gsea_df[!is.na(gsea_df$plot_group) &

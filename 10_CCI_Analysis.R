@@ -1593,6 +1593,11 @@ plot_liana_extended <- function(liana_agg,
     dplyr::count(agg, source, target, name = "n_interactions"),
     error = function(e) NULL
   )
+  # Heatmap counts ALL unique L-R pairs per (source, target), regardless of the aggregate-rank gate. Top-N ranking, dotplot, and network plots still use the filtered count_df above.
+  count_df_full <- tryCatch(
+    dplyr::count(agg_full, source, target, name = "n_interactions"),
+    error = function(e) NULL
+  )
 
   # Dedicated subfolder for all focus-cell-type (B cell) specific plots
   bcell_dir <- file.path(out_dir, "B_cell_specific")
@@ -1637,6 +1642,7 @@ plot_liana_extended <- function(liana_agg,
         values = c(`FALSE` = "grey40", `TRUE` = "black"),
         guide  = "none"
       ) +
+      ggplot2::scale_x_discrete(labels = function(x) pretty_plot_label(x, 60)) +
       ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
@@ -1800,19 +1806,19 @@ plot_liana_extended <- function(liana_agg,
 
   # -- Plot 2: CCI heatmap ---------------------------------------------------
   safe_run("LIANA CCI heatmap", {
-    if (is.null(count_df) || nrow(count_df) == 0) stop("No interaction count data.")
+    if (is.null(count_df_full) || nrow(count_df_full) == 0) stop("No interaction count data.")
 
-    n_ct      <- length(unique(c(count_df$source, count_df$target)))
+    n_ct      <- length(unique(c(count_df_full$source, count_df_full$target)))
     tile_size <- max(10, ceiling(n_ct * 0.45))
 
-    p2 <- ggplot2::ggplot(count_df,
+    p2 <- ggplot2::ggplot(count_df_full,
              ggplot2::aes(x = source, y = target, fill = n_interactions)) +
       ggplot2::geom_tile(color = "grey90", linewidth = 0.3) +
       ggplot2::geom_text(ggplot2::aes(label = n_interactions), size = 2.5) +
       ggplot2::scale_fill_viridis_c(option = "plasma", name = "Interactions (n)") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
-        subtitle = NULL,
+        subtitle = "Number of unique L-R pairs per sender-receiver combination",
         x        = "Sender",
         y        = "Receiver"
       ) +
@@ -3485,7 +3491,7 @@ run_nichenet <- function(gobj,
                               ggplot2::aes(target, ligand, fill = weight)) +
         ggplot2::geom_tile() +
         ggplot2::scale_fill_gradient(low = "white", high = "#440154",
-                                     name = "regulatory\npotential") +
+                                     name = "Regulatory\npotential") +
         ggplot2::labs(
           x = "Target gene", y = "Ligand",
           title = sprintf("%s \u2014 NicheNet ligand-target potential",
@@ -5081,7 +5087,8 @@ run_nnsvg <- function(gobj,
               ggplot2::coord_fixed() +
               ggplot2::facet_grid(gene ~ layer) +
               ggplot2::scale_fill_viridis_c(option = "magma",
-                                            na.value = "grey92") +
+                                            na.value = "grey92",
+                                            name = "Counts") +
               ggplot2::labs(
                 title = sprintf(
                   "%s \u2014 top-20 SVGs vs %s pixel counts",
@@ -5252,20 +5259,19 @@ run_nnsvg <- function(gobj,
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   celltype_col <- .resolve_celltype_column_auto(gobj, celltype_col)
 
-  # First try: step 12 per-sample DE if it has run for this receiver.
-  de_glob <- list.files(file.path(output_dir, "12_Spatial_DE"),
-                        pattern = paste0("^", sample_id, "_.*sample_de\\.csv$"),
-                        full.names = TRUE)
-  rec_token <- gsub("[^A-Za-z0-9]+", ".", receiver_celltype)
-  de_glob   <- de_glob[grepl(rec_token, basename(de_glob), ignore.case = TRUE)]
-  if (length(de_glob) > 0) {
-    de <- tryCatch(read.csv(de_glob[1], stringsAsFactors = FALSE),
+  # First try: step 12 per-sample DE aggregate, filtered to the receiver celltype.
+  de_csv <- file.path(output_dir, "12_Spatial_Differential_Expression",
+                      paste0(sample_id, "_all_spatial_de_results.csv"))
+  if (file.exists(de_csv)) {
+    de <- tryCatch(read.csv(de_csv, stringsAsFactors = FALSE),
                    error = function(e) NULL)
-    if (!is.null(de) && "gene" %in% names(de)) {
-      lfc_col <- intersect(c("logFC", "log2FC", "estimate"), names(de))[1]
-      if (!is.na(lfc_col)) {
+    if (!is.null(de) && "annotation" %in% names(de)) {
+      de <- de[as.character(de$annotation) == receiver_celltype, , drop = FALSE]
+      gene_col <- intersect(c("feats", "feature", "gene"), names(de))[1]
+      lfc_col  <- intersect(c("logFC", "log2FC", "estimate"), names(de))[1]
+      if (nrow(de) > 0 && !is.na(gene_col) && !is.na(lfc_col)) {
         de <- de[order(-abs(de[[lfc_col]])), , drop = FALSE]
-        out <- head(unique(de$gene), top_n)
+        out <- head(unique(de[[gene_col]]), top_n)
         if (length(out) > 0) return(out)
       }
     }
@@ -5273,7 +5279,7 @@ run_nnsvg <- function(gobj,
 
   # Second try: step 06 cluster markers, filtered to the cluster that is
   # dominated by the receiver cell type.
-  mk_csv <- file.path(output_dir, "06_Markers",
+  mk_csv <- file.path(output_dir, "06_Markers", "tables",
                       paste0(sample_id, "_all_markers.csv"))
   if (file.exists(mk_csv) && !is.na(celltype_col) && celltype_col %in% names(meta) &&
       "leiden_clust" %in% names(meta)) {

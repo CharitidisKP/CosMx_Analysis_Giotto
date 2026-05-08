@@ -246,7 +246,7 @@ kable(annot_df, caption = "Cell-type composition per sample")
 
 # 5. Markers
 
-```{r markers}
+```{r markers, results = "asis"}
 markers_all <- samples_df |>
   filter(!is.na(sample_dir)) |>
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
@@ -278,7 +278,16 @@ if (nrow(markers_all) > 0) {
 }
 
 markers_capped |> write_summary("04_marker_summary.csv", n_samples_expected = nrow(samples_df))
-kable(head(markers_capped, 50), caption = paste0("Top ", top_n_markers, " markers per cluster (head 50)"))
+
+if (nrow(markers_capped) > 0) {
+  for (sid in unique(markers_capped$sample_id)) {
+    cat("\n\n#### ", sid, "\n\n", sep = "")
+    print(kable(markers_capped |> filter(sample_id == sid),
+                caption = paste0("Top ", top_n_markers, " markers per cluster - ", sid)))
+  }
+} else {
+  cat("\n\n_No marker results found across samples._\n\n")
+}
 ```
 
 # 6. Spatial DE (smiDE)
