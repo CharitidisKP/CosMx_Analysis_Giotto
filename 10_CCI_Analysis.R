@@ -928,7 +928,7 @@ plot_insitucor_results <- function(cor_results,
               nrow_b <- ceiling(length(panels_b) / ncol_b)
               joint_b <- patchwork::wrap_plots(panels_b, ncol = ncol_b) +
                 patchwork::plot_annotation(
-                  title    = sample_id,
+                  title    = display_sample_label(sample_id),
                   subtitle = NULL,
                   theme    = ggplot2::theme(
                     plot.title  = ggplot2::element_text(face = "bold",
@@ -1058,7 +1058,7 @@ plot_insitucor_results <- function(cor_results,
         n_row_panel <- ceiling(length(spatial_plots_panel) / ncol_panel)
         combined <- patchwork::wrap_plots(spatial_plots_panel, ncol = ncol_panel) +
           patchwork::plot_annotation(
-            title    = sample_id,
+            title    = display_sample_label(sample_id),
             subtitle = NULL,
             theme    = ggplot2::theme(
               plot.title    = ggplot2::element_text(face = "bold", size = 16,

@@ -187,21 +187,39 @@ format_sample_display <- function(run_label, sample_sheet = NULL) {
   run_label
 }
 
-# Memoised sample-sheet loader; returns NULL when the file is absent.
+# Memoised sample-sheet loader. Resolution is deferred until a candidate path
+# actually loads, so a per-step setwd() into an output_dir does not poison the
+# cache to NULL for the rest of the R session. Order: explicit `path`, then
+# COSMX_PROJECT_DIR (set by the orchestrator), then .cosmx_project_dir global,
+# then getwd().
 cached_sample_sheet <- local({
   cache <- NULL
-  resolved <- FALSE
   function(path = NULL) {
-    if (resolved) return(cache)
-    resolved <<- TRUE
-    candidate <- path %||% file.path(getwd(), "Parameters", "sample_sheet.csv")
-    if (!file.exists(candidate)) return(NULL)
-    cache <<- tryCatch(
-      utils::read.csv(candidate, stringsAsFactors = FALSE,
-                      na.strings = c("", "NA")),
-      error = function(e) NULL
-    )
-    cache
+    if (!is.null(cache)) return(cache)
+    bases <- character(0)
+    if (!is.null(path) && nzchar(path)) bases <- c(bases, path)
+    proj_env <- Sys.getenv("COSMX_PROJECT_DIR", unset = "")
+    if (nzchar(proj_env)) bases <- c(bases, file.path(proj_env, "Parameters", "sample_sheet.csv"))
+    if (exists(".cosmx_project_dir", envir = .GlobalEnv, inherits = FALSE)) {
+      proj_glob <- get(".cosmx_project_dir", envir = .GlobalEnv)
+      if (is.character(proj_glob) && nzchar(proj_glob)) {
+        bases <- c(bases, file.path(proj_glob, "Parameters", "sample_sheet.csv"))
+      }
+    }
+    bases <- c(bases, file.path(getwd(), "Parameters", "sample_sheet.csv"))
+    for (candidate in unique(bases)) {
+      if (!file.exists(candidate)) next
+      loaded <- tryCatch(
+        utils::read.csv(candidate, stringsAsFactors = FALSE,
+                        na.strings = c("", "NA")),
+        error = function(e) NULL
+      )
+      if (!is.null(loaded)) {
+        cache <<- loaded
+        return(cache)
+      }
+    }
+    NULL
   }
 })
 
