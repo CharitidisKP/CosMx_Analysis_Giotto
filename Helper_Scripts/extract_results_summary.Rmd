@@ -32,6 +32,7 @@ suppressPackageStartupMessages({
   library(readr)
   library(purrr)
   library(stringr)
+  library(magrittr)
   library(yaml)
   library(jsonlite)
   library(knitr)
@@ -128,18 +129,18 @@ write_summary <- function(df, name, n_samples_expected = NA_integer_) {
 sheet <- read_csv_safe(sample_sheet_abs)
 stopifnot(!is.null(sheet))
 
-samples_df <- sheet |>
+samples_df <- sheet %>%
   filter(treatment %in% c("CART", "Conventional"),
          is.na(split_role) | split_role != "composite",
-         sample_id != "TEST_5k") |>
-  mutate(sample_dir = vapply(sample_id, find_sample_dir, character(1), root = output_root_abs)) |>
+         sample_id != "TEST_5k") %>%
+  mutate(sample_dir = vapply(sample_id, find_sample_dir, character(1), root = output_root_abs)) %>%
   select(any_of(c("sample_id", "treatment", "timepoint", "patient_id", "pair_id", "slide_num", "split_role", "sample_dir")))
 
 if (nrow(samples_df) != 8) {
   warning("Expected 8 samples after filter, got ", nrow(samples_df), ". Continuing anyway.")
 }
 
-samples_df |> write_summary("00_sample_index.csv", n_samples_expected = 8)
+samples_df %>% write_summary("00_sample_index.csv", n_samples_expected = 8)
 kable(samples_df, caption = "Samples included in this summary")
 ```
 
@@ -158,8 +159,8 @@ qc_metric_map <- c(
   "Median counts/cell" = "median_counts_per_cell"
 )
 
-qc_df <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+qc_df <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "02_QC", "tables", paste0(sample_id, "_qc_summary.csv"))
     df <- read_csv_safe(p)
@@ -168,35 +169,35 @@ qc_df <- samples_df |>
       hits <- df$metric %in% names(qc_metric_map)
       tibble::as_tibble(setNames(as.list(df$value[hits]), unname(qc_metric_map[df$metric[hits]])))
     } else {
-      df |> select(any_of(unname(qc_metric_map)))
+      df %>% select(any_of(unname(qc_metric_map)))
     }
-    wide |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+    wide %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
 if (nrow(qc_df) > 0 && all(c("n_cells_initial", "n_cells_final") %in% names(qc_df))) {
-  qc_df <- qc_df |> mutate(frac_cells_retained = n_cells_final / n_cells_initial)
+  qc_df <- qc_df %>% mutate(frac_cells_retained = n_cells_final / n_cells_initial)
 }
 
-qc_df |> write_summary("01_qc_summary.csv", n_samples_expected = nrow(samples_df))
+qc_df %>% write_summary("01_qc_summary.csv", n_samples_expected = nrow(samples_df))
 kable(qc_df, caption = "Per-sample QC metrics")
 ```
 
 # 3. Clustering
 
 ```{r clustering}
-clust_df <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+clust_df <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "05_Clustering", paste0(sample_id, "_cluster_stats.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
-    df |>
-      arrange(desc(n_cells)) |>
+    df %>%
+      arrange(dplyr::desc(n_cells)) %>%
       mutate(frac_cells = n_cells / sum(n_cells),
              sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
-clust_df |> write_summary("02_clustering_summary.csv", n_samples_expected = nrow(samples_df))
+clust_df %>% write_summary("02_clustering_summary.csv", n_samples_expected = nrow(samples_df))
 kable(head(clust_df, 30), caption = "Cluster sizes per sample (top 30 rows)")
 ```
 
@@ -218,8 +219,8 @@ read_selected_profile <- function(json_path) {
   if (!nzchar(prof)) NA_character_ else prof
 }
 
-annot_df <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+annot_df <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     sel_json <- file.path(sample_dir, "07_Annotation", "annotation_selection.json")
     profile  <- read_selected_profile(sel_json)
@@ -234,41 +235,41 @@ annot_df <- samples_df |>
     path <- if (identical(kind, "supervised")) sup else if (identical(kind, "semi")) sem else NA_character_
     df <- read_csv_safe(path)
     if (is.null(df)) return(NULL)
-    df |>
+    df %>%
       mutate(frac_cells = n_cells / sum(n_cells),
              sample_id = sample_id, treatment = treatment, timepoint = timepoint,
              profile = profile, annotation_kind = kind, .before = 1)
   })
 
-annot_df |> write_summary("03_annotation_summary.csv", n_samples_expected = nrow(samples_df))
+annot_df %>% write_summary("03_annotation_summary.csv", n_samples_expected = nrow(samples_df))
 kable(annot_df, caption = "Cell-type composition per sample")
 ```
 
 # 5. Markers
 
 ```{r markers, results = "asis"}
-markers_all <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+markers_all <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "06_Markers", "tables", paste0(sample_id, "_top_markers.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
-    df |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+    df %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
-markers_all |> write_summary("04_marker_summary_all.csv", n_samples_expected = nrow(samples_df))
+markers_all %>% write_summary("04_marker_summary_all.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(markers_all) > 0) {
   rank_col <- intersect(c("FDR", "padj", "p.value", "p_val", "pval"), names(markers_all))[1]
   if (is.na(rank_col)) rank_col <- intersect(c("Top"), names(markers_all))[1]
   lfc_col <- intersect(c("summary.logFC", "summary_logFC", "logFC", "median.logFC.other"), names(markers_all))[1]
   if (!is.na(rank_col)) {
-    markers_capped <- markers_all |>
-      group_by(sample_id, cluster) |>
+    markers_capped <- markers_all %>%
+      group_by(sample_id, cluster) %>%
       arrange(.data[[rank_col]],
-              if (!is.na(lfc_col)) desc(.data[[lfc_col]]) else 0,
-              .by_group = TRUE) |>
-      slice_head(n = top_n_markers) |>
+              if (!is.na(lfc_col)) dplyr::desc(.data[[lfc_col]]) else 0,
+              .by_group = TRUE) %>%
+      slice_head(n = top_n_markers) %>%
       ungroup()
   } else {
     markers_capped <- markers_all
@@ -277,12 +278,12 @@ if (nrow(markers_all) > 0) {
   markers_capped <- markers_all
 }
 
-markers_capped |> write_summary("04_marker_summary.csv", n_samples_expected = nrow(samples_df))
+markers_capped %>% write_summary("04_marker_summary.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(markers_capped) > 0) {
   for (sid in unique(markers_capped$sample_id)) {
     cat("\n\n#### ", sid, "\n\n", sep = "")
-    print(kable(markers_capped |> filter(sample_id == sid),
+    print(kable(markers_capped %>% filter(sample_id == sid),
                 caption = paste0("Top ", top_n_markers, " markers per cluster - ", sid)))
   }
 } else {
@@ -293,8 +294,8 @@ if (nrow(markers_capped) > 0) {
 # 6. Spatial DE (smiDE)
 
 ```{r spatial_de}
-smide_all <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+smide_all <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     sde_dir <- file.path(sample_dir, "12_Spatial_Differential_Expression", "tables")
     if (!dir.exists(sde_dir)) return(NULL)
@@ -306,11 +307,11 @@ smide_all <- samples_df |>
     purrr::map_dfr(hits, function(f) {
       df <- read_csv_safe(f)
       if (is.null(df)) return(NULL)
-      df |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+      df %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
     })
   })
 
-smide_all |> write_summary("05_spatial_de_summary_all.csv", n_samples_expected = nrow(samples_df))
+smide_all %>% write_summary("05_spatial_de_summary_all.csv", n_samples_expected = nrow(samples_df))
 
 # Significance + fold-change column detection mirrors guess_significance_column() / .guess_fc_column() in 12_Spatial_Differential_Expression.R.
 smide_sig_col <- if (nrow(smide_all) > 0) intersect(c("FDR", "padj", "p.adj", "qval", "p.value", "pvalue", "pval", "p_val"), names(smide_all))[1] else NA_character_
@@ -318,56 +319,56 @@ smide_fc_col  <- if (nrow(smide_all) > 0) intersect(c("log2fc", "log2FoldChange"
 
 if (nrow(smide_all) > 0 && !is.na(smide_sig_col)) {
   group_cols <- intersect(c("sample_id", "run_label", "annotation"), names(smide_all))
-  smide_capped <- smide_all |>
-    filter(!is.na(.data[[smide_sig_col]]), .data[[smide_sig_col]] < 0.05) |>
-    group_by(across(all_of(group_cols))) |>
-    arrange(if (!is.na(smide_fc_col)) desc(abs(.data[[smide_fc_col]])) else 0, .by_group = TRUE) |>
-    slice_head(n = top_n_smide) |>
+  smide_capped <- smide_all %>%
+    filter(!is.na(.data[[smide_sig_col]]), .data[[smide_sig_col]] < 0.05) %>%
+    group_by(across(all_of(group_cols))) %>%
+    arrange(if (!is.na(smide_fc_col)) dplyr::desc(abs(.data[[smide_fc_col]])) else 0, .by_group = TRUE) %>%
+    slice_head(n = top_n_smide) %>%
     ungroup()
 } else {
   smide_capped <- smide_all
 }
 
-smide_capped |> write_summary("05_spatial_de_summary.csv", n_samples_expected = nrow(samples_df))
+smide_capped %>% write_summary("05_spatial_de_summary.csv", n_samples_expected = nrow(samples_df))
 kable(head(smide_capped, 50), caption = paste0("Top ", top_n_smide, " spatially DE genes per group (head 50)"))
 ```
 
 # 7. CCI - LIANA
 
 ```{r liana, results = "asis"}
-liana_all <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+liana_all <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "10_CCI_Analysis", "liana", paste0(sample_id, "_liana_aggregate.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
-    df |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+    df %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
-liana_all |> write_summary("06_liana_summary_all.csv", n_samples_expected = nrow(samples_df))
+liana_all %>% write_summary("06_liana_summary_all.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(liana_all) > 0) {
   rank_col <- intersect(c("aggregate_rank", "liana_score", "natmi", "sca"), names(liana_all))[1]
   if (!is.na(rank_col) && !is.null(rank_col)) {
     asc <- identical(rank_col, "aggregate_rank")
-    liana_capped <- liana_all |>
-      group_by(sample_id) |>
-      arrange(if (asc) .data[[rank_col]] else desc(.data[[rank_col]]), .by_group = TRUE) |>
-      slice_head(n = top_n_liana) |>
+    liana_capped <- liana_all %>%
+      group_by(sample_id) %>%
+      arrange(if (asc) .data[[rank_col]] else dplyr::desc(.data[[rank_col]]), .by_group = TRUE) %>%
+      slice_head(n = top_n_liana) %>%
       ungroup()
   } else {
-    liana_capped <- liana_all |> group_by(sample_id) |> slice_head(n = top_n_liana) |> ungroup()
+    liana_capped <- liana_all %>% group_by(sample_id) %>% slice_head(n = top_n_liana) %>% ungroup()
   }
 } else {
   liana_capped <- liana_all
 }
 
-liana_capped |> write_summary("06_liana_summary.csv", n_samples_expected = nrow(samples_df))
+liana_capped %>% write_summary("06_liana_summary.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(liana_capped) > 0) {
   for (sid in unique(liana_capped$sample_id)) {
     cat("\n\n#### ", sid, "\n\n", sep = "")
-    print(kable(liana_capped |> filter(sample_id == sid),
+    print(kable(liana_capped %>% filter(sample_id == sid),
                 caption = paste0("Top ", top_n_liana, " LR interactions - ", sid)))
   }
 } else {
@@ -378,8 +379,8 @@ if (nrow(liana_capped) > 0) {
 # 8. CCI - NicheNet (B-cell receivers)
 
 ```{r nichenet}
-nn_df <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+nn_df <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     nn_root <- file.path(sample_dir, "10_CCI_Analysis", "nichenet")
     cmp_path <- file.path(nn_root, paste0(sample_id, "_nichenet_spatially_retained_comparisons.csv"))
@@ -390,7 +391,7 @@ nn_df <- samples_df |>
     cmp <- read_csv_safe(cmp_path)
     act <- read_csv_safe(act_path)
     if (is.null(act)) return(NULL)
-    if ("...1" %in% names(act)) act <- act |> select(-`...1`)
+    if ("...1" %in% names(act)) act <- act %>% select(-`...1`)
     bcell_senders <- if (!is.null(cmp) && "receiver" %in% names(cmp)) {
       unique(cmp$sender_label[cmp$receiver == bcell_label])
     } else character(0)
@@ -400,50 +401,50 @@ nn_df <- samples_df |>
     }
     score_col <- intersect(c("aupr_corrected", "aupr", "pearson"), names(act))[1]
     if (is.na(score_col) || is.null(score_col)) score_col <- names(act)[2]
-    top <- act |>
-      arrange(desc(.data[[score_col]])) |>
+    top <- act %>%
+      arrange(dplyr::desc(.data[[score_col]])) %>%
       slice_head(n = top_n_ligands)
-    tidyr::expand_grid(sender_label = bcell_senders, receiver = bcell_label) |>
-      dplyr::cross_join(top) |>
+    tidyr::expand_grid(sender_label = bcell_senders, receiver = bcell_label) %>%
+      dplyr::cross_join(top) %>%
       mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
-nn_df |> write_summary("07_nichenet_summary.csv", n_samples_expected = nrow(samples_df))
+nn_df %>% write_summary("07_nichenet_summary.csv", n_samples_expected = nrow(samples_df))
 kable(head(nn_df, 50), caption = paste0("Top ", top_n_ligands, " NicheNet ligands per (sample, sender) for receiver = '", bcell_label, "'"))
 ```
 
 # 9. CCI - MISTy
 
 ```{r misty}
-misty_df <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+misty_df <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     p <- file.path(sample_dir, "10_CCI_Analysis", "misty", sample_id, "tables",
                    paste0(sample_id, "_misty_improvements.csv"))
     df <- read_csv_safe(p)
     if (is.null(df)) return(NULL)
-    if ("...1" %in% names(df)) df <- df |> select(-`...1`)
+    if ("...1" %in% names(df)) df <- df %>% select(-`...1`)
     # mistyR::collect_results() emits lower-case 'view'; fold any legacy 'View' to match.
-    df <- df |> rename_with(~ tolower(.x), .cols = any_of(c("View")))
-    df |>
+    df <- df %>% rename_with(~ tolower(.x), .cols = any_of(c("View")))
+    df %>%
       select(any_of(c("view", "target", "gain.R2", "gain.RMSE", "gain.R2.adj",
-                      "intra.R2", "multi.R2"))) |>
+                      "intra.R2", "multi.R2"))) %>%
       mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
   })
 
 if (nrow(misty_df) > 0 && "gain.R2" %in% names(misty_df)) {
-  misty_df <- misty_df |> arrange(sample_id, desc(gain.R2))
+  misty_df <- misty_df %>% arrange(sample_id, dplyr::desc(gain.R2))
 }
 
-misty_df |> write_summary("08_misty_summary.csv", n_samples_expected = nrow(samples_df))
+misty_df %>% write_summary("08_misty_summary.csv", n_samples_expected = nrow(samples_df))
 kable(head(misty_df, 50), caption = "MISTy view improvements per (sample, target)")
 ```
 
 # 10. Pathway / GSEA
 
 ```{r pathway}
-pathway_all <- samples_df |>
-  filter(!is.na(sample_dir)) |>
+pathway_all <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
     pw_dir <- file.path(sample_dir, "13_Pathway_Sample")
     if (!dir.exists(pw_dir)) return(NULL)
@@ -455,30 +456,30 @@ pathway_all <- samples_df |>
     purrr::map_dfr(hits, function(f) {
       df <- read_csv_safe(f)
       if (is.null(df)) return(NULL)
-      df |> mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+      df %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
     })
   })
 
 pathway_filtered_all <- if (nrow(pathway_all) > 0 && "padj" %in% names(pathway_all)) {
-  pathway_all |> filter(!is.na(padj), padj < 0.5)
+  pathway_all %>% filter(!is.na(padj), padj < 0.5)
 } else pathway_all
 
-pathway_filtered_all |> write_summary("09_pathway_summary_all.csv", n_samples_expected = nrow(samples_df))
+pathway_filtered_all %>% write_summary("09_pathway_summary_all.csv", n_samples_expected = nrow(samples_df))
 
 if (nrow(pathway_all) > 0 && "padj" %in% names(pathway_all)) {
   group_cols <- intersect(c("sample_id", "comparison", "stratum"), names(pathway_all))
   rank_col <- if ("NES" %in% names(pathway_all)) "NES" else "padj"
-  pathway_capped <- pathway_all |>
-    filter(!is.na(padj), padj < 0.05) |>
-    group_by(across(all_of(group_cols))) |>
-    arrange(desc(abs(.data[[rank_col]])), .by_group = TRUE) |>
-    slice_head(n = top_n_pathways) |>
+  pathway_capped <- pathway_all %>%
+    filter(!is.na(padj), padj < 0.05) %>%
+    group_by(across(all_of(group_cols))) %>%
+    arrange(dplyr::desc(abs(.data[[rank_col]])), .by_group = TRUE) %>%
+    slice_head(n = top_n_pathways) %>%
     ungroup()
 } else {
   pathway_capped <- pathway_all
 }
 
-pathway_capped |> write_summary("09_pathway_summary.csv", n_samples_expected = nrow(samples_df))
+pathway_capped %>% write_summary("09_pathway_summary.csv", n_samples_expected = nrow(samples_df))
 kable(head(pathway_capped, 50), caption = paste0("Top ", top_n_pathways, " pathways per (sample, comparison, stratum) (head 50)"))
 ```
 
