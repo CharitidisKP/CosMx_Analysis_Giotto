@@ -267,9 +267,11 @@ annot_df <- samples_df %>%
     path <- if (identical(kind, "supervised")) sup else if (identical(kind, "semi")) sem else NA_character_
     df <- read_csv_safe(path)
     if (is.null(df)) return(NULL)
-    # Pipeline writes the celltype column as "celltype_<profile>_<kind>" (e.g. celltype_HCA_Kidney_supervised). Rename to bare "celltype" so downstream summaries do not need to know the active profile name.
+    # Pipeline writes the celltype column as "celltype_<profile>_<kind>" (e.g. celltype_HCA_Kidney_supervised). Rename to bare "celltype" so downstream summaries do not need to know the active profile name. Using base-R names<- because dplyr::rename(celltype = !!ct_col) misparses the string injection as a boolean NOT.
     ct_col <- grep("^celltype_", names(df), value = TRUE)[1]
-    if (!is.na(ct_col)) df <- df %>% rename(celltype = !!ct_col)
+    if (length(ct_col) > 0L && !is.na(ct_col)) {
+      names(df)[names(df) == ct_col] <- "celltype"
+    }
     df %>%
       mutate(frac_cells = n_cells / sum(n_cells),
              sample_id = sample_id, treatment = treatment, timepoint = timepoint,
