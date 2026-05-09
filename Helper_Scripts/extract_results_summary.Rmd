@@ -198,7 +198,32 @@ clust_df <- samples_df %>%
   })
 
 clust_df %>% write_summary("02_clustering_summary.csv", n_samples_expected = nrow(samples_df))
-kable(head(clust_df, 30), caption = "Cluster sizes per sample (top 30 rows)")
+
+# One row per sample. Five columns: cluster count, total cells (cross-check vs QC), dominance (largest cluster %), fragmentation (smallest cluster %), median cluster size.
+clust_summary <- clust_df %>%
+  group_by(sample_id, treatment, timepoint) %>%
+  summarise(
+    n_clusters    = n(),
+    total_cells   = sum(n_cells),
+    largest_pct   = paste0(round(max(frac_cells) * 100, 1), "%"),
+    smallest_pct  = paste0(round(min(frac_cells) * 100, 1), "%"),
+    median_size   = round(median(n_cells)),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment, timepoint, sample_id)
+
+kable(clust_summary,
+      col.names = c("Sample", "Treatment", "Timepoint",
+                    "N clusters", "Total cells",
+                    "Largest cluster", "Smallest cluster", "Median cluster size"),
+      caption = "Leiden clustering summary per sample")
+
+# Representative per-cluster breakdown for one sample (CART_T0_S1 by default). Edit the filter to inspect any other sample without dumping all rows for all samples.
+clust_df %>%
+  filter(sample_id == "CART_T0_S1") %>%
+  select(sample_id, cluster, n_cells, frac_cells) %>%
+  mutate(frac_cells = scales::percent(frac_cells, accuracy = 0.1)) %>%
+  kable(caption = "Cluster breakdown - CART Sample 1 Baseline (representative)")
 ```
 
 # 4. Annotation
