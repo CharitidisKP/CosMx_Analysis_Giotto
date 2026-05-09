@@ -221,9 +221,10 @@ kable(clust_summary,
 # Representative per-cluster breakdown for one sample (CART_T0_S1 by default). Edit the filter to inspect any other sample without dumping all rows for all samples.
 clust_df %>%
   filter(sample_id == "CART_T0_S1") %>%
-  select(sample_id, cluster, n_cells, frac_cells) %>%
+  select(sample_id, leiden_clust, n_cells, frac_cells) %>%
   mutate(frac_cells = scales::percent(frac_cells, accuracy = 0.1)) %>%
-  kable(caption = "Cluster breakdown - CART Sample 1 Baseline (representative)")
+  kable(col.names = c("Sample", "Leiden cluster", "N cells", "Fraction"),
+        caption = "Cluster breakdown - CART Sample 1 Baseline (representative)")
 ```
 
 # 4. Annotation
@@ -267,7 +268,44 @@ annot_df <- samples_df %>%
   })
 
 annot_df %>% write_summary("03_annotation_summary.csv", n_samples_expected = nrow(samples_df))
-kable(annot_df, caption = "Cell-type composition per sample")
+
+# Per-sample summary: celltype count, dominant celltype, dominant %, immune fraction (B + T + plasma + MNP + NK), B-cell count for the focus story.
+annot_summary <- annot_df %>%
+  group_by(sample_id, treatment, timepoint, profile) %>%
+  summarise(
+    n_celltypes      = n_distinct(celltype),
+    total_cells      = sum(n_cells),
+    dominant_ct      = celltype[which.max(n_cells)],
+    dominant_pct     = paste0(round(max(frac_cells) * 100, 1), "%"),
+    immune_pct       = paste0(round(sum(frac_cells[grepl("^(B cell|T cell|CD[48] T cell|NK|NKT|MNP|Plasma|Plasmacytoid|Mast)", celltype, ignore.case = TRUE)]) * 100, 1), "%"),
+    n_bcells         = sum(n_cells[celltype == bcell_label]),
+    .groups = "drop"
+  ) %>%
+  arrange(treatment, timepoint, sample_id)
+
+kable(annot_summary,
+      col.names = c("Sample", "Treatment", "Timepoint", "Profile",
+                    "N celltypes", "Total cells", "Dominant celltype",
+                    "Dominant %", "Immune %", "B cells (n)"),
+      caption = "Cell-type annotation summary per sample")
+
+# Celltype x sample composition matrix as percentages. Useful for spotting differential celltype representation across treatment arms.
+annot_matrix <- annot_df %>%
+  mutate(pct = round(frac_cells * 100, 1)) %>%
+  select(sample_id, celltype, pct) %>%
+  tidyr::pivot_wider(names_from = sample_id, values_from = pct, values_fill = 0) %>%
+  arrange(celltype)
+
+kable(annot_matrix, caption = "Cell-type composition matrix (% of cells per sample)")
+
+# B-cell zoom for the focus story: counts per sample sorted by treatment + timepoint.
+annot_df %>%
+  filter(celltype == bcell_label) %>%
+  select(sample_id, treatment, timepoint, n_cells, frac_cells) %>%
+  mutate(frac_cells = scales::percent(frac_cells, accuracy = 0.01)) %>%
+  arrange(treatment, timepoint, sample_id) %>%
+  kable(col.names = c("Sample", "Treatment", "Timepoint", "B cells (n)", "B cells (%)"),
+        caption = paste0("'", bcell_label, "' counts per sample"))
 ```
 
 # 5. Markers
