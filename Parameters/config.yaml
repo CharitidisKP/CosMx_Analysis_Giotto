@@ -283,7 +283,7 @@ spatial_de:
   sample_contrast: "one_vs_rest"
   smide_family: "nbinom2"
   smide_radius: 50                         # microns, cell-cell proximity cutoff
-  smide_ncores: 4                          # only consumed by smiDE::smi_de(nCores=)
+  smide_ncores: 1                          # only consumed by smiDE::smi_de(nCores=); multi-core fork crashes glmmTMB/TMB under multi-threaded BLAS
   smide_inner_workers: 1                   # reserved for the per-cell-type parallel refactor
   smide_overlap_threshold: 0.8             # 1 = disabled, lower = stricter cross-cell contamination filter
   smide_annotation_subset: null            # legacy filter, used only when stratify_by is empty
