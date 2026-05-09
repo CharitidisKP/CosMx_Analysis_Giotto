@@ -109,7 +109,7 @@ sample_display_prefix <- function(sample_row, sample_id_fallback = NULL) {
   }
 
   tp_label <- switch(as.character(tp),
-                     "T0"  = "Before treatment",
+                     "T0"  = "Baseline",
                      "T06" = "After treatment",
                      "T12" = "After treatment",
                      "")
@@ -124,7 +124,7 @@ sample_display_prefix <- function(sample_row, sample_id_fallback = NULL) {
   s_tag <- NA_character_
   if (!is.na(pid)) {
     m <- regmatches(pid, regexec("_pt(\\d+)$", pid))[[1]]
-    if (length(m) == 2L) s_tag <- paste0("S", m[2])
+    if (length(m) == 2L) s_tag <- paste0("Sample ", m[2])
   }
 
   if (grp_label == "Healthy Control") {

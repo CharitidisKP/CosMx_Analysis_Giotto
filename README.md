@@ -174,6 +174,7 @@ not documented here until the merged side is fixed (ETA: Eventually).
 | `--split` | flag | Expand composite slides into per-subsample runs (**default**) |
 | `--no-split` | flag | Composite-view: keep CART rows as one whole-slide sample |
 | `--config` | path | Override config file path |
+| `--overwrite` | flag | Regenerate existing per-step checkpoints and section outputs (CCI / smiDE CSVs); default behaviour skips anything already on disk |
 | `--dry-run` | flag | Print resolved plan without executing |
 
 ---
