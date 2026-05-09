@@ -184,7 +184,7 @@ kable(qc_df, caption = "Per-sample QC metrics")
 
 # 3. Clustering
 
-```{r clustering}
+```{r clustering, results = "asis"}
 clust_df <- samples_df %>%
   filter(!is.na(sample_dir)) %>%
   pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
@@ -212,19 +212,25 @@ clust_summary <- clust_df %>%
   ) %>%
   arrange(treatment, timepoint, sample_id)
 
-kable(clust_summary,
-      col.names = c("Sample", "Treatment", "Timepoint",
-                    "N clusters", "Total cells",
-                    "Largest cluster", "Smallest cluster", "Median cluster size"),
-      caption = "Leiden clustering summary per sample")
+print(kable(clust_summary,
+            col.names = c("Sample", "Treatment", "Timepoint",
+                          "N clusters", "Total cells",
+                          "Largest cluster", "Smallest cluster", "Median cluster size"),
+            caption = "Leiden clustering summary per sample"))
 
-# Representative per-cluster breakdown for one sample (CART_T0_S1 by default). Edit the filter to inspect any other sample without dumping all rows for all samples.
-clust_df %>%
-  filter(sample_id == "CART_T0_S1") %>%
-  select(sample_id, leiden_clust, n_cells, frac_cells) %>%
-  mutate(frac_cells = scales::percent(frac_cells, accuracy = 0.1)) %>%
-  kable(col.names = c("Sample", "Leiden cluster", "N cells", "Fraction"),
-        caption = "Cluster breakdown - CART Sample 1 Baseline (representative)")
+# Per-sample cluster breakdown. Order matches the summary table (treatment then timepoint then sample_id) so paired CART vs Conv at matching timepoints sit adjacent.
+sample_order <- clust_summary$sample_id
+for (sid in sample_order) {
+  cat("\n\n#### Cluster breakdown - ", sid, "\n\n", sep = "")
+  print(kable(
+    clust_df %>%
+      filter(sample_id == sid) %>%
+      select(sample_id, leiden_clust, n_cells, frac_cells) %>%
+      mutate(frac_cells = scales::percent(frac_cells, accuracy = 0.1)),
+    col.names = c("Sample", "Leiden cluster", "N cells", "Fraction"),
+    caption = paste0("Leiden cluster sizes - ", sid)
+  ))
+}
 ```
 
 # 4. Annotation
@@ -261,6 +267,9 @@ annot_df <- samples_df %>%
     path <- if (identical(kind, "supervised")) sup else if (identical(kind, "semi")) sem else NA_character_
     df <- read_csv_safe(path)
     if (is.null(df)) return(NULL)
+    # Pipeline writes the celltype column as "celltype_<profile>_<kind>" (e.g. celltype_HCA_Kidney_supervised). Rename to bare "celltype" so downstream summaries do not need to know the active profile name.
+    ct_col <- grep("^celltype_", names(df), value = TRUE)[1]
+    if (!is.na(ct_col)) df <- df %>% rename(celltype = !!ct_col)
     df %>%
       mutate(frac_cells = n_cells / sum(n_cells),
              sample_id = sample_id, treatment = treatment, timepoint = timepoint,
