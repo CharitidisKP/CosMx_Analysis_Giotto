@@ -762,7 +762,9 @@ coerce_smide_results_table <- function(res_obj) {
       })
       out <- out[!vapply(out, is.null, logical(1))]
       if (length(out) == 0L) return(NULL)
-      return(do.call(rbind, out))
+      # Use rbindlist with fill=TRUE because smiDE comparison families have different column structures (pairwise/one.vs.rest/one.vs.all carry ~18 contrast cols, emmeans carries ~11 estimate cols). do.call(rbind) errors on column mismatch.
+      combined <- data.table::rbindlist(out, fill = TRUE, use.names = TRUE)
+      return(as.data.frame(combined, stringsAsFactors = FALSE))
     }
   }
 
