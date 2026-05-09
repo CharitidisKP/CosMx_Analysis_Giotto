@@ -376,8 +376,8 @@ clean_plot_text <- function(x) {
   not_na <- !is.na(out)
   # Replace underscores and dots with a space, collapse any em dashes to hyphen.
   out[not_na] <- gsub("[_.]+", " ", out[not_na], perl = TRUE)
-  out[not_na] <- gsub("—", "-", out[not_na], fixed = TRUE)  # em dash
-  out[not_na] <- gsub("–", "-", out[not_na], fixed = TRUE)  # en dash
+  out[not_na] <- gsub(",", "-", out[not_na], fixed = TRUE)  # em dash
+  out[not_na] <- gsub("-", "-", out[not_na], fixed = TRUE)  # en dash
   out[not_na] <- gsub("\\s+", " ", out[not_na], perl = TRUE)
   out[not_na] <- trimws(out[not_na])
   out

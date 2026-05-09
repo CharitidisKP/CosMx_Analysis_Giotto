@@ -14,8 +14,8 @@
 #   ./Run_Giotto_Pipeline.sh --overwrite       # regenerate existing checkpoints
 #                                              #  + section outputs (default skips them)
 #   ./Run_Giotto_Pipeline.sh --merged          # ALSO run the cross-sample merged
-#                                              #  pipeline (merge → Harmony → cross-
-#                                              #  sample DE → pathway). Default mode
+#                                              #  pipeline (merge -> Harmony -> cross-
+#                                              #  sample DE -> pathway). Default mode
 #                                              #  is per-sample only. Auto-skips if
 #                                              #  fewer than 2 samples are selected.
 #
@@ -33,7 +33,7 @@
 # patient labels at the cell level, which only exist when the CART composite
 # is split into its 4 biopsies. --no-split is an alternative escape hatch
 # (CART_composite + Control + 4 Conv = 6 samples) for the rare case you want
-# a composite-view overview UMAP — not the regular run.
+# a composite-view overview UMAP, not the regular run.
 #
 # Sample selection rules:
 #   - `include` column in sample_sheet.csv is the default on/off switch.
@@ -55,7 +55,7 @@
 #                   Default: $PROJECT_DIR/Scripts/Parameters/config.yaml
 #   R_LIBS_USER     R library path inside the container. Leave UNSET to let
 #                   renv activate from $PROJECT_DIR/.Rprofile (the standard
-#                   path — packages live in $PROJECT_DIR/renv/library/).
+#                   path, packages live in $PROJECT_DIR/renv/library/).
 #                   Only set this if you have a non-renv setup.
 #   COSMX_PYTHON_PATH
 #                   Python interpreter for reticulate/InSituType.
@@ -73,7 +73,7 @@ CONFIG="${CONFIG:-$PROJECT_DIR/Scripts/Parameters/config.yaml}"
 TMPDIR_HOST="${TMPDIR_HOST:-$PROJECT_DIR/tmp}"
 # renv (in $PROJECT_DIR/renv) handles the library path via .Rprofile when
 # Rscript is started from $PROJECT_DIR. Only honour an externally-set
-# R_LIBS_USER (advanced override); do NOT default to one — that bypasses renv.
+# R_LIBS_USER (advanced override); do NOT default to one, that bypasses renv.
 R_LIBS_USER="${R_LIBS_USER:-}"
 COSMX_PYTHON_PATH="${COSMX_PYTHON_PATH:-$HOME/anaconda3/envs/giotto_Py_3_11/bin/python3}"
 
@@ -101,7 +101,7 @@ if [[ ! -x "$COSMX_PYTHON_PATH" ]]; then
   exit 1
 fi
 if [[ "$COSMX_PYTHON_PATH" == "/usr/bin/python3" ]]; then
-  echo "WARNING: COSMX_PYTHON_PATH=/usr/bin/python3 — this is the system python," >&2
+  echo "WARNING: COSMX_PYTHON_PATH=/usr/bin/python3, this is the system python," >&2
   echo "  which usually lacks umap/igraph/leidenalg. Giotto dim-reduction and" >&2
   echo "  clustering will fail. Check 'env | grep -i python' and your shell rc." >&2
 fi
@@ -289,7 +289,7 @@ fi
 # Clean up temp files after pipeline completes or fails
 echo "Cleaning up temporary files..."
 rm -rf "$TMPDIR_HOST"/*
-echo "✓ Temp files cleared"
+echo "OK Temp files cleared"
 
 echo ""
 echo "================================================"

@@ -178,7 +178,7 @@ if ((!exists("presentation_theme") ||
 }
 
 # ==============================================================================
-# MSigDB gene-set loader - returns per-database "by_id" list (pathway_id →
+# MSigDB gene-set loader - returns per-database "by_id" list (pathway_id ->
 # gene SYMBOL vector) plus a $meta data frame with collection / subcollection
 # / description for each pathway ID. Uses the msigdbr CRAN package.
 # ==============================================================================
@@ -217,7 +217,7 @@ if ((!exists("presentation_theme") ||
                            subcategory = sub)
         },
         error = function(e) {
-          cat("⚠ msigdbr(", coll,
+          cat("Warning: msigdbr(", coll,
               if (!is.null(sub)) paste0(",", sub) else "",
               ") failed: ", conditionMessage(e), "\n", sep = "")
           NULL
@@ -228,7 +228,7 @@ if ((!exists("presentation_theme") ||
       id_col <- if ("gs_name" %in% names(df)) "gs_name" else "standard_name"
       sym_col <- if ("gene_symbol" %in% names(df)) "gene_symbol" else "human_gene_symbol"
       if (!id_col %in% names(df) || !sym_col %in% names(df)) {
-        cat("⚠ Unexpected msigdbr output for ", coll, ":",
+        cat("Warning: Unexpected msigdbr output for ", coll, ":",
             sub %||% "", " - skipping\n", sep = "")
         next
       }
@@ -248,7 +248,7 @@ if ((!exists("presentation_theme") ||
                             meta$subcollection[i], meta$description[i])
       }, character(1))
       out[[db_key]] <- list(by_id = by_id, meta = meta, tests = tests)
-      cat("  ✓ Loaded ", length(by_id), " gene sets for ", db_key,
+      cat("  OK Loaded ", length(by_id), " gene sets for ", db_key,
           " [group=", group, ", tests=", paste(tests, collapse = "+"), "]\n",
           sep = "")
     }
@@ -272,7 +272,7 @@ if ((!exists("presentation_theme") ||
   for (key in names(filter_spec)) {
     want <- as.character(filter_spec[[key]])
     if (!key %in% names(meta)) {
-      cat("  ⚠ Comparison filter key '", key,
+      cat("  Warning: Comparison filter key '", key,
           "' not found in cell metadata; treating as mismatch\n", sep = "")
       return(rep(FALSE, nrow(meta)))
     }
@@ -313,10 +313,10 @@ if ((!exists("presentation_theme") ||
 #
 # Default engine = pseudobulk + DESeq2 with per-comparison design taken from
 # the `design:` field of each pathway.comparisons entry in config.yaml:
-#   - "paired"      → ~ <block_col> + de_group  (block_col defaults to
+#   - "paired"      -> ~ <block_col> + de_group  (block_col defaults to
 #                     patient_id; CART/Conv before-vs-after)
-#   - "unpaired"    → ~ de_group              (CART vs Conv at each timepoint)
-#   - "descriptive" → no model; emit log2FC of pseudobulk means + flag
+#   - "unpaired"    -> ~ de_group              (CART vs Conv at each timepoint)
+#   - "descriptive" -> no model; emit log2FC of pseudobulk means + flag
 #                     inference="none"  (CART vs Control - n=1 Control side,
 #                     no estimable Control variance)
 #
@@ -423,7 +423,7 @@ if ((!exists("presentation_theme") ||
   # Descriptive degrade - either by request or by replicate floor.
   if (design_kind == "descriptive" || n_a < min_reps || n_b < min_reps) {
     if (design_kind != "descriptive") {
-      cat("    ⚠ only ", n_a, "/", n_b, " replicates per side ",
+      cat("    Warning: only ", n_a, "/", n_b, " replicates per side ",
           "(< de_min_pseudobulk_per_group=", min_reps,
           "); degrading to descriptive\n", sep = "")
     }
@@ -444,7 +444,7 @@ if ((!exists("presentation_theme") ||
       }
     }
     if (!has_block) {
-      cat("    ⚠ paired design requested but block column '", block_col,
+      cat("    Warning: paired design requested but block column '", block_col,
           "' is unusable; falling back to unpaired ~ de_group\n", sep = "")
       design_kind <- "unpaired"
     }
@@ -485,14 +485,14 @@ if ((!exists("presentation_theme") ||
                                    colData   = pb_meta,
                                    design    = design_formula),
     error = function(e) {
-      cat("    ⚠ DESeq2 setup failed: ", conditionMessage(e), "\n", sep = "")
+      cat("    Warning: DESeq2 setup failed: ", conditionMessage(e), "\n", sep = "")
       NULL
     })
   if (is.null(dds)) return(NULL)
 
   dds <- tryCatch(DESeq2::DESeq(dds, quiet = TRUE),
                   error = function(e) {
-                    cat("    ⚠ DESeq2 fit failed: ", conditionMessage(e),
+                    cat("    Warning: DESeq2 fit failed: ", conditionMessage(e),
                         "\n", sep = "")
                     NULL
                   })
@@ -506,7 +506,7 @@ if ((!exists("presentation_theme") ||
       coef_names <- DESeq2::resultsNames(dds)
       grp_coef <- grep("de_group", coef_names, value = TRUE)[1]
       if (is.na(grp_coef)) {
-        cat("    ⚠ no de_group coefficient in DESeq2 results: ",
+        cat("    Warning: no de_group coefficient in DESeq2 results: ",
             paste(coef_names, collapse = ", "), "\n", sep = "")
         return(NULL)
       }
@@ -604,7 +604,7 @@ if ((!exists("presentation_theme") ||
   v <- tryCatch(
     limma::voomWithQualityWeights(y, design = design_formula, plot = FALSE),
     error = function(e) {
-      cat("    ⚠ voomWithQualityWeights failed (",
+      cat("    Warning: voomWithQualityWeights failed (",
           conditionMessage(e), "); falling back to plain voom.\n", sep = "")
       limma::voom(y, design = design_formula, plot = FALSE)
     }
@@ -617,7 +617,7 @@ if ((!exists("presentation_theme") ||
       coef_names <- colnames(fit$coefficients)
       grp_coef <- grep("de_group", coef_names, value = TRUE)[1]
       if (is.na(grp_coef)) {
-        cat("    ⚠ no de_group coefficient in limma fit: ",
+        cat("    Warning: no de_group coefficient in limma fit: ",
             paste(coef_names, collapse = ", "), "\n", sep = "")
         return(NULL)
       }
@@ -649,7 +649,7 @@ if ((!exists("presentation_theme") ||
 # Spearman drops below `spearman_threshold` (default 0.9). Non-blocking.
 #
 # Useful as a one-time check that DESeq2 / edgeR-QLF / limma-voom agree on
-# the ranking — Squair et al. 2021 reported they should agree closely on
+# the ranking, Squair et al. 2021 reported they should agree closely on
 # pseudobulk count data; large deviations indicate a borderline stratum or
 # implementation bug worth investigating offline.
 .pathway_run_de_sensitivity_check <- function(raw_mat, norm_mat, cell_meta,
@@ -671,7 +671,7 @@ if ((!exists("presentation_theme") ||
       .pathway_run_de(raw_mat, norm_mat, cell_meta,
                       ids_a, ids_b, spec_clone, cfg_clone),
       error = function(e) {
-        cat("    ⚠ ", be, " failed: ", conditionMessage(e), "\n", sep = "")
+        cat("    Warning: ", be, " failed: ", conditionMessage(e), "\n", sep = "")
         NULL
       }
     )
@@ -681,7 +681,7 @@ if ((!exists("presentation_theme") ||
     }
   }
   if (length(per_backend) < 2L) {
-    cat("    ⚠ sensitivity check needs ≥ 2 successful backends; only ",
+    cat("    Warning: sensitivity check needs ≥ 2 successful backends; only ",
         length(per_backend), " produced output.\n", sep = "")
     return(invisible(NULL))
   }
@@ -692,7 +692,7 @@ if ((!exists("presentation_theme") ||
     wide <- merge(wide, per_backend[[i]], by = "gene", all = TRUE)
   }
   utils::write.csv(wide, output_path, row.names = FALSE)
-  cat("    ✓ wrote ", output_path, "\n", sep = "")
+  cat("    OK wrote ", output_path, "\n", sep = "")
 
   # Pairwise Spearman.
   bk_cols <- grep("^logFC_", names(wide), value = TRUE)
@@ -708,8 +708,8 @@ if ((!exists("presentation_theme") ||
     }
     off_diag <- cor_mat[lower.tri(cor_mat)]
     if (any(off_diag < spearman_threshold, na.rm = TRUE)) {
-      cat("    ⚠ at least one pairwise Spearman < ", spearman_threshold,
-          " — backends disagree on this stratum. ",
+      cat("    Warning: at least one pairwise Spearman < ", spearman_threshold,
+          ", backends disagree on this stratum. ",
           "Inspect ", output_path, " offline.\n", sep = "")
     }
   }
@@ -809,7 +809,7 @@ if ((!exists("presentation_theme") ||
   wx <- tryCatch(
     presto::wilcoxauc(sub_expr, y = y),
     error = function(e) {
-      cat("  ⚠ presto::wilcoxauc error: ", conditionMessage(e), "\n",
+      cat("  Warning: presto::wilcoxauc error: ", conditionMessage(e), "\n",
           sep = "")
       NULL
     })
@@ -875,7 +875,7 @@ if ((!exists("presentation_theme") ||
         eps       = 0
       )),
       error = function(e) {
-        cat("  ⚠ fgsea error for ", db_key, ": ", conditionMessage(e),
+        cat("  Warning: fgsea error for ", db_key, ": ", conditionMessage(e),
             "\n", sep = "")
         NULL
       }
@@ -943,7 +943,7 @@ if ((!exists("presentation_theme") ||
           qvalueCutoff  = 1
         ),
         error = function(e) {
-          cat("  ⚠ enricher error for ", db_key, " (", direction, "): ",
+          cat("  Warning: enricher error for ", db_key, " (", direction, "): ",
               conditionMessage(e), "\n", sep = "")
           NULL
         }
@@ -998,7 +998,7 @@ if ((!exists("presentation_theme") ||
           minsize = 5
         ),
         error = function(e) {
-          cat("  ⚠ decoupleR::run_mlm failed: ", conditionMessage(e),
+          cat("  Warning: decoupleR::run_mlm failed: ", conditionMessage(e),
               "\n", sep = "")
           NULL
         }
@@ -1030,7 +1030,7 @@ if ((!exists("presentation_theme") ||
       progeny::progeny(as.matrix(expr_mat), scale = TRUE,
                        organism = "Human", top = top_n_genes, perm = 1),
       error = function(e) {
-        cat("  ⚠ progeny::progeny failed: ", conditionMessage(e),
+        cat("  Warning: progeny::progeny failed: ", conditionMessage(e),
             "\n", sep = "")
         NULL
       }
@@ -1279,7 +1279,7 @@ if ((!exists("presentation_theme") ||
     TRUE
   }, error = function(e) {
     try(grDevices::dev.off(), silent = TRUE)
-    cat("  ⚠ upset plot error: ", conditionMessage(e), "\n", sep = "")
+    cat("  Warning: upset plot error: ", conditionMessage(e), "\n", sep = "")
     FALSE
   })
   if (isTRUE(ok)) outfile else NULL
@@ -1306,7 +1306,7 @@ if ((!exists("presentation_theme") ||
     agg[, s] <- rowMeans(sub_expr[, cells_s, drop = FALSE], na.rm = TRUE)
   }
   if (!requireNamespace("pheatmap", quietly = TRUE)) {
-    cat("  ⚠ pheatmap missing; skipping leading-edge plot for ",
+    cat("  Warning: pheatmap missing; skipping leading-edge plot for ",
         pathway_id, "\n", sep = "")
     return(NULL)
   }
@@ -1330,7 +1330,7 @@ if ((!exists("presentation_theme") ||
     TRUE
   }, error = function(e) {
     try(grDevices::dev.off(), silent = TRUE)
-    cat("  ⚠ leading-edge heatmap error: ", conditionMessage(e), "\n",
+    cat("  Warning: leading-edge heatmap error: ", conditionMessage(e), "\n",
         sep = "")
     FALSE
   })
@@ -1343,7 +1343,7 @@ if ((!exists("presentation_theme") ||
                                            height = 10) {
   if (is.null(poly_df) || is.null(progeny_mat)) return(NULL)
   if (!requireNamespace("patchwork", quietly = TRUE)) {
-    cat("  ⚠ patchwork missing; skipping PROGENy polygon grid\n")
+    cat("  Warning: patchwork missing; skipping PROGENy polygon grid\n")
     return(NULL)
   }
   pathways <- colnames(progeny_mat)
@@ -1384,7 +1384,7 @@ if ((!exists("presentation_theme") ||
                     dpi = 150)
     TRUE
   }, error = function(e) {
-    cat("  ⚠ PROGENy polygon save failed: ", conditionMessage(e),
+    cat("  Warning: PROGENy polygon save failed: ", conditionMessage(e),
         "\n", sep = "")
     FALSE
   })
@@ -1447,7 +1447,7 @@ if ((!exists("presentation_theme") ||
       magick::image_write(combined, out_pdf, format = "pdf")
       TRUE
     }, error = function(e) {
-      cat("  ⚠ magick PDF build failed: ", conditionMessage(e), "\n",
+      cat("  Warning: magick PDF build failed: ", conditionMessage(e), "\n",
           sep = "")
       FALSE
     })
@@ -1468,7 +1468,7 @@ if ((!exists("presentation_theme") ||
     TRUE
   }, error = function(e) {
     try(grDevices::dev.off(), silent = TRUE)
-    cat("  ⚠ PDF fallback failed: ", conditionMessage(e), "\n",
+    cat("  Warning: PDF fallback failed: ", conditionMessage(e), "\n",
         sep = "")
     FALSE
   })
@@ -1507,7 +1507,7 @@ if ((!exists("presentation_theme") ||
   add <- st[match(as.character(meta$sample_id), as.character(st$sample_id)),
             need, drop = FALSE]
   meta <- cbind(meta, add)
-  cat("  ℹ Injected ", length(need),
+  cat("  Info: Injected ", length(need),
       " sample-level column(s) into cell metadata: ",
       paste(need, collapse = ", "), "\n", sep = "")
   meta
@@ -1518,7 +1518,7 @@ if ((!exists("presentation_theme") ||
 # ==============================================================================
 # Runs cluster + celltype one-vs-rest GSEA on a single per-sample Giotto
 # object. Inline scran::findMarkers is used unconditionally for the ranked
-# gene list — step 06's cluster_markers.csv writes only top-N and is
+# gene list, step 06's cluster_markers.csv writes only top-N and is
 # insufficient for GSEA.
 #
 # Output structure:
@@ -1537,11 +1537,11 @@ if ((!exists("presentation_theme") ||
                                       leiden_column = "leiden_clust") {
   scope_cfg <- cfg_p$sample_scope %||% list()
   if (!isTRUE(scope_cfg$enabled %||% TRUE)) {
-    cat("  pathway.sample_scope.enabled is FALSE — skipping sample-scope step 13.\n")
+    cat("  pathway.sample_scope.enabled is FALSE, skipping sample-scope step 13.\n")
     return(invisible(list(status = "disabled")))
   }
   if (!requireNamespace("scran", quietly = TRUE)) {
-    cat("  ⚠ scran not installed — skipping sample-scope GSEA.\n")
+    cat("  Warning: scran not installed, skipping sample-scope GSEA.\n")
     return(invisible(NULL))
   }
 
@@ -1551,7 +1551,7 @@ if ((!exists("presentation_theme") ||
   norm_mat <- tryCatch(.pathway_get_expression(gobj, values = "normalized"),
                        error = function(e) NULL)
   if (is.null(norm_mat)) {
-    cat("  ⚠ No normalized expression — skipping sample-scope GSEA.\n")
+    cat("  Warning: No normalized expression, skipping sample-scope GSEA.\n")
     return(invisible(NULL))
   }
   cell_ids <- as.character(meta$cell_ID)
@@ -1577,13 +1577,13 @@ if ((!exists("presentation_theme") ||
                         celltype = celltype_column,
                         NA_character_)
     if (is.na(strat_col) || !strat_col %in% names(meta)) {
-      cat("  [", st, "] stratifier column missing — skipped.\n", sep = "")
+      cat("  [", st, "] stratifier column missing, skipped.\n", sep = "")
       next
     }
     grp <- as.factor(meta[[strat_col]])
     if (nlevels(grp) < 2L) {
       cat("  [", st, "] only ", nlevels(grp),
-          " level(s) — skipped.\n", sep = "")
+          " level(s), skipped.\n", sep = "")
       next
     }
     cat("  [", st, "] running scran::findMarkers on ", nlevels(grp),
@@ -1594,7 +1594,7 @@ if ((!exists("presentation_theme") ||
         direction = "up", pval.type = "any"
       ),
       error = function(e) {
-        cat("    ⚠ findMarkers failed: ", conditionMessage(e), "\n", sep = "")
+        cat("    Warning: findMarkers failed: ", conditionMessage(e), "\n", sep = "")
         NULL
       }
     )
@@ -1630,7 +1630,7 @@ if ((!exists("presentation_theme") ||
       gsea_df <- tryCatch(
         .pathway_run_gsea(de, genesets_by_db, cfg_p),
         error = function(e) {
-          cat("    ⚠ GSEA failed for ", lvl, ": ",
+          cat("    Warning: GSEA failed for ", lvl, ": ",
               conditionMessage(e), "\n", sep = "")
           NULL
         }
@@ -1706,7 +1706,7 @@ if ((!exists("presentation_theme") ||
     }
   }
 
-  cat("✓ Per-sample pathway scope complete (",
+  cat("OK Per-sample pathway scope complete (",
       length(written), " strata × pathways tables).\n", sep = "")
   invisible(list(status = "ok", written = written, output = out_root))
 }
@@ -1717,7 +1717,7 @@ if ((!exists("presentation_theme") ||
 # Consumes per-sample celltype GSEA outputs and runs paired Wilcoxon
 # (or limma for interaction terms) per (pathway × celltype × comparison)
 # on per-patient NES deltas. Cluster stratification is intentionally NOT
-# supported here — cluster IDs aren't comparable across samples.
+# supported here, cluster IDs aren't comparable across samples.
 #
 # Toggle: cfg$pathway$paired_gsea_scores$enabled (default false).
 .pathway_paired_gsea_scores <- function(merged_output_dir, output_root,
@@ -1729,7 +1729,7 @@ if ((!exists("presentation_theme") ||
     file.path(cfg$paths$output_dir, "Sample_{sample_id}", "13_Pathway_Sample",
               "celltype")
   if (is.null(sample_table) || nrow(sample_table) == 0L) {
-    cat("  [paired GSEA] sample_table missing — sub-step skipped.\n")
+    cat("  [paired GSEA] sample_table missing, sub-step skipped.\n")
     return(invisible(NULL))
   }
 
@@ -1741,7 +1741,7 @@ if ((!exists("presentation_theme") ||
     label <- cp$label %||% "<unnamed>"
     design_kind <- cp$design %||% "unpaired"
     if (design_kind == "descriptive") {
-      cat("  [", label, "] descriptive — skipped.\n", sep = "")
+      cat("  [", label, "] descriptive, skipped.\n", sep = "")
       next
     }
     block_col <- cp$block %||% "patient_id"
@@ -1763,7 +1763,7 @@ if ((!exists("presentation_theme") ||
     sb <- pick(cp$group_b)
     samples <- c(sa, sb)
     if (length(sa) == 0L || length(sb) == 0L) {
-      cat("  [", label, "] group_a/group_b empty — skipped.\n", sep = "")
+      cat("  [", label, "] group_a/group_b empty, skipped.\n", sep = "")
       next
     }
 
@@ -1789,7 +1789,7 @@ if ((!exists("presentation_theme") ||
       }
     }
     if (length(nes_per_celltype) == 0L) {
-      cat("  [", label, "] no per-sample celltype outputs found — skipped.\n",
+      cat("  [", label, "] no per-sample celltype outputs found, skipped.\n",
           sep = "")
       next
     }
@@ -1862,7 +1862,7 @@ if ((!exists("presentation_theme") ||
     }
 
     if (length(rows) == 0L) {
-      cat("  [", label, "] no testable pathways — sub-step skipped.\n",
+      cat("  [", label, "] no testable pathways, sub-step skipped.\n",
           sep = "")
       next
     }
@@ -1870,7 +1870,7 @@ if ((!exists("presentation_theme") ||
     out_df$padj <- stats::p.adjust(out_df$p, method = "BH")
     out_path <- file.path(out_dir, "paired_gsea_scores.csv")
     utils::write.csv(out_df, out_path, row.names = FALSE)
-    cat("  ✓ [", label, "] wrote ", nrow(out_df), " rows: ",
+    cat("  OK [", label, "] wrote ", nrow(out_df), " rows: ",
         out_path, "\n", sep = "")
   }
   invisible(NULL)
@@ -1900,7 +1900,7 @@ run_pathway_analysis <- function(gobj,
 
   cfg_p <- cfg$pathway
   if (is.null(cfg_p) || !isTRUE(cfg_p$enabled)) {
-    cat("⚠ pathway.enabled is FALSE or the pathway: block is missing. ",
+    cat("Warning: pathway.enabled is FALSE or the pathway: block is missing. ",
         "Nothing to run.\n", sep = "")
     return(invisible(list(status = "disabled")))
   }
@@ -1922,7 +1922,7 @@ run_pathway_analysis <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n")
+    cat("OK Loaded\n")
   }
 
   # patient_id is required for paired DE designs (CART/Conv before-vs-after).
@@ -1943,7 +1943,7 @@ run_pathway_analysis <- function(gobj,
   }
   leiden_column <- leiden_column %||% cfg_p$leiden_column %||% "leiden_clust"
   if (!leiden_column %in% names(meta)) {
-    cat("⚠ Leiden column '", leiden_column,
+    cat("Warning: Leiden column '", leiden_column,
         "' not in metadata - will skip cluster stratification\n", sep = "")
     leiden_column <- NA_character_
   }
@@ -1961,7 +1961,7 @@ run_pathway_analysis <- function(gobj,
     min_cells <- cfg_p$min_cells_per_stratum %||% 30
     ok <- cp$n_a >= min_cells && cp$n_b >= min_cells
     if (!ok) {
-      cat("⚠ Comparison '", cp$label,
+      cat("Warning: Comparison '", cp$label,
           "' skipped: groups too small (A=", cp$n_a,
           ", B=", cp$n_b, ")\n", sep = "")
     }
@@ -1979,19 +1979,19 @@ run_pathway_analysis <- function(gobj,
   expr_mat <- .pathway_get_expression(gobj, values = "normalized",
                                       output = "matrix")
   expr_mat <- as.matrix(expr_mat)
-  cat("✓ Normalized matrix : ", paste(dim(expr_mat), collapse = " x "),
+  cat("OK Normalized matrix : ", paste(dim(expr_mat), collapse = " x "),
       "\n", sep = "")
 
   raw_mat <- tryCatch(
     .pathway_get_expression(gobj, values = "raw", output = "matrix"),
     error = function(e) {
-      cat("⚠ Raw counts not available on merged object: ", conditionMessage(e),
+      cat("Warning: Raw counts not available on merged object: ", conditionMessage(e),
           "\n  Falling back to presto_wilcox engine for DE.\n", sep = "")
       NULL
     })
   if (!is.null(raw_mat)) {
     raw_mat <- as.matrix(raw_mat)
-    cat("✓ Raw counts matrix : ", paste(dim(raw_mat), collapse = " x "),
+    cat("OK Raw counts matrix : ", paste(dim(raw_mat), collapse = " x "),
         "\n", sep = "")
   } else {
     # Force the legacy engine for the rest of this run if raw counts are
@@ -2348,7 +2348,7 @@ run_pathway_analysis <- function(gobj,
         if (!is.null(p11)) bcell_plot_paths <- c(bcell_plot_paths, p11)
       }
     } else {
-      cat("  ⚠ PROGENy scores unavailable (no decoupleR/progeny?); ",
+      cat("  Warning: PROGENy scores unavailable (no decoupleR/progeny?); ",
           "skipping P10/P11\n", sep = "")
     }
   }
@@ -2358,10 +2358,10 @@ run_pathway_analysis <- function(gobj,
     merged_df <- do.call(rbind, all_results)
     utils::write.csv(merged_df, file.path(out_root, "_all_results_merged.csv"),
                      row.names = FALSE)
-    cat("✓ Wrote merged results: ",
-        nrow(merged_df), " rows → _all_results_merged.csv\n", sep = "")
+    cat("OK Wrote merged results: ",
+        nrow(merged_df), " rows -> _all_results_merged.csv\n", sep = "")
   } else {
-    cat("⚠ No enrichment results produced - merged CSV skipped\n")
+    cat("Warning: No enrichment results produced - merged CSV skipped\n")
   }
 
   # ---------- P12 : B-cell PDF ----------
@@ -2370,7 +2370,7 @@ run_pathway_analysis <- function(gobj,
     dir.create(dirname(pdf_out), recursive = TRUE, showWarnings = FALSE)
     .pathway_build_pdf(bcell_plot_paths, pdf_out,
                        title = "B-cell pathway summary")
-    cat("✓ Wrote B-cell PDF: ", pdf_out, "\n", sep = "")
+    cat("OK Wrote B-cell PDF: ", pdf_out, "\n", sep = "")
   }
 
   # ---------- Paired GSEA-score sub-step (Stage 1, Phase 9; default off) ----
@@ -2388,15 +2388,15 @@ run_pathway_analysis <- function(gobj,
       sample_table      = sample_table
     )
   }, error = function(e) {
-    cat("⚠ Paired GSEA-score sub-step failed (non-fatal): ",
+    cat("Warning: Paired GSEA-score sub-step failed (non-fatal): ",
         conditionMessage(e), "\n", sep = "")
   })
 
   cat("\n=== Step 13 summary ===\n")
   for (cp in valid_comparisons) {
-    cat(sprintf("  ✓ %-28s A=%d B=%d\n", cp$label, cp$n_a, cp$n_b))
+    cat(sprintf("  OK %-28s A=%d B=%d\n", cp$label, cp$n_a, cp$n_b))
   }
-  cat("\n✓ STEP 13 complete for ", sample_id, "\n\n", sep = "")
+  cat("\nOK STEP 13 complete for ", sample_id, "\n\n", sep = "")
   invisible(list(status = "ok", results = all_results,
                  bcell_plots = bcell_plot_paths))
 }

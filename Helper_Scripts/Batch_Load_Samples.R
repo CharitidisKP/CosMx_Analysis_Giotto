@@ -41,13 +41,13 @@ get_samples_smart <- function(csv_path = file.path(project_dir, "Data", "sample_
   cat("\n=== Loading Sample Information ===\n\n")
   
   if (file.exists(csv_path) && !force_detect) {
-    cat("✓ Using existing registry:", csv_path, "\n")
+    cat("OK Using existing registry:", csv_path, "\n")
     samples <- load_samples_from_csv(csv_path)
   } else {
     if (force_detect) {
-      cat("⚠ Force detect enabled\n")
+      cat("Warning: Force detect enabled\n")
     } else {
-      cat("⚠ No registry found, auto-detecting\n")
+      cat("Warning: No registry found, auto-detecting\n")
     }
     
     samples <- auto_detect_samples()
@@ -58,7 +58,7 @@ get_samples_smart <- function(csv_path = file.path(project_dir, "Data", "sample_
     
     dir.create(dirname(csv_path), recursive = TRUE, showWarnings = FALSE)
     write_csv(registry, csv_path)
-    cat("✓ Created registry:", csv_path, "\n")
+    cat("OK Created registry:", csv_path, "\n")
   }
   
   samples <- validate_samples(samples)
@@ -78,7 +78,7 @@ get_samples_smart <- function(csv_path = file.path(project_dir, "Data", "sample_
     }
   }
   
-  cat("✓ Ready to process", nrow(valid_samples), "samples\n\n")
+  cat("OK Ready to process", nrow(valid_samples), "samples\n\n")
   
   return(valid_samples)
 }
@@ -101,20 +101,20 @@ save_giotto_safe <- function(gobj, output_dir, sample_id) {
       foldername = "Giotto_Object",
       overwrite = TRUE
     )
-    cat("✓ Saved using saveGiotto\n")
+    cat("OK Saved using saveGiotto\n")
     return(TRUE)
   }, error = function(e) {
-    cat("⚠ saveGiotto failed, trying qs2 package...\n")
+    cat("Warning: saveGiotto failed, trying qs2 package...\n")
 
     # Try qs2 package (faster and handles large objects better)
     if (requireNamespace("qs2", quietly = TRUE)) {
       tryCatch({
         output_file <- file.path(output_dir, paste0(sample_id, "_cosmx_loaded.qs"))
         qs2::qs_save(gobj, output_file, compress_level = 1)
-        cat("✓ Saved using qs2 package:", output_file, "\n")
+        cat("OK Saved using qs2 package:", output_file, "\n")
         return(TRUE)
       }, error = function(e2) {
-        cat("⚠ qs2 save also failed\n")
+        cat("Warning: qs2 save also failed\n")
       })
     }
     
@@ -125,10 +125,10 @@ save_giotto_safe <- function(gobj, output_dir, sample_id) {
       old_limit <- Cstack_info()["size"]
       options(expressions = 500000)
       saveRDS(gobj, output_file, compress = "xz")
-      cat("✓ Saved as RDS:", output_file, "\n")
+      cat("OK Saved as RDS:", output_file, "\n")
       return(TRUE)
     }, error = function(e3) {
-      cat("✗ All save methods failed\n")
+      cat("FAIL All save methods failed\n")
       cat("  Error:", conditionMessage(e3), "\n")
       return(FALSE)
     })
@@ -218,7 +218,7 @@ batch_load_cosmx <- function(sample_ids = NULL,
       )
       
     }, error = function(e) {
-      cat("\n✗ ERROR:", conditionMessage(e), "\n")
+      cat("\nFAIL ERROR:", conditionMessage(e), "\n")
       list(
         status = "FAILED",
         cells = NA_integer_,
@@ -249,14 +249,14 @@ batch_load_cosmx <- function(sample_ids = NULL,
     )
     
     if (result$status == "SUCCESS") {
-      cat("\n✓✓✓ COMPLETE ✓✓✓\n")
+      cat("\nOKOKOK COMPLETE OKOKOK\n")
       cat("    Cells:", format(result$cells, big.mark = ","), 
           "| Genes:", result$genes,
           "| Polygons:", format(result$polygons, big.mark = ","),
           "| Saved:", result$saved,
           "| Time:", round(elapsed, 1), "sec\n\n")
     } else {
-      cat("\n✗✗✗ FAILED ✗✗✗\n\n")
+      cat("\nFAILFAILFAIL FAILED FAILFAILFAIL\n\n")
     }
     
     # Force garbage collection

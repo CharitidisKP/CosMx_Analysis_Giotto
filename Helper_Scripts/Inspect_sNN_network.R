@@ -363,9 +363,9 @@ inspect_nn_network <- function(gobject,
     scale_size_continuous(range = c(0.5, 3), name = "Degree") +
     scale_color_discrete(name = "Community") +
     labs(title = paste("sNN Network with Community Detection -", display_sample_label(sample_id)),
-         subtitle = paste("Showing", n_sample,
-                          "random cells, Node size = degree, Colour = community, Number of communities: ",
-                          length(unique(communities$membership)))) +
+         subtitle = sprintf("(n = %d random cells | %d communities | size = degree | colour = community)",
+                            n_sample,
+                            length(unique(communities$membership)))) +
     theme_void() +
     theme(legend.position = "none",
           # legend.position = "right",

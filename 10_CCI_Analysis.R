@@ -638,8 +638,6 @@ plot_insitucor_results <- function(cor_results,
       ggplot2::labs(
         title    = sample_plot_title(sample_id,
                      "InSituCor Gene Weights per Module"),
-        subtitle = paste0("All genes in each of the top ", n_mod,
-                          " modules (by gene count)"),
         x = NULL, y = "Weight"
       ) +
       presentation_theme(base_size = 10) +
@@ -680,8 +678,6 @@ plot_insitucor_results <- function(cor_results,
       ggplot2::scale_y_continuous(expand = ggplot2::expansion(mult = c(0, 0.4))) +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "InSituCor Modules"),
-        subtitle = paste0("Top ", nrow(top_modules),
-                          " modules by gene count, top-3 weighted genes annotated"),
         x = NULL, y = "Number of genes"
       ) +
       presentation_theme(base_size = 12)
@@ -866,9 +862,7 @@ plot_insitucor_results <- function(cor_results,
             ggplot2::coord_equal() +
             ggplot2::labs(
               title    = sample_plot_title(sample_id,
-                           paste0("InSituCor Module: ", mod_id)),
-              subtitle = paste0(length(genes_in_mod),
-                                " genes, weighted log1p aggregate expression")
+                           paste0("InSituCor Module: ", mod_id))
             ) +
             presentation_theme(base_size = 11, legend_position = "right") +
             ggplot2::theme(
@@ -1018,9 +1012,7 @@ plot_insitucor_results <- function(cor_results,
                 ggplot2::coord_equal() +
                 ggplot2::labs(
                   title    = sample_plot_title(sub_id,
-                               paste0("InSituCor Module: ", mod_id)),
-                  subtitle = paste0(length(genes_in_mod),
-                                    " genes, weighted log1p aggregate expression")
+                               paste0("InSituCor Module: ", mod_id))
                 ) +
                 presentation_theme(base_size = 11, legend_position = "right") +
                 ggplot2::theme(
@@ -1215,8 +1207,6 @@ plot_insitucor_results <- function(cor_results,
               ggplot2::labs(
                 title    = sample_plot_title(sample_id,
                              "InSituCor Modules (B-cell-ranked)"),
-                subtitle = paste0("Top ", nrow(bc_stats),
-                                  " modules by B-cell involvement"),
                 x = NULL, y = "Number of genes"
               ) +
               presentation_theme(base_size = 12)
@@ -1258,8 +1248,6 @@ plot_insitucor_results <- function(cor_results,
               ggplot2::labs(
                 title    = sample_plot_title(sample_id,
                              "InSituCor Gene Weights (B-cell-ranked)"),
-                subtitle = paste0("All genes in the top ", n_mod_b,
-                                  " B-cell-involved modules"),
                 x = NULL, y = "Weight"
               ) +
               presentation_theme(base_size = 10) +
@@ -1643,8 +1631,6 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Top Ligand-Receptor Interactions"),
-        subtitle = paste0("Top ", top_n,
-                          " interactions + best per sender (-log<sub>10</sub>, taller = more significant)"),
         x        = "Interaction (Ligand to Receptor)",
         y        = "-log<sub>10</sub>(Aggregate Rank)",
         fill     = "Sender"
@@ -1719,7 +1705,7 @@ plot_liana_extended <- function(liana_agg,
       specificity   = specificity_col,
       magnitude     = magnitude_col
     ) +
-      ggplot2::labs(title = title_text, subtitle = subtitle_text) +
+      ggplot2::labs(title = title_text) +
       presentation_theme(base_size = base_size, legend_position = "right",
                          x_angle = 45) +
       ggplot2::theme(
@@ -1815,7 +1801,7 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::scale_fill_viridis_c(option = "plasma", name = "Interactions (n)") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "Cell-Cell Interaction Heatmap"),
-        subtitle = "Number of unique L-R pairs per sender-receiver combination",
+        subtitle = "Unique L-R pairs per sender-receiver pair",
         x        = "Sender",
         y        = "Receiver"
       ) +
@@ -1894,7 +1880,7 @@ plot_liana_extended <- function(liana_agg,
       ggraph::scale_edge_alpha_continuous(range = c(0.25, 0.85), guide = "none") +
       ggraph::scale_edge_colour_discrete(guide = "none") +
       ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
-      ggplot2::labs(title = title_text, subtitle = subtitle_text) +
+      ggplot2::labs(title = title_text) +
       ggraph::theme_graph(background = "white", base_size = 11) +
       ggplot2::theme(
         plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold", size = 13,
@@ -2025,11 +2011,7 @@ plot_liana_extended <- function(liana_agg,
           ggraph::scale_edge_colour_discrete(guide = "none") +
           ggplot2::scale_size_continuous(range = c(2, 8), guide = "none") +
           ggplot2::labs(
-            title    = sample_plot_title(sample_id, "B-cell CCI Network"),
-            subtitle = paste0("All edges where ",
-                              paste(focus_celltype, collapse = "/"),
-                              " is sender or receiver, edge width proportional to ",
-                              "N significant L-R pairs")
+            title    = sample_plot_title(sample_id, "B-cell CCI Network")
           ) +
           ggraph::theme_graph(background = "white", base_size = 11) +
           ggplot2::theme(
@@ -2133,11 +2115,7 @@ plot_liana_extended <- function(liana_agg,
           ggplot2::scale_size_continuous(range = c(3, 10), guide = "none") +
           ggplot2::labs(
             title    = sample_plot_title(sample_id,
-                         "B-cell CCI Network (top interactions)"),
-            subtitle = paste0("Top ", top_n_bcell_pairs,
-                              " ", paste(focus_celltype, collapse = "/"),
-                              " L-R pairs by LIANA aggregate_rank, ",
-                              "edge width = N pairs per partner")
+                         "B-cell CCI Network (top interactions)")
           ) +
           ggraph::theme_graph(background = "white", base_size = 11) +
           ggplot2::theme(
@@ -2398,7 +2376,7 @@ plot_liana_extended <- function(liana_agg,
           title    = sample_plot_title(.title_id,
                        paste0("Spatial Expression: ",
                               ligand_gene, " \u2192 ", receptor_gene)),
-          subtitle = paste0(sender_ct, " (ligand) to ",
+          subtitle = paste0(sender_ct, " (ligand) -> ",
                             receiver_ct, " (receptor)"),
           x = "x", y = "y"
         ) +
@@ -2937,7 +2915,6 @@ plot_liana_extended <- function(liana_agg,
       ggplot2::coord_flip(clip = "off") +
       ggplot2::labs(
         title    = sample_plot_title(sample_id, "CCI Information Flow"),
-        subtitle = paste0("Top ", n_pairs, " sender-receiver pairs by total L-R interactions"),
         x        = "Sender \u2192 Receiver",
         y        = "N significant L-R pairs",
         fill     = "Sender"
@@ -2994,9 +2971,6 @@ plot_liana_extended <- function(liana_agg,
           ggplot2::labs(
             title    = sample_plot_title(sample_id,
                          "B-cell CCI Information Flow"),
-            subtitle = paste0("Top ", n_bcell, " ",
-                              paste(focus_celltype, collapse = "/"),
-                              " sender/receiver pairs by total L-R interactions"),
             x        = "Sender \u2192 Receiver",
             y        = "N significant L-R pairs"
           ) +
@@ -3156,7 +3130,7 @@ run_liana <- function(gobj,
       file.path(out_dir, paste0(sample_id, "_liana_panel_coverage_pairs.csv")),
       row.names = FALSE
     )
-    cat("  ✓ LIANA panel coverage: ", sum(both_ok), "/", total,
+    cat("  OK LIANA panel coverage: ", sum(both_ok), "/", total,
         " pairs detectable on this panel (",
         sprintf("%.1f%%", 100 * sum(both_ok) / total), ")\n", sep = "")
   })
@@ -4247,7 +4221,7 @@ run_misty_bcell <- function(gobj,
   # FIX #8: large-tissue downsample (same guard as run_misty).
   MAX_CELLS_MISTY <- 50000
   if (nrow(expr_mat) > MAX_CELLS_MISTY) {
-    cat("⚠ B-cell MISTy: dataset has", nrow(expr_mat),
+    cat("Warning: B-cell MISTy: dataset has", nrow(expr_mat),
         "cells; downsampling to", MAX_CELLS_MISTY, ".\n")
     set.seed(42)
     keep_idx <- sample(nrow(expr_mat), MAX_CELLS_MISTY)
@@ -4696,7 +4670,7 @@ run_nnsvg <- function(gobj,
   # ---- Tissue-wide pass: rasterise, or fall back to 5k cell subsample ------
   # nnSVG's nearest-neighbor GP scales to ~Visium-spot counts. Preferred path
   # is SEraster aggregation into square pixels (Pattanayak et al. 2023,
-  # PMC10491191) — bins preserve every cell's signal via averaging. If
+  # PMC10491191), bins preserve every cell's signal via averaging. If
   # rasterisation cannot produce a usable result (auto-pick failed or bins are
   # sub-cellular), fall back to a 5k random cell subsample so the pass always
   # produces SVG results in tractable time.
@@ -4811,7 +4785,7 @@ run_nnsvg <- function(gobj,
         "(auto-pick failed or invalid override).\n", sep = "")
   }
 
-  # Fallback: rasterisation didn't produce a usable spe — random-subsample
+  # Fallback: rasterisation didn't produce a usable spe, random-subsample
   # to ~Visium-spot scale and run nnSVG on raw cells. P14/P15 are skipped
   # downstream because ct_raster stays NULL.
   if (is.null(spe_for_nnsvg)) {
@@ -5100,7 +5074,7 @@ run_nnsvg <- function(gobj,
                   "%s \u2014 top-20 SVGs vs %s pixel counts",
                   sample_id, focus_label),
                 subtitle = sprintf(
-                  "Pixel grid at resolution = %.2f coord units",
+                  "(pixel grid resolution = %.2f coord units)",
                   resolved_resolution),
                 x = NULL, y = NULL
               ) +
@@ -5465,7 +5439,7 @@ run_cci_analysis <- function(gobj,
     insitucor_sentinel <- paste0(sample_id, "_insitucor_module_stats.csv")
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(insitucor_dir, insitucor_sentinel)) {
-      cat("  ↻ InSituCor section skipped: ", insitucor_sentinel,
+      cat("  Skip: InSituCor section skipped: ", insitucor_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["insitucor"] <- "SKIPPED"
     } else {
@@ -5488,7 +5462,7 @@ run_cci_analysis <- function(gobj,
     liana_sentinel <- paste0(sample_id, "_liana_aggregate.csv")
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(liana_dir, liana_sentinel)) {
-      cat("  ↻ LIANA section skipped: ", liana_sentinel,
+      cat("  Skip: LIANA section skipped: ", liana_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["liana"] <- "SKIPPED"
     } else {
@@ -5520,7 +5494,7 @@ run_cci_analysis <- function(gobj,
       isTRUE(section_outputs_exist(nichenet_root, nichenet_sentinel))
     }
     if (!isTRUE(overwrite_existing) && isTRUE(nichenet_resume_done)) {
-      cat("  ↻ NicheNet section skipped: ", nichenet_sentinel,
+      cat("  Skip: NicheNet section skipped: ", nichenet_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["nichenet"] <- "SKIPPED"
     } else {
@@ -5637,7 +5611,7 @@ run_cci_analysis <- function(gobj,
     misty_sentinel <- file.path("tables", paste0(sample_id, "_misty_improvements.csv"))
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(misty_dir, misty_sentinel)) {
-      cat("  ↻ MISTy section skipped: ", misty_sentinel,
+      cat("  Skip: MISTy section skipped: ", misty_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["misty"] <- "SKIPPED"
     } else {
@@ -5693,7 +5667,7 @@ run_cci_analysis <- function(gobj,
       misty_bcell_sentinel <- file.path("tables", paste0(sample_id, "_misty_bcell_improvements.csv"))
       if (!isTRUE(overwrite_existing) &&
           section_outputs_exist(misty_bcell_dir, misty_bcell_sentinel)) {
-        cat("  ↻ MISTy (B-cell) section skipped: ", misty_bcell_sentinel,
+        cat("  Skip: MISTy (B-cell) section skipped: ", misty_bcell_sentinel,
             " already exists. Pass --overwrite to regenerate.\n", sep = "")
       } else {
         bcell_section <- .run_cci_section(
@@ -5718,7 +5692,7 @@ run_cci_analysis <- function(gobj,
     nnsvg_sentinel <- paste0(sample_id, "_nnSVG_results.csv")
     if (!isTRUE(overwrite_existing) &&
         section_outputs_exist(nnsvg_dir, nnsvg_sentinel)) {
-      cat("  ↻ nnSVG section skipped: ", nnsvg_sentinel,
+      cat("  Skip: nnSVG section skipped: ", nnsvg_sentinel,
           " already exists. Pass --overwrite to regenerate.\n", sep = "")
       section_status["nnsvg"] <- "SKIPPED"
     } else {

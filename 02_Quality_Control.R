@@ -65,7 +65,7 @@ quality_control <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
 
   # Create output directory; CSVs land in a sibling subfolder.
@@ -87,7 +87,7 @@ quality_control <- function(gobj,
       gobject  = gobj,
       feat_ids = all_feat_ids_pre_ctrl[!ctrl_mask]
     )
-    cat("✓ SystemControl probes removed\n\n")
+    cat("OK SystemControl probes removed\n\n")
   }
 
   # Get initial stats (post-SystemControl removal)
@@ -106,7 +106,7 @@ quality_control <- function(gobj,
     expression_values = "raw"
   )
   
-  cat("✓ Statistics calculated\n\n")
+  cat("OK Statistics calculated\n\n")
   
   # Calculate mitochondrial percentage if MT genes present
   cat("Checking for mitochondrial genes...\n")
@@ -124,7 +124,7 @@ quality_control <- function(gobj,
       vector_name = "mito_pct"
     )
 
-    cat("✓ Mitochondrial percentage calculated\n\n")
+    cat("OK Mitochondrial percentage calculated\n\n")
   } else {
     # Louder diagnostic: 0 matches usually indicates a non-human panel or a
     # renamed feature prefix (e.g. "mt-Nd1" vs "MT-ND1"), not actual absence
@@ -311,7 +311,7 @@ quality_control <- function(gobj,
     bg = "white"
   )
   
-  cat("✓ Pre-filtering plots saved\n\n")
+  cat("OK Pre-filtering plots saved\n\n")
 
   # Per-FOV diagnostic heat strip: median genes/cell + cell count per FOV.
   # Quick "is one FOV bad?" view before filtering.
@@ -485,7 +485,7 @@ quality_control <- function(gobj,
           "per-sub-biopsy stacked variant(s)...\n")
       meta_all <- as.data.frame(pDataDT(gobj))
       if (!"fov" %in% names(meta_all)) {
-        cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+        cat("  Warning: No 'fov' column on Giotto object; skipping sub-biopsy split\n")
       } else {
         sub_dir <- file.path(results_folder, "subsamples")
         for (k in seq_len(nrow(sub_rows))) {
@@ -494,27 +494,27 @@ quality_control <- function(gobj,
           fmin   <- as.integer(sub_r$fov_min)
           fmax   <- as.integer(sub_r$fov_max)
           if (anyNA(c(fmin, fmax))) {
-            cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+            cat("  Warning: ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
             next
           }
           cell_ids <- meta_all$cell_ID[
             !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
           ]
           if (length(cell_ids) == 0) {
-            cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
+            cat("  Warning: ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
                 ", skipped\n", sep = "")
             next
           }
           sub_gobj <- tryCatch(
             subsetGiotto(gobj, cell_ids = cell_ids),
             error = function(e) {
-              cat("  ⚠ ", sub_id, ": subsetGiotto failed: ",
+              cat("  Warning: ", sub_id, ": subsetGiotto failed: ",
                   conditionMessage(e), "\n", sep = "")
               NULL
             }
           )
           if (is.null(sub_gobj)) next
-          cat("  → ", sub_id, " (FOV ", fmin, "-", fmax,
+          cat("  -> ", sub_id, " (FOV ", fmin, "-", fmax,
               ", ", length(cell_ids), " cells)\n", sep = "")
           .save_qc_spatial_group(
             gobject_local   = sub_gobj,
@@ -527,9 +527,9 @@ quality_control <- function(gobj,
       }
     }
 
-    cat("✓ Spatial plots saved\n\n")
+    cat("OK Spatial plots saved\n\n")
   }, error = function(e) {
-    cat("⚠ Spatial plotting warning:", conditionMessage(e), "\n\n")
+    cat("Warning: Spatial plotting warning:", conditionMessage(e), "\n\n")
   })
 
   # Joint nFeature x nCount scatter (WTx 3.2.1) coloured by qc_pass.
@@ -605,7 +605,7 @@ quality_control <- function(gobj,
     cat("  UpSet skipped (UpSetR not installed)\n")
   }
 
-  cat("✓ Joint scatter + UpSet saved\n\n")
+  cat("OK Joint scatter + UpSet saved\n\n")
 
   # Filter genes
   cat("Filtering genes...\n")
@@ -620,7 +620,7 @@ quality_control <- function(gobj,
   )
   
   n_genes_after <- length(gobj@feat_ID$rna)
-  cat("✓ Genes after filtering:", n_genes_after, 
+  cat("OK Genes after filtering:", n_genes_after, 
       "(removed", n_genes_initial - n_genes_after, ")\n\n")
   
   # Filter cells - single subsetGiotto using the precomputed qc_flags$qc_pass.
@@ -644,7 +644,7 @@ quality_control <- function(gobj,
   )
   
   n_cells_after <- length(gobj@cell_ID$cell)
-  cat("✓ Cells after filtering:", n_cells_after,
+  cat("OK Cells after filtering:", n_cells_after,
       "(removed", n_cells_initial - n_cells_after, ")\n\n")
   
   # Post-filtering plots
@@ -742,7 +742,7 @@ quality_control <- function(gobj,
     bg = "white"
   )
 
-  cat("✓ Post-filtering plots saved\n\n")
+  cat("OK Post-filtering plots saved\n\n")
   
   # Save QC summary
   qc_summary <- tibble(
@@ -814,7 +814,7 @@ quality_control <- function(gobj,
   print(qc_summary)
   cat("\n")
   
-  cat("✓ Quality control complete for", sample_id, "\n\n")
+  cat("OK Quality control complete for", sample_id, "\n\n")
   
   return(gobj)
 }

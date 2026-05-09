@@ -212,7 +212,7 @@ dimensionality_reduction <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
 
   results_folder <- file.path(output_dir, "04_Dimensionality_Reduction")
@@ -274,7 +274,7 @@ dimensionality_reduction <- function(gobj,
     
     hvg_genes <- spatial_genes
     
-    cat("✓ Selected", length(hvg_genes), "spatially ranked features\n\n")
+    cat("OK Selected", length(hvg_genes), "spatially ranked features\n\n")
     
   } else {
     cat("Identifying highly variable genes...\n")
@@ -287,7 +287,7 @@ dimensionality_reduction <- function(gobj,
       results_folder = results_folder
     )
     
-    cat("✓ Selected", length(hvg_genes), "highly variable genes\n\n")
+    cat("OK Selected", length(hvg_genes), "highly variable genes\n\n")
   }
   
   # Save HVG list
@@ -311,7 +311,7 @@ dimensionality_reduction <- function(gobj,
     )
   )
   
-  cat("✓ PCA complete\n\n")
+  cat("OK PCA complete\n\n")
   
   # Scree plot - capture the ggplot so we can attach a title that matches the
   # rest of the pipeline's presentation style, then save via the shared helper.
@@ -342,9 +342,9 @@ dimensionality_reduction <- function(gobj,
       dpi      = 300,
       bg       = "white"
     )
-    cat("✓ Scree plot saved\n\n")
+    cat("OK Scree plot saved\n\n")
   }, error = function(e) {
-    cat("⚠ Scree plot warning:", conditionMessage(e), "\n\n")
+    cat("Warning: Scree plot warning:", conditionMessage(e), "\n\n")
   })
   
   # UMAP
@@ -364,10 +364,10 @@ dimensionality_reduction <- function(gobj,
       )
     )
 
-    cat("✓ UMAP complete\n\n")
+    cat("OK UMAP complete\n\n")
   } else {
     cat(sprintf(
-      "⚠ Skipping UMAP: n_cells (%d) <= n_neighbors (%d). Subset too small.\n\n",
+      "Warning: Skipping UMAP: n_cells (%d) <= n_neighbors (%d). Subset too small.\n\n",
       n_cells, umap_n_neighbors
     ))
   }
@@ -387,10 +387,10 @@ dimensionality_reduction <- function(gobj,
       )
     )
 
-    cat("✓ t-SNE complete\n\n")
+    cat("OK t-SNE complete\n\n")
   } else {
     cat(sprintf(
-      "⚠ Skipping t-SNE: n_cells (%d) < required (%d for perplexity=%d). UMAP still produced.\n\n",
+      "Warning: Skipping t-SNE: n_cells (%d) < required (%d for perplexity=%d). UMAP still produced.\n\n",
       n_cells, tsne_min_cells, tsne_perplexity
     ))
   }
@@ -501,14 +501,14 @@ dimensionality_reduction <- function(gobj,
                                paste0(sample_id, "_umap_by_sample.png")),
           width    = 12, height = 8, dpi = 300, bg = "white"
         )
-        cat("✓ Composite UMAP by sub-biopsy saved (",
+        cat("OK Composite UMAP by sub-biopsy saved (",
             nlevels(umap_sub$sub_sample_id), " sub-samples)\n", sep = "")
       }
     }
 
-    cat("✓ Plots saved\n\n")
+    cat("OK Plots saved\n\n")
   }, error = function(e) {
-    cat("⚠ Plotting warning:", conditionMessage(e), "\n\n")
+    cat("Warning: Plotting warning:", conditionMessage(e), "\n\n")
   })
   
   # Summary
@@ -550,7 +550,7 @@ dimensionality_reduction <- function(gobj,
     cat("Dimension retrieval: info unavailable\n")
   })
   
-  cat("\n✓ Dimensionality reduction complete for", sample_id, "\n\n")
+  cat("\nOK Dimensionality reduction complete for", sample_id, "\n\n")
   
   return(gobj)
 }

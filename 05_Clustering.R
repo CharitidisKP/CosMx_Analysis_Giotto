@@ -61,7 +61,7 @@ perform_clustering <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
   
   results_folder <- file.path(output_dir, "05_Clustering")
@@ -120,7 +120,7 @@ perform_clustering <- function(gobj,
     name                 = network_name
   )
   
-  cat("✓ NN network created\n\n")
+  cat("OK NN network created\n\n")
   
   # ── sNN network inspection ───────────────────────────────────────────────────
   if (inspect_snn) {
@@ -209,7 +209,7 @@ perform_clustering <- function(gobj,
   )
   
   n_clusters <- length(unique(pDataDT(gobj)$leiden_clust))
-  cat("✓ Clustering complete:", n_clusters, "clusters\n\n")
+  cat("OK Clustering complete:", n_clusters, "clusters\n\n")
   
   resolution_sweep <- unique(as.numeric(resolution_sweep))
   resolution_sweep <- resolution_sweep[is.finite(resolution_sweep) & resolution_sweep > 0]
@@ -237,7 +237,7 @@ perform_clustering <- function(gobj,
         n_clusters = length(unique(pDataDT(gobj)[[sweep_name]])),
         stringsAsFactors = FALSE
       )
-      cat("  ✓ Saved", sweep_name, "(", tail(sweep_summary, 1)[[1]]$n_clusters, "clusters)\n")
+      cat("  OK Saved", sweep_name, "(", tail(sweep_summary, 1)[[1]]$n_clusters, "clusters)\n")
     }
     sweep_df <- dplyr::bind_rows(sweep_summary)
     # Include the primary run for visual context
@@ -324,9 +324,9 @@ perform_clustering <- function(gobj,
         save_dir = results_folder,
         prefix = paste0(sample_id, "_custom_clusters")
       )
-      cat("✓ Custom presentation clustering plots saved\n\n")
+      cat("OK Custom presentation clustering plots saved\n\n")
     }, error = function(e) {
-      cat("⚠ Custom clustering visualizations failed:", conditionMessage(e), "\n\n")
+      cat("Warning: Custom clustering visualizations failed:", conditionMessage(e), "\n\n")
     })
   }
 
@@ -369,13 +369,13 @@ perform_clustering <- function(gobj,
     }
 
     .save_cluster_polygon(gobj, results_folder, sample_id, context = "sample")
-    cat("✓ Polygon spatial cluster plot saved\n")
+    cat("OK Polygon spatial cluster plot saved\n")
 
     sub_rows <- discover_composite_subsamples(sample_row, sample_sheet_path)
     if (!is.null(sub_rows) && nrow(sub_rows) > 0) {
       meta_all <- as.data.frame(pDataDT(gobj))
       if (!"fov" %in% names(meta_all)) {
-        cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+        cat("  Warning: No 'fov' column on Giotto object; skipping sub-biopsy split\n")
       } else {
         sub_dir <- file.path(results_folder, "subsamples")
         for (k in seq_len(nrow(sub_rows))) {
@@ -384,32 +384,32 @@ perform_clustering <- function(gobj,
           fmin   <- as.integer(sub_r$fov_min)
           fmax   <- as.integer(sub_r$fov_max)
           if (anyNA(c(fmin, fmax))) {
-            cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+            cat("  Warning: ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
             next
           }
           cell_ids <- meta_all$cell_ID[
             !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
           ]
           if (length(cell_ids) == 0) {
-            cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax, ", skipped\n", sep = "")
+            cat("  Warning: ", sub_id, ": no cells in FOV ", fmin, "-", fmax, ", skipped\n", sep = "")
             next
           }
           sub_gobj <- tryCatch(
             subsetGiotto(gobj, cell_ids = cell_ids),
             error = function(e) {
-              cat("  ⚠ ", sub_id, ": subsetGiotto failed: ", conditionMessage(e), "\n", sep = "")
+              cat("  Warning: ", sub_id, ": subsetGiotto failed: ", conditionMessage(e), "\n", sep = "")
               NULL
             }
           )
           if (is.null(sub_gobj)) next
-          cat("  → ", sub_id, " (FOV ", fmin, "-", fmax, ", ",
+          cat("  -> ", sub_id, " (FOV ", fmin, "-", fmax, ", ",
               length(cell_ids), " cells)\n", sep = "")
           .save_cluster_polygon(sub_gobj, sub_dir, sub_id, context = "sample")
         }
       }
     }
   }, error = function(e) {
-    cat("⚠ Polygon cluster plot failed:", conditionMessage(e), "\n\n")
+    cat("Warning: Polygon cluster plot failed:", conditionMessage(e), "\n\n")
   })
   cat("\n")
   
@@ -508,8 +508,6 @@ perform_clustering <- function(gobj,
             ) +
             ggplot2::labs(
               title    = sample_plot_title(sample_id, "Mean silhouette per Leiden cluster"),
-              subtitle = sprintf("PCA space (first %d PCs), subsampled to %d cells",
-                                 ncol(pca_sub), nrow(pca_sub)),
               x = "Leiden cluster", y = "Mean silhouette width"
             ) +
             presentation_theme(base_size = 12)

@@ -417,7 +417,7 @@ merge_giotto_samples <- function(gobject_list,
   }, error = function(e) NULL)
 
   if (is.null(raw_mat)) {
-    cat("⚠ Merged object has no raw expression slot - skipping ",
+    cat("Warning: Merged object has no raw expression slot - skipping ",
         "re-normalization.\n", sep = "")
     return(merged_gobj)
   }
@@ -454,7 +454,7 @@ merge_giotto_samples <- function(gobject_list,
     )
   )
 
-  cat("✓ Merged-object re-normalization complete\n\n")
+  cat("OK Merged-object re-normalization complete\n\n")
   merged_gobj
 }
 

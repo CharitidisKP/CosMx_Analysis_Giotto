@@ -8,7 +8,7 @@
 # `<merged_output_dir>/merged_<label>_summary.html`.
 #
 # Uses R Markdown (not Quarto) so the existing R image works without
-# adding `quarto-cli`. pandoc must be available — Install_Stage1_Dependencies.R
+# adding `quarto-cli`. pandoc must be available, Install_Stage1_Dependencies.R
 # asserts this at install time.
 # ==============================================================================
 
@@ -28,11 +28,11 @@ render_merged_summary <- function(merged_output_dir,
                                   run_label = NULL,
                                   template  = NULL) {
   if (!requireNamespace("rmarkdown", quietly = TRUE)) {
-    cat("⚠ rmarkdown not installed — skipping merged-run summary report.\n")
+    cat("Warning: rmarkdown not installed, skipping merged-run summary report.\n")
     return(invisible(NULL))
   }
   if (!isTRUE(rmarkdown::pandoc_available())) {
-    cat("⚠ pandoc not available — cannot render summary report.\n")
+    cat("Warning: pandoc not available, cannot render summary report.\n")
     return(invisible(NULL))
   }
   helpers_dir <- dirname(normalizePath(sys.frame(1)$ofile %||%
@@ -42,7 +42,7 @@ render_merged_summary <- function(merged_output_dir,
     template <- file.path(helpers_dir, "templates", "merged_run_summary.Rmd")
   }
   if (!file.exists(template)) {
-    cat("⚠ Summary template not found at: ", template, "\n", sep = "")
+    cat("Warning: Summary template not found at: ", template, "\n", sep = "")
     return(invisible(NULL))
   }
   if (is.null(run_label) || !nzchar(run_label)) {
@@ -67,9 +67,9 @@ render_merged_summary <- function(merged_output_dir,
       envir         = new.env(),
       quiet         = TRUE
     )
-    cat("✓ Summary report written: ", out_html, "\n\n", sep = "")
+    cat("OK Summary report written: ", out_html, "\n\n", sep = "")
   }, error = function(e) {
-    cat("⚠ Summary rendering failed (non-fatal): ", conditionMessage(e),
+    cat("Warning: Summary rendering failed (non-fatal): ", conditionMessage(e),
         "\n\n", sep = "")
   })
   invisible(out_html)

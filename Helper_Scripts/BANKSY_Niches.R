@@ -542,7 +542,7 @@ cluster_banksy_single_sample <- function(aug_spe,
     .plot_proximity_heatmap_complex(
       mat       = log2fe,
       title     = sample_plot_title(sample_id, "BANKSY niche composition"),
-      subtitle  = "log2 fold-enrichment vs sample-wide cell-type fractions",
+      subtitle  = "log2 fold-enrichment (vs sample-wide cell-type fractions)",
       filename  = out_path,
       width     = max(10, 0.6 * ncol(log2fe) + 4),
       height    = max(5, 0.5 * nrow(log2fe) + 3),

@@ -57,3 +57,7 @@ Helper_Scripts/Legacy_EdgeR_DE.R
 Install_Dependencies_Local.R
 Error_Messages/
 Run_Scripts/Verify_Parallelism.md
+docs/
+Local_Scripts/
+Prompts/
+

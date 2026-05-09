@@ -329,7 +329,7 @@ if ((!exists("save_giotto_checkpoint") || !exists("presentation_theme") || !exis
   
   # Row/col annotation: immune vs structural compartment.
   # Labels match the smiDE-native scheme produced by 07_Annotation.R's
-  # .normalize_label() (dots/underscores → spaces).
+  # .normalize_label() (dots/underscores -> spaces).
   immune_types_raw <- c("B.cell", "CD4.T.cell", "CD8.T.cell", "NK.cell",
                         "NKT.cell",
                         "MNP.macrophage", "MNP.monocyte",
@@ -692,7 +692,7 @@ build_spatial_network <- function(gobj,
         ggplot2::labs(
           title    = sample_plot_title(sample_id,
                         paste0("Edge-length distribution - ", primary_network)),
-          subtitle = sprintf("n = %d edges, median = %.1f, max = %.1f",
+          subtitle = sprintf("(n = %d | median = %.1f | max = %.1f)",
                              nrow(elen_df), stats::median(elen),
                              max(elen, na.rm = TRUE)),
           x = "Edge length (um)", y = "Edges"
@@ -736,7 +736,7 @@ build_spatial_network <- function(gobj,
             ggplot2::labs(
               title    = sample_plot_title(sample_id,
                            paste0("Edge-length - FOV ", fv)),
-              subtitle = sprintf("n = %d within-FOV edges, median = %.1f",
+              subtitle = sprintf("(n = %d edges | median = %.1f)",
                                  nrow(sub_df), stats::median(sub_df$.elen)),
               x = "Edge length (um)", y = "Edges"
             ) +
@@ -1264,7 +1264,7 @@ build_spatial_network <- function(gobj,
                   )
                 )
               }
-            }, error = function(e) cat("  ⚠ PAGE plot failed for", ct, ":", conditionMessage(e), "\n"))
+            }, error = function(e) cat("  Warning: PAGE plot failed for", ct, ":", conditionMessage(e), "\n"))
           }
           cat("  \u2713 Spatial enrichment plots saved\n")
         }

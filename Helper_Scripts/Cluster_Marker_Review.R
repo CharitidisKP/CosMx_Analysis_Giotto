@@ -72,20 +72,20 @@ write_cluster_marker_review <- function(gobj,
                                         output_csv,
                                         top_n = 25) {
   if (!requireNamespace("scran", quietly = TRUE)) {
-    cat("⚠ scran not installed — skipping marker review CSV.\n")
+    cat("Warning: scran not installed, skipping marker review CSV.\n")
     return(invisible(NULL))
   }
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!cluster_col %in% names(meta)) {
-    cat("⚠ Cluster column '", cluster_col,
-        "' not found — skipping marker review.\n", sep = "")
+    cat("Warning: Cluster column '", cluster_col,
+        "' not found, skipping marker review.\n", sep = "")
     return(invisible(NULL))
   }
   ctc <- .cmr_resolve_celltype_col(meta, celltype_col)
 
   norm_mat <- .cmr_get_norm_expression(gobj)
   if (is.null(norm_mat)) {
-    cat("⚠ No normalized expression available — skipping marker review.\n")
+    cat("Warning: No normalized expression available, skipping marker review.\n")
     return(invisible(NULL))
   }
   # Align columns; scran::findMarkers wants cells × clusters.
@@ -103,7 +103,7 @@ write_cluster_marker_review <- function(gobj,
       pval.type = "any"
     ),
     error = function(e) {
-      cat("⚠ scran::findMarkers failed: ", conditionMessage(e), "\n", sep = "")
+      cat("Warning: scran::findMarkers failed: ", conditionMessage(e), "\n", sep = "")
       NULL
     }
   )
@@ -156,7 +156,7 @@ write_cluster_marker_review <- function(gobj,
 
   dir.create(dirname(output_csv), recursive = TRUE, showWarnings = FALSE)
   utils::write.csv(out_df, output_csv, row.names = FALSE)
-  cat("  ✓ Marker review written: ", output_csv, " (",
+  cat("  OK Marker review written: ", output_csv, " (",
       nrow(out_df), " rows, ", length(unique(out_df$cluster)),
       " clusters).\n", sep = "")
   invisible(out_df)

@@ -27,7 +27,7 @@ read_text_safe <- function(p) {
 }
 ```
 
-> **⚠ Slide × arm confound — read first.**
+> **Warning: Slide × arm confound, read first.**
 > All CART biopsies sit on slide 1; CONV samples sit on slides 3, 4, 31, 32;
 > Control on slide 2. Treatment arm therefore cannot be cleanly separated
 > from slide-level technical variation. **Cross-arm comparisons at any
@@ -102,7 +102,7 @@ if (!is.null(df)) {
 }
 ```
 
-# 5. Pseudobulk DE — top hits per comparison
+# 5. Pseudobulk DE, top hits per comparison
 
 ```{r de-top, results = "asis"}
 pw_dir <- file.path(out_dir, "13_Pathway_Analysis")
@@ -148,7 +148,7 @@ if (length(pgs) == 0) {
 }
 ```
 
-# 7. Paired CCI (LIANA → paired Wilcoxon)
+# 7. Paired CCI (LIANA -> paired Wilcoxon)
 
 ```{r cci-paired, results = "asis"}
 cci_dir <- file.path(out_dir, "16_CCI_Paired")
@@ -187,7 +187,7 @@ if (length(csvs) > 0) {
   if (length(audit_rows) > 0) {
     audit <- do.call(rbind, audit_rows)
     knitr::kable(audit,
-                 caption = paste("Per-stratum smiDE blocking — strata flagged",
+                 caption = paste("Per-stratum smiDE blocking, strata flagged",
                                  "`skipped_single_patient` are unblocked and",
                                  "should not be over-interpreted as paired."))
   } else {

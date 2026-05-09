@@ -414,7 +414,7 @@ prepare_smide_targets <- function(cell_counts,
   if (any(sc_mask & keep)) {
     n_sc <- sum(sc_mask & keep)
     message(sprintf(
-      "  ⚠ smiDE: dropping %d SystemControl probe(s) that survived QC",
+      "  Warning: smiDE: dropping %d SystemControl probe(s) that survived QC",
       n_sc
     ))
   }
@@ -446,7 +446,7 @@ sanitize_smide_name <- function(x) {
   ifelse(nzchar(s), s, "x")
 }
 
-# Diff input targets vs fitted output → print one summary line and persist
+# Diff input targets vs fitted output -> print one summary line and persist
 # the failed-gene vector next to the fit log. smiDE::smi_de() prints a
 # "Fitting model to target X." line per gene (captured to disk); the only
 # surfaced signal here is a single success/warning line.
@@ -471,12 +471,12 @@ sanitize_smide_name <- function(x) {
   ctx <- if (nzchar(context)) paste0(" [", context, "]") else ""
 
   if (length(failed) == 0) {
-    message(sprintf("  ✓ smiDE: all %d gene(s) fitted%s", length(submitted), ctx))
+    message(sprintf("  OK smiDE: all %d gene(s) fitted%s", length(submitted), ctx))
   } else {
     preview <- paste(utils::head(failed, 20), collapse = ", ")
-    tail_suffix <- if (length(failed) > 20) ", …" else ""
+    tail_suffix <- if (length(failed) > 20) ", ..." else ""
     message(sprintf(
-      "  ⚠ smiDE: %d/%d gene(s) failed to fit%s: %s%s",
+      "  Warning: smiDE: %d/%d gene(s) failed to fit%s: %s%s",
       length(failed), length(submitted), ctx, preview, tail_suffix
     ))
     if (nzchar(fit_log)) {
@@ -1458,13 +1458,13 @@ estimate_dense_matrix_gb <- function(n_genes, n_cells, bytes_per_element = 8) {
 # Only smiDE::smi_de(nCores=) accepts a cores argument. pre_de(),
 # overlap_ratio_metric(), and results() are all single-threaded
 # internally. Because of that, `smide_ncores` (passed through to smi_de)
-# only parallelises the GLM fit itself — not the surrounding work.
+# only parallelises the GLM fit itself, not the surrounding work.
 #
 # The real parallelism win for this backend is the per-cell-type for-loop
 # below: each cell type's pre_de + smi_de + results triple is independent
 # and could be dispatched to a worker pool. That refactor is intentionally
 # deferred to a follow-up PR (alongside sample-level parallelism in
-# CosMx_pipeline.R) — it requires extracting a ~370-line body into a
+# CosMx_pipeline.R), it requires extracting a ~370-line body into a
 # closure, replacing `next` with early returns, and aggregating per-CT
 # result lists back into the outer-scope vectors. The
 # `spatial_de.smide_inner_workers` config key is reserved now so the
@@ -2570,7 +2570,7 @@ run_smide_per_comparison_backend <- function(expr_mat,
                                 smide_max_strata_per_comparison)
       }
 
-      cat("  ▶ ", cp_label, " (", st_label, "): A=", sum(mask_a[keep]),
+      cat("  -> ", cp_label, " (", st_label, "): A=", sum(mask_a[keep]),
           " B=", sum(mask_b[keep]), " cells over ",
           length(eligible_strata), " stratum/strata\n", sep = "")
 
@@ -2680,7 +2680,7 @@ run_smide_per_comparison_backend <- function(expr_mat,
     want <- filter_spec[[key]]
     if (is.null(want) || length(want) == 0L) next
     if (!key %in% names(meta)) {
-      cat("  ⚠ filter key '", key,
+      cat("  Warning: filter key '", key,
           "' not in cell metadata; treating as no match\n", sep = "")
       return(rep(FALSE, nrow(meta)))
     }
@@ -3021,14 +3021,14 @@ run_spatial_differential_expression <- function(gobj,
 
   # Output-aware skip: the per-comparison aggregator writes the master
   # results CSV at the end of a successful run. If it exists and is
-  # non-empty, the entire spatial-DE step has run before — skip unless
+  # non-empty, the entire spatial-DE step has run before, skip unless
   # --overwrite is set. Done BEFORE the giotto load to avoid the I/O.
   sentinel <- file.path(results_dir,
                         paste0(run_label, "_all_spatial_de_results.csv"))
   if (!isTRUE(overwrite_existing) &&
       file.exists(sentinel) &&
       file.info(sentinel)$size > 0) {
-    cat("↻ Spatial DE step skipped: ", basename(sentinel),
+    cat("Skip: Spatial DE step skipped: ", basename(sentinel),
         " already exists. Pass --overwrite to regenerate.\n", sep = "")
     return(invisible(NULL))
   }
@@ -3117,7 +3117,7 @@ run_spatial_differential_expression <- function(gobj,
   ann_col_vec <- metadata[[annotation_column]]
   if (!is.null(ann_col_vec) &&
       any(grepl("[._]", as.character(ann_col_vec)), na.rm = TRUE)) {
-    message("  ℹ Normalizing legacy dot/underscore labels in '",
+    message("  Info: Normalizing legacy dot/underscore labels in '",
             annotation_column, "' for smiDE compatibility")
     norm_vec <- gsub("\\s+", " ",
                      gsub("[._]+", " ", as.character(ann_col_vec)))

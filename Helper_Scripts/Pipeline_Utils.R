@@ -62,14 +62,14 @@ sample_plot_title <- function(sample_id, title) {
 }
 
 # Run an I/O / plot block with uniform error logging. On error, prints
-# "  ⚠ <label> failed: <msg>" and swallows the exception so downstream
+# "  Warning: <label> failed: <msg>" and swallows the exception so downstream
 # blocks still execute. `expr` is a brace-block evaluated lazily in the
 # caller's scope. Success cats stay inline with the calling code (so
-# skip-branches that print their own "⚠ X skipped: ..." don't get an
-# extra "✓" tacked on).
+# skip-branches that print their own "Warning: X skipped: ..." don't get an
+# extra "OK" tacked on).
 safe_run <- function(label, expr, error = NULL) {
   handler <- if (is.null(error)) {
-    function(e) cat("  ⚠ ", label, " failed: ", conditionMessage(e), "\n",
+    function(e) cat("  Warning: ", label, " failed: ", conditionMessage(e), "\n",
                     sep = "")
   } else {
     error

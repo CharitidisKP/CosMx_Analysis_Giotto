@@ -195,7 +195,7 @@ create_visualizations <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
   
   results_folder <- file.path(output_dir, "08_Visualization")
@@ -296,12 +296,12 @@ create_visualizations <- function(gobj,
                                  paste0(sample_label, "_spatial_clusters.png")),
             width = 14, height = 10, dpi = 300
           )
-          cat("  ✓ Spatial clusters (polygon)\n")
+          cat("  OK Spatial clusters (polygon)\n")
         } else {
-          cat("  ⚠ Spatial clusters: polygon renderer unavailable\n")
+          cat("  Warning: Spatial clusters: polygon renderer unavailable\n")
         }
       }, error = function(e) {
-        cat("  ⚠ Spatial clusters failed:", conditionMessage(e), "\n")
+        cat("  Warning: Spatial clusters failed:", conditionMessage(e), "\n")
       })
     }
 
@@ -328,7 +328,7 @@ create_visualizations <- function(gobj,
                                  paste0(sample_label, "_spatial_", ct_col, ".png")),
             width = 14, height = 10, dpi = 300
           )
-          cat("  ✓ Spatial", ct_col, "(polygon)\n")
+          cat("  OK Spatial", ct_col, "(polygon)\n")
 
           # Faceted variant - one panel per cell type, useful for spotting
           # rare populations that get drowned in the "all on one" view.
@@ -383,17 +383,17 @@ create_visualizations <- function(gobj,
                 height = max(10, 4 * ceiling(n_ct / ncol_facet)),
                 dpi = 300
               )
-              cat("  ✓ Spatial", ct_col, "(faceted)\n")
+              cat("  OK Spatial", ct_col, "(faceted)\n")
             }
           }, error = function(e) {
-            cat("  ⚠ Spatial", ct_col, "(faceted) failed: ",
+            cat("  Warning: Spatial", ct_col, "(faceted) failed: ",
                 conditionMessage(e), "\n", sep = "")
           })
         } else {
-          cat("  ⚠ Spatial", ct_col, ": polygon renderer unavailable\n")
+          cat("  Warning: Spatial", ct_col, ": polygon renderer unavailable\n")
         }
       }, error = function(e) {
-        cat("  ⚠", ct_col, "failed:", conditionMessage(e), "\n")
+        cat("  Warning:", ct_col, "failed:", conditionMessage(e), "\n")
       })
     }
 
@@ -407,7 +407,7 @@ create_visualizations <- function(gobj,
       genes_kept    <- intersect(marker_genes, local_genes)
       genes_skipped <- setdiff(marker_genes, local_genes)
       if (length(genes_skipped) > 0) {
-        cat("  ℹ Skipping", length(genes_skipped),
+        cat("  Info: Skipping", length(genes_skipped),
             "gene(s) absent from expression matrix:",
             paste(genes_skipped, collapse = ", "), "\n")
       }
@@ -431,12 +431,12 @@ create_visualizations <- function(gobj,
                                      paste0(sample_label, "_spatial_", gene, ".png")),
                 width = 14, height = 11, dpi = 600
               )
-              cat("  ✓", gene, "\n")
+              cat("  OK", gene, "\n")
             } else {
-              cat("  ⚠", gene, ": polygon data / expression unavailable\n")
+              cat("  Warning:", gene, ": polygon data / expression unavailable\n")
             }
           }, error = function(e) {
-            cat("  ⚠", gene, "failed:", conditionMessage(e), "\n")
+            cat("  Warning:", gene, "failed:", conditionMessage(e), "\n")
           })
         }
       }
@@ -471,7 +471,7 @@ create_visualizations <- function(gobj,
     title_row    = sample_row,
     sample_label = sample_id
   )
-  cat("✓ Main spatial + feature plots complete\n\n")
+  cat("OK Main spatial + feature plots complete\n\n")
 
   # --- Per-sub-biopsy plots (CART composite) ---------------------------------
   # If this sample is a composite with sub-biopsy split rows in the sample
@@ -482,7 +482,7 @@ create_visualizations <- function(gobj,
         "per-sub-biopsy subfolder(s)...\n")
     meta_all <- as.data.frame(pDataDT(plot_gobj))
     if (!"fov" %in% names(meta_all)) {
-      cat("  ⚠ No 'fov' column on Giotto object; skipping sub-biopsy split\n")
+      cat("  Warning: No 'fov' column on Giotto object; skipping sub-biopsy split\n")
     } else {
       for (k in seq_len(nrow(sub_rows))) {
         sub_r  <- sub_rows[k, , drop = FALSE]
@@ -490,27 +490,27 @@ create_visualizations <- function(gobj,
         fmin   <- as.integer(sub_r$fov_min)
         fmax   <- as.integer(sub_r$fov_max)
         if (anyNA(c(fmin, fmax))) {
-          cat("  ⚠ ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
+          cat("  Warning: ", sub_id, ": fov_min/fov_max missing, skipped\n", sep = "")
           next
         }
         cell_ids <- meta_all$cell_ID[
           !is.na(meta_all$fov) & meta_all$fov >= fmin & meta_all$fov <= fmax
         ]
         if (length(cell_ids) == 0) {
-          cat("  ⚠ ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
+          cat("  Warning: ", sub_id, ": no cells in FOV ", fmin, "-", fmax,
               ", skipped\n", sep = "")
           next
         }
         sub_gobj <- tryCatch(
           subsetGiotto(plot_gobj, cell_ids = cell_ids),
           error = function(e) {
-            cat("  ⚠ ", sub_id, ": subsetGiotto failed: ",
+            cat("  Warning: ", sub_id, ": subsetGiotto failed: ",
                 conditionMessage(e), "\n", sep = "")
             NULL
           }
         )
         if (is.null(sub_gobj)) next
-        cat("  → ", sub_id, " (FOV ", fmin, "-", fmax,
+        cat("  -> ", sub_id, " (FOV ", fmin, "-", fmax,
             ", ", length(cell_ids), " cells)\n", sep = "")
         .render_spatial_and_features(
           gobj_local   = sub_gobj,
@@ -520,7 +520,7 @@ create_visualizations <- function(gobj,
           sample_label = sub_id
         )
       }
-      cat("✓ Sub-biopsy spatial + feature plots complete\n\n")
+      cat("OK Sub-biopsy spatial + feature plots complete\n\n")
     }
   }
   
@@ -559,7 +559,6 @@ create_visualizations <- function(gobj,
           geom_bar(stat = "identity", position = "fill") +
           labs(
             title    = sample_plot_title(sample_id, "Cluster composition by annotation"),
-            subtitle = ct_display,
             x        = "Leiden cluster",
             y        = "Cell type proportion",
             fill     = "Cell type"
@@ -575,15 +574,15 @@ create_visualizations <- function(gobj,
           dpi = 300
         )
         
-        cat("  ✓ Composition", ct_col, "\n")
+        cat("  OK Composition", ct_col, "\n")
       }, error = function(e) {
-        cat("  ⚠ Composition", ct_col, "failed:", conditionMessage(e), "\n") 
+        cat("  Warning: Composition", ct_col, "failed:", conditionMessage(e), "\n") 
         }
       )
     }
   }
   
-  cat("✓ Summary plots complete\n\n")
+  cat("OK Summary plots complete\n\n")
   
   # ============================================================================
   # Section 5: Generate HTML Report
@@ -651,9 +650,9 @@ create_visualizations <- function(gobj,
     
     writeLines(html_content, file.path(results_folder, paste0(sample_id, "_analysis_report.html")))
     
-    cat("✓ HTML report created:", file.path(results_folder, paste0(sample_id, "_analysis_report.html")), "\n")
+    cat("OK HTML report created:", file.path(results_folder, paste0(sample_id, "_analysis_report.html")), "\n")
   }, error = function(e) {
-    cat("⚠ HTML report generation warning\n")
+    cat("Warning: HTML report generation warning\n")
   })
   
   # Multi-panel per-sample overview (patchwork: UMAP + spatial + composition)
@@ -814,7 +813,7 @@ create_visualizations <- function(gobj,
     cat("\u26A0 Multi-panel overview failed:", conditionMessage(e), "\n")
   })
 
-  cat("\n✓ All visualizations complete for", sample_id, "\n\n")
+  cat("\nOK All visualizations complete for", sample_id, "\n\n")
 
   return(gobj)
 }

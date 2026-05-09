@@ -7,10 +7,10 @@
 # merged outputs. Threshold breaches are flagged in summary.md and warnings
 # are echoed to stdout, but nothing here ever stops the pipeline.
 #
-# Required (optional) packages — wrapped in requireNamespace() so the
+# Required (optional) packages, wrapped in requireNamespace() so the
 # pipeline still runs before the Stage-1 deps are installed:
-#   - kBET   (theislab/kBET)        — batch-mixing acceptance rate
-#   - lisi   (immunogenomics/LISI)  — iLISI / cLISI scores
+#   - kBET   (theislab/kBET)       , batch-mixing acceptance rate
+#   - lisi   (immunogenomics/LISI) , iLISI / cLISI scores
 #
 # Always available:
 #   - Delaunay-edge audit (no external deps; uses Giotto accessors)
@@ -115,7 +115,7 @@ if (!exists(".giotto_pdata_dt")) {
 #' @param batch_col Metadata column treated as the batch identifier
 #'   (default "sample_id"; matches cfg$merged$batch_column).
 #' @param biology_cols Character vector of biological metadata columns
-#'   that should NOT be mixed by Harmony — cLISI on these reports whether
+#'   that should NOT be mixed by Harmony, cLISI on these reports whether
 #'   biological signal survived (default c("treatment", "timepoint")).
 #' @param output_dir Merged-pipeline output directory (the parent of the
 #'   "10_Merged" folder).
@@ -155,7 +155,7 @@ run_merge_diagnostics <- function(gobj,
 }
 
 # ------------------------------------------------------------------------------
-# kBET — batch-mixing acceptance rate.
+# kBET, batch-mixing acceptance rate.
 # ------------------------------------------------------------------------------
 .run_kbet <- function(emb, batch, diag_dir) {
   if (is.null(emb)) {
@@ -191,7 +191,7 @@ run_merge_diagnostics <- function(gobj,
 }
 
 # ------------------------------------------------------------------------------
-# LISI — iLISI on batch (mixing), cLISI on biology cols (preservation).
+# LISI, iLISI on batch (mixing), cLISI on biology cols (preservation).
 # ------------------------------------------------------------------------------
 .run_lisi <- function(emb, meta, batch_col, biology_cols, diag_dir) {
   if (is.null(emb)) {
@@ -238,7 +238,7 @@ run_merge_diagnostics <- function(gobj,
   out_path <- file.path(diag_dir, "edge_audit.txt")
   if (is.null(edges) || nrow(edges) == 0) {
     writeLines(c(
-      sprintf("Network '%s' not found on merged object — audit skipped.",
+      sprintf("Network '%s' not found on merged object, audit skipped.",
               network_name),
       "If the network was rebuilt post-merge, the cross-sample edge count",
       "should be re-checked manually."
@@ -274,7 +274,7 @@ run_merge_diagnostics <- function(gobj,
     sprintf("Cross-%s edges: %d (%.4f%%)",
             batch_col, n_cross,
             100 * n_cross / max(n_total, 1L)),
-    "(Expected: 0 — Delaunay network is built per-sample before joinGiottoObjects.)"
+    "(Expected: 0, Delaunay network is built per-sample before joinGiottoObjects.)"
   ), out_path)
   list(status = "ok", cross_sample_edges = n_cross, total_edges = n_total)
 }
@@ -298,7 +298,7 @@ run_merge_diagnostics <- function(gobj,
   kbet_ok <- if (!identical(kbet$status, "ok")) NA
               else kbet$acc_rate >= thresh$kbet_acc_min
   lines <- c(lines, sprintf("| kBET acceptance rate | %s | ≥ %.2f | %s |",
-                            if (is.na(kbet$acc_rate)) "—" else sprintf("%.3f", kbet$acc_rate),
+                            if (is.na(kbet$acc_rate)) "," else sprintf("%.3f", kbet$acc_rate),
                             thresh$kbet_acc_min, flag_pass(kbet_ok)))
   if (!identical(kbet$status, "ok")) {
     lines <- c(lines, sprintf("> kBET %s: %s", kbet$status, kbet$reason %||% ""))
@@ -315,7 +315,7 @@ run_merge_diagnostics <- function(gobj,
                                 r$role, r$column, r$mean_lisi, thr, flag_pass(ok)))
     }
   } else {
-    lines <- c(lines, "| LISI | — | — | SKIP |",
+    lines <- c(lines, "| LISI |, |, | SKIP |",
                        sprintf("> LISI %s: %s", lisi$status, lisi$reason %||% ""))
   }
 
@@ -325,7 +325,7 @@ run_merge_diagnostics <- function(gobj,
   lines <- c(lines,
              sprintf("| Cross-`%s` Delaunay edges | %s | ≤ %d | %s |",
                      batch_col,
-                     if (is.na(edges$cross_sample_edges)) "—"
+                     if (is.na(edges$cross_sample_edges)) ","
                        else as.character(edges$cross_sample_edges),
                      thresh$cross_sample_edges_max,
                      flag_pass(edge_ok)))

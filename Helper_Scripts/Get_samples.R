@@ -39,10 +39,10 @@ get_samples <- function(method = "auto",
   # Determine method
   if (method == "auto") {
     if (file.exists(csv_path)) {
-      cat("✓ Found sample registry CSV, using that\n")
+      cat("OK Found sample registry CSV, using that\n")
       method <- "csv"
     } else {
-      cat("⚠ No sample registry found, auto-detecting\n")
+      cat("Warning: No sample registry found, auto-detecting\n")
       method <- "detect"
     }
   }
@@ -75,7 +75,7 @@ get_samples <- function(method = "auto",
     }
   }
   
-  cat("\n✓ Ready to process", nrow(valid_samples), "samples\n\n")
+  cat("\nOK Ready to process", nrow(valid_samples), "samples\n\n")
   
   return(valid_samples)
 }

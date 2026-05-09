@@ -175,9 +175,9 @@ for (sdir in sample_dirs) {
   dir.create(ann_dir, recursive = TRUE, showWarnings = FALSE)
 
   result <- tryCatch({
-    cat("  Loading checkpoint…\n")
+    cat("  Loading checkpoint...\n")
     gobj <- load_giotto_checkpoint(ckpt_dir)
-    cat("  Running select_best_annotation()…\n")
+    cat("  Running select_best_annotation()...\n")
     select_best_annotation(
       gobj           = gobj,
       annotation_dir = ann_dir,
@@ -201,7 +201,7 @@ for (sdir in sample_dirs) {
   }
 
   sel <- tryCatch(jsonlite::fromJSON(json_path), error = function(e) NULL)
-  cat(sprintf("  ✓ Wrote %s (selected %s, composite=%.3f)\n",
+  cat(sprintf("  OK Wrote %s (selected %s, composite=%.3f)\n",
               basename(json_path),
               sel$selected_annotation_column %||% "<unknown>",
               sel$composite_score %||% NA_real_))

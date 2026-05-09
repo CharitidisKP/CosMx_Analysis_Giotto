@@ -141,7 +141,7 @@ load_samples_from_csv <- function(csv_path = file.path(default_project_dir(), "D
     ) %>%
     select(sample_id, slide_num, directory_name, data_dir, output_dir, Notes)
   
-  cat("✓ Loaded", nrow(samples), "samples from CSV\n\n")
+  cat("OK Loaded", nrow(samples), "samples from CSV\n\n")
   
   return(samples)
 }
@@ -172,7 +172,7 @@ create_sample_registry <- function(output_path = file.path(default_project_dir()
   # Save
   write_csv(registry, output_path)
   
-  cat("✓ Sample registry saved to:", output_path, "\n")
+  cat("OK Sample registry saved to:", output_path, "\n")
   cat("  Review and edit this file, then use it for batch loading\n\n")
   
   # Print preview

@@ -145,7 +145,7 @@ canonical_step_ids <- function(step_ids, type = c("sample", "merged")) {
     "14_pathway_analysis" = "13_pathway",
     "pathway" = "13_pathway",
     "pathway_analysis" = "13_pathway",
-    # Stage 1, Phase 11 — new merged-only steps:
+    # Stage 1, Phase 11, new merged-only steps:
     "merged_annotate" = "merged_annotate",
     "annotate_merged" = "merged_annotate",
     "global_annotate" = "merged_annotate",
@@ -198,11 +198,11 @@ SAMPLE_STEP_ORDER <- c(
 )
 
 # Stage 1 (Phase 11) added five merged-only steps:
-#   merged_annotate — global annotate_cells() on the merged object (Phase 8)
-#   banksy          — BANKSY niche labels (Phase 7)
-#   composition     — propeller paired by patient (Phase 6)
-#   cci_paired      — paired Wilcoxon on per-sample LIANA outputs (Phase 10)
-#   summary         — Quarto/Rmd summary report (Phase 13)
+#   merged_annotate, global annotate_cells() on the merged object (Phase 8)
+#   banksy         , BANKSY niche labels (Phase 7)
+#   composition    , propeller paired by patient (Phase 6)
+#   cci_paired     , paired Wilcoxon on per-sample LIANA outputs (Phase 10)
+#   summary        , Quarto/Rmd summary report (Phase 13)
 MERGED_STEP_ORDER <- c(
   "merge",
   "merge_batch",
@@ -722,7 +722,7 @@ runtime_script_paths <- function() {
       "13_Pathway_Analysis.R",
       # Stage 1 helpers (Phases 3, 6, 7, 8, 10, 13). Each helper wraps its
       # external-package calls in requireNamespace() with skip-and-log
-      # fallback so phases 1–10 can land before Install_Stage1_Dependencies.R
+      # fallback so phases 1-10 can land before Install_Stage1_Dependencies.R
       # has run.
       file.path("Helper_Scripts", "Diagnostics.R"),
       file.path("Helper_Scripts", "Composition_Tests.R"),
@@ -770,7 +770,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
   # Output-aware skip: if the per-step Giotto checkpoint already exists and
   # --overwrite is not set, return the cached gobj instead of re-running.
   # Steps 10 (CCI) and 12 (smiDE) own their per-section/per-step skip
-  # logic internally and must always enter to evaluate it — exempt them.
+  # logic internally and must always enter to evaluate it, exempt them.
   manifest_skip_steps <- c("01_load", "02_qc", "03_norm", "04_dimred",
                            "05_cluster", "06_markers", "07_annotate",
                            "08_visualize", "09_spatial", "11_bcell")
@@ -780,7 +780,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
     ckpt <- checkpoint_dir_for_step(output_dir, step_id)
     if (dir.exists(ckpt) &&
         file.exists(file.path(ckpt, "manifest.json"))) {
-      message("  ↻ ", step_id, " skipped: checkpoint exists. ",
+      message("  Skip: ", step_id, " skipped: checkpoint exists. ",
               "Pass --overwrite to regenerate.")
       return(load_sample_checkpoint(sample_row, step_id))
     }
@@ -1359,7 +1359,7 @@ load_merge_inputs <- function(samples, cfg) {
     }
     gobj
   }, error = function(e) {
-    message("  ⚠ Could not strip polygon centroids from checkpoint (non-fatal): ", conditionMessage(e))
+    message("  Warning: Could not strip polygon centroids from checkpoint (non-fatal): ", conditionMessage(e))
     gobj
   })
 }
@@ -1397,7 +1397,7 @@ run_merged_pipeline <- function(runtime_env,
           x_padding = cfg$merged$x_padding %||% 1000,
           # Re-normalize on the joined raw counts so per-sample scale-factor
           # mismatches don't leak into HVG/Harmony. Default scalefactor=null
-          # → median library size across the merged cells (set explicitly to
+          # -> median library size across the merged cells (set explicitly to
           # an integer to override).
           renormalize = cfg$merged$renormalize %||% TRUE,
           scalefactor = cfg$merged$normalization_scalefactor %||% NULL,
@@ -1709,7 +1709,7 @@ run_pipeline <- function(cli_opts) {
     cfg$pipeline$overwrite_existing <- TRUE
   }
   if (isTRUE(cfg$pipeline$overwrite_existing)) {
-    cat("⚠ --overwrite active: existing checkpoints / section outputs ",
+    cat("Warning: --overwrite active: existing checkpoints / section outputs ",
         "will be regenerated rather than skipped.\n\n", sep = "")
   }
 
@@ -1775,7 +1775,7 @@ run_pipeline <- function(cli_opts) {
   # merged run if listed). Otherwise apply the default-treatments filter
   # from cfg$merged$default_treatments (typically CART + Conventional) so a
   # default `--merged` run excludes Control automatically. Per-sample mode
-  # is unaffected — it always uses the unfiltered `selected_samples`.
+  # is unaffected, it always uses the unfiltered `selected_samples`.
   default_merged_treatments <- cfg$merged$default_treatments %||%
                                 c("CART", "Conventional")
   merged_samples <- if (isTRUE(explicit_samples)) {
@@ -1783,7 +1783,7 @@ run_pipeline <- function(cli_opts) {
   } else {
     keep <- selected_samples$treatment %in% default_merged_treatments
     if (!any(keep)) {
-      # No row matches the default — fall back to the full selection so the
+      # No row matches the default, fall back to the full selection so the
       # auto-skip-when-<2 guard further down produces a meaningful message
       # rather than a zero-row data.frame.
       selected_samples
@@ -1825,9 +1825,9 @@ run_pipeline <- function(cli_opts) {
   # and the analysis output for this run. The bash launcher chooses the
   # path and passes it via --run-dir so all artifacts of one invocation
   # live in one place:
-  #   Merged   →  Output/Merged/Merged_<sample_ids>/
-  #   Single   →  Output/Sample_<sample_id>/
-  #   Multi    →  Output/Pipeline_runs/<tag>_<ts>/
+  #   Merged   ->  Output/Merged/Merged_<sample_ids>/
+  #   Single   ->  Output/Sample_<sample_id>/
+  #   Multi    ->  Output/Pipeline_runs/<tag>_<ts>/
   # If --run-dir is missing (direct Rscript invocation, not through the
   # launcher) fall back to a timestamp under Output/Pipeline_runs/.
   run_dir <- if (!is.null(cli_opts$run_dir) && nzchar(cli_opts$run_dir)) {

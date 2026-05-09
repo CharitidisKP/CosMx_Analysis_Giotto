@@ -475,7 +475,7 @@ create_cci_summary <- function(gobj,
     file.path(summary_dir, paste0(sample_id, "_cci_summary_statistics.csv"))
   )
   
-  cat("✓ CCI summary outputs saved to:", summary_dir, "\n\n")
+  cat("OK CCI summary outputs saved to:", summary_dir, "\n\n")
   
   invisible(list(
     summary_dir = summary_dir,

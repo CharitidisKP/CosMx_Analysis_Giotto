@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
 # CCI_Paired_Comparison.R
-# Cross-sample paired comparison of LIANA ligand–receptor scores.
+# Cross-sample paired comparison of LIANA ligand-receptor scores.
 #
 # Stage 1, Phase 10: consumes the per-sample LIANA outputs already written
 # by 10_CCI_Analysis.R (one liana_consensus.csv per sample) and runs:
@@ -19,7 +19,7 @@ if (!exists("%||%")) {
 }
 
 #' Locate each sample's LIANA consensus CSV. Returns a named list of
-#' file paths (one per sample) — paths that don't exist are dropped with
+#' file paths (one per sample), paths that don't exist are dropped with
 #' a single log line.
 .cci_resolve_liana_paths <- function(sample_table, cfg, per_sample_root = NULL) {
   out_root <- per_sample_root %||%
@@ -84,20 +84,20 @@ run_cci_paired_comparison <- function(sample_table,
                                       cfg,
                                       per_sample_root = NULL) {
   cat("\n========================================\n")
-  cat("CCI paired comparison (per-sample LIANA → paired stats)\n")
+  cat("CCI paired comparison (per-sample LIANA -> paired stats)\n")
   cat("========================================\n\n")
 
   # 1. Locate and load per-sample LIANA tables.
   paths <- .cci_resolve_liana_paths(sample_table, cfg, per_sample_root)
   if (length(paths) < 2L) {
-    cat("⚠ Need ≥ 2 per-sample LIANA outputs; only ", length(paths),
+    cat("Warning: Need ≥ 2 per-sample LIANA outputs; only ", length(paths),
         " found.\n", sep = "")
     return(invisible(NULL))
   }
   long_list <- lapply(names(paths), function(sid) .cci_tidy_liana(paths[[sid]], sid))
   long_df <- do.call(rbind, Filter(Negate(is.null), long_list))
   if (is.null(long_df) || nrow(long_df) == 0L) {
-    cat("⚠ All per-sample LIANA tables empty / unreadable.\n")
+    cat("Warning: All per-sample LIANA tables empty / unreadable.\n")
     return(invisible(NULL))
   }
   long_df$lr_key <- paste(long_df$source, long_df$target,
@@ -111,7 +111,7 @@ run_cci_paired_comparison <- function(sample_table,
     label <- cp$label %||% "<unnamed>"
     design_kind <- cp$design %||% "unpaired"
     if (design_kind == "descriptive") {
-      cat("  [", label, "] descriptive — skipped.\n", sep = "")
+      cat("  [", label, "] descriptive, skipped.\n", sep = "")
       next
     }
     block_col <- cp$block %||% "patient_id"
@@ -130,13 +130,13 @@ run_cci_paired_comparison <- function(sample_table,
     sa <- pick(cp$group_a)
     sb <- pick(cp$group_b)
     if (length(sa) == 0L || length(sb) == 0L) {
-      cat("  [", label, "] group_a/group_b empty — skipped.\n", sep = "")
+      cat("  [", label, "] group_a/group_b empty, skipped.\n", sep = "")
       next
     }
 
     sub <- long_df[long_df$sample_id %in% c(sa, sb), , drop = FALSE]
     if (nrow(sub) == 0L) {
-      cat("  [", label, "] no LIANA rows match selected samples — skipped.\n",
+      cat("  [", label, "] no LIANA rows match selected samples, skipped.\n",
           sep = "")
       next
     }
@@ -209,7 +209,7 @@ run_cci_paired_comparison <- function(sample_table,
     }
 
     if (length(rows) == 0L) {
-      cat("  [", label, "] no testable LR pairs — skipped.\n", sep = "")
+      cat("  [", label, "] no testable LR pairs, skipped.\n", sep = "")
       next
     }
     out_df <- do.call(rbind, rows)
@@ -217,7 +217,7 @@ run_cci_paired_comparison <- function(sample_table,
     out_df <- out_df[order(out_df$p), , drop = FALSE]
     out_path <- file.path(out_dir, paste0(label, "_paired_lrs.csv"))
     utils::write.csv(out_df, out_path, row.names = FALSE)
-    cat("  ✓ [", label, "] wrote ", nrow(out_df), " LR pairs: ",
+    cat("  OK [", label, "] wrote ", nrow(out_df), " LR pairs: ",
         out_path, "\n", sep = "")
     results[[label]] <- out_df
   }

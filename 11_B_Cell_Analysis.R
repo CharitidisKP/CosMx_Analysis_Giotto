@@ -658,7 +658,7 @@ plot_bcell_spatial_and_markers <- function(gobj,
       ggplot2::scale_fill_gradient(low = "lightgrey", high = "red",
                                     name = .pretty(gene)) +
       ggplot2::coord_fixed() +
-      ggplot2::labs(title = title_txt, subtitle = subtitle_txt,
+      ggplot2::labs(title = title_txt,
                     x = NULL, y = NULL) +
       presentation_theme(base_size = 11, legend_position = "right") +
       ggplot2::theme(
@@ -819,8 +819,6 @@ plot_bcell_neighbourhoods <- function(gobj,
       ggplot2::coord_fixed() +
       ggplot2::labs(
         title = paste0(display_sample_label(sample_id), " - ", tag$display, " cluster ", i, " neighbourhood"),
-        subtitle = paste0(row$n_bcells, " ", tag$display, "(s), k = ", k, " - ",
-                          subtitle_common),
         x = NULL, y = NULL
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
@@ -1013,7 +1011,6 @@ plot_bcell_niches <- function(gobj,
       ggplot2::coord_fixed() +
       ggplot2::labs(
         title = paste0(display_sample_label(sample_id), " - spatial niches", title_suffix),
-        subtitle = subtitle_common,
         x = NULL, y = NULL
       ) +
       presentation_theme(base_size = 11, legend_position = "right") +
@@ -1432,8 +1429,8 @@ run_bcell_subclustering <- function(gobj,
                                  width = 10, height = 10, dpi = 600)
           n_sub_fov <- n_sub_fov + 1L
         }
-        cat("  ✓ ", tag$display, " subcluster per-FOV spatial plots: ",
-            n_sub_fov, " written → ", spatial_per_fov_dir, "\n", sep = "")
+        cat("  OK ", tag$display, " subcluster per-FOV spatial plots: ",
+            n_sub_fov, " written -> ", spatial_per_fov_dir, "\n", sep = "")
       }
     }
   }, error = function(e) {
@@ -1504,8 +1501,8 @@ run_bcell_subclustering <- function(gobj,
           ) +
           ggplot2::labs(
             title = paste0(display_sample_label(sample_id), " - ", tag$display, " subcluster x proximity"),
-            subtitle = sprintf(paste0("Mean cell-type composition of k = %d nearest non-",
-                                      tag$display, " neighbours"),
+            subtitle = sprintf(paste0("Mean cell-type composition (k = %d nearest non-",
+                                      tag$display, " neighbours)"),
                                k_prox),
             x = paste0(tag$display, " subcluster"), y = "Neighbour cell type"
           ) +
@@ -1581,7 +1578,7 @@ run_bcell_microenvironment_analysis <- function(gobj,
   cat("Focus regex: ", bcell_regex, "\n")
 
   # Resolve the focus tag once so every output CSV filename tracks the
-  # focused population (e.g. tcell → _tcell_interactions.csv). Previously
+  # focused population (e.g. tcell -> _tcell_interactions.csv). Previously
   # every focus emitted _bcell_*.csv regardless of the actual focus cell
   # type, mislabelling T-cell outputs as B-cell.
   env_tag <- .focus_tag(focus_label)

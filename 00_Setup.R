@@ -81,13 +81,13 @@ setup_environment <- function(verbose = TRUE) {
       reticulate::use_python(python_path, required = TRUE)
       reticulate::py_run_string("pass")
       if (verbose) {
-        cat("  ✓ reticulate pinned to: ", reticulate::py_config()$python, "\n\n")
+        cat("  OK reticulate pinned to: ", reticulate::py_config()$python, "\n\n")
       }
     }, error = function(e) {
-      if (verbose) cat("  ⚠ early reticulate pin failed:", conditionMessage(e), "\n\n")
+      if (verbose) cat("  Warning: early reticulate pin failed:", conditionMessage(e), "\n\n")
     })
   } else if (verbose) {
-    cat("  ⚠ skipping pin (path missing or reticulate unavailable)\n\n")
+    cat("  Warning: skipping pin (path missing or reticulate unavailable)\n\n")
   }
 
   # Define package list in STRICT load order
@@ -143,9 +143,9 @@ setup_environment <- function(verbose = TRUE) {
       } else {
         if (verbose) {
           if (pkg %in% manual_install_packages) {
-            cat("  ✗", pkg, "- not installed (install manually; non-CRAN dependency)\n")
+            cat("  FAIL", pkg, "- not installed (install manually; non-CRAN dependency)\n")
           } else {
-            cat("  ✗", pkg, "- not installed\n")
+            cat("  FAIL", pkg, "- not installed\n")
           }
         }
         return(FALSE)
@@ -168,9 +168,9 @@ setup_environment <- function(verbose = TRUE) {
     for (pkg in packages_to_load) {
       success <- load_package(pkg)
       if (success) {
-        if (verbose) cat("  ✓", pkg, "\n")
+        if (verbose) cat("  OK", pkg, "\n")
       } else {
-        if (verbose) cat("  ✗", pkg, "- FAILED\n")
+        if (verbose) cat("  FAIL", pkg, "- FAILED\n")
         failed_packages <- c(failed_packages, pkg)
       }
     }
@@ -190,7 +190,7 @@ setup_environment <- function(verbose = TRUE) {
               paste(failed_packages, collapse = ", "))
     }
   } else {
-    if (verbose) cat("✓ All required packages already loaded\n\n")
+    if (verbose) cat("OK All required packages already loaded\n\n")
   }
   
   # Verify critical packages
@@ -204,7 +204,7 @@ setup_environment <- function(verbose = TRUE) {
     stop("Critical packages not available: ", paste(missing, collapse = ", "))
   }
   
-  if (verbose) cat("✓ All critical packages verified\n\n")
+  if (verbose) cat("OK All critical packages verified\n\n")
   
   # Configure Python
   if (verbose) cat("Configuring Python...\n")
@@ -214,7 +214,7 @@ setup_environment <- function(verbose = TRUE) {
     }
     py_config <- reticulate::py_config()
     if (verbose) {
-      cat("✓ Python:", as.character(py_config$version), "\n")
+      cat("OK Python:", as.character(py_config$version), "\n")
       cat("  Path:", py_config$python, "\n")
     }
     
@@ -231,12 +231,12 @@ setup_environment <- function(verbose = TRUE) {
         ". Giotto functions that rely on them may fail."
       )
       if (verbose) {
-        cat("  ⚠ missing python modules:", paste(missing_python_modules, collapse = ", "), "\n")
+        cat("  Warning: missing python modules:", paste(missing_python_modules, collapse = ", "), "\n")
       }
     }
     if (verbose) cat("\n")
   }, error = function(e) {
-    if (verbose) cat("⚠ Python warning, continuing...\n\n")
+    if (verbose) cat("Warning: Python warning, continuing...\n\n")
   })
   
   # Source helpers
@@ -274,17 +274,17 @@ setup_environment <- function(verbose = TRUE) {
       tryCatch({
         source(path)
         sourced_count <- sourced_count + 1
-        if (verbose) cat("  ✓", hf, "\n")
+        if (verbose) cat("  OK", hf, "\n")
       }, error = function(e) {
-        if (verbose) cat("  ⚠", hf, "\n")
+        if (verbose) cat("  Warning:", hf, "\n")
       })
     } else {
-      if (verbose) cat("  ⚠", hf, "- not found\n")
+      if (verbose) cat("  Warning:", hf, "- not found\n")
     }
   }
   
   if (verbose) {
-    cat("\n✓ Environment setup complete\n")
+    cat("\nOK Environment setup complete\n")
     cat("  Project dir:", project_dir, "\n")
     cat("  Packages checked:", length(packages), "\n")
     cat("  Helpers loaded:", sourced_count, "/", length(helper_files), "\n\n")
@@ -305,7 +305,7 @@ if (!exists(".cosmx_env_setup_complete")) {
   python_path <<- env_config$python_path
   .cosmx_env_setup_complete <<- TRUE
 } else {
-  cat("\n✓ Environment already initialized\n\n")
+  cat("\nOK Environment already initialized\n\n")
   env_config <- list(
     project_dir = get(".cosmx_project_dir", envir = .GlobalEnv),
     python_path = get("python_path", envir = .GlobalEnv),

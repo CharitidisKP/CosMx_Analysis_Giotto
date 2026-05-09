@@ -55,11 +55,11 @@
   genes_hit  <- intersect(genes_in, rownames(expr))
   genes_skip <- setdiff(genes_in, genes_hit)
   if (length(genes_skip) > 0) {
-    cat(sprintf("  ℹ %d gene(s) absent from expression matrix: %s\n",
+    cat(sprintf("  Info: %d gene(s) absent from expression matrix: %s\n",
                 length(genes_skip), paste(genes_skip, collapse = ", ")))
   }
   if (length(genes_hit) == 0) {
-    cat("  ℹ no genes available for heatmap; skipping\n")
+    cat("  Info: no genes available for heatmap; skipping\n")
     return(invisible(NULL))
   }
 
@@ -122,7 +122,7 @@
     dpi      = 300
   )
 
-  cat("✓ Heatmap saved:", basename(out_path), "\n\n")
+  cat("OK Heatmap saved:", basename(out_path), "\n\n")
   invisible(out_path)
 }
 
@@ -227,7 +227,7 @@ marker_analysis <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
   
   results_folder <- file.path(output_dir, "06_Markers")
@@ -249,7 +249,7 @@ marker_analysis <- function(gobj,
     direction         = "up"
   )
   
-  cat("✓ Markers found\n\n")
+  cat("OK Markers found\n\n")
   
   # Belt-and-braces upregulated filter (Giotto wrapper drops direction = "up"); detect the logFC column dynamically (Giotto renames scran's summary.logFC to logFC) and skip filtering with a warning if the schema changes.
   lfc_candidates <- c("summary.logFC", "summary_logFC", "logFC",
@@ -279,7 +279,7 @@ marker_analysis <- function(gobj,
   write_csv(top_markers,
             file.path(tables_folder, paste0(sample_id, "_top_markers.csv")))
 
-  cat("✓ Marker tables saved (06_Markers/tables/)\n\n")
+  cat("OK Marker tables saved (06_Markers/tables/)\n\n")
   
   # Create heatmap of top markers (custom ggplot tile heatmap; replaces Giotto's
   # plotMetaDataHeatmap() for visual consistency with the rest of the pipeline).
@@ -346,7 +346,7 @@ marker_analysis <- function(gobj,
     dpi      = 300
   )
 
-  cat("✓ Violin plots saved\n\n")
+  cat("OK Violin plots saved\n\n")
 
   # B-cell-genes violin variant (panel-present subset; main + subtype markers).
   if (length(b_all) > 0) {
@@ -373,9 +373,9 @@ marker_analysis <- function(gobj,
         height   = max(8, 1.0 * length(b_present) + 2),
         dpi      = 300
       )
-      cat("✓ B-cell violin plots saved\n\n")
+      cat("OK B-cell violin plots saved\n\n")
     } else {
-      cat("  ℹ no B-cell markers present on panel; skipping B-cell violins\n\n")
+      cat("  Info: no B-cell markers present on panel; skipping B-cell violins\n\n")
     }
   }
 
@@ -542,7 +542,7 @@ marker_analysis <- function(gobj,
   cat("Top markers per cluster:", top_n, "\n")
   cat("Clusters analyzed:", length(unique(markers_scran$cluster)), "\n")
   
-  cat("\n✓ Marker analysis complete for", sample_id, "\n\n")
+  cat("\nOK Marker analysis complete for", sample_id, "\n\n")
   
   return(gobj)
 }
@@ -565,7 +565,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
 
     # B-cell marker lists can be passed via env vars so the CLI entry point
     # works the same way whether it's invoked by the orchestrator (which
-    # reads Parameters/config.yaml) or by hand via Rscript. Unset / empty →
+    # reads Parameters/config.yaml) or by hand via Rscript. Unset / empty ->
     # character(); the B-cell heatmap and violin blocks skip gracefully.
     .parse_gene_env <- function(name) {
       raw <- Sys.getenv(name, unset = "")

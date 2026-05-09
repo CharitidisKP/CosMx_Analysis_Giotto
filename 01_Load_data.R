@@ -77,12 +77,12 @@
   
   if (length(common_ids) < nrow(expr_data) || length(common_ids) < nrow(metadata)) {
     cat(
-      "⚠ Retaining the shared cells only:",
+      "Warning: Retaining the shared cells only:",
       length(common_ids), "of", nrow(expr_data), "expression rows and",
       nrow(metadata), "metadata rows\n"
     )
   } else {
-    cat("✓ 100% cell ID match\n")
+    cat("OK 100% cell ID match\n")
   }
   
   expr_data <- expr_data %>%
@@ -145,7 +145,7 @@
   y_col <- c("CenterY_global_px", "y_global_px", "CenterY_local_px")[c("CenterY_global_px", "y_global_px", "CenterY_local_px") %in% names(metadata)][1]
   
   if (is.na(x_col) || is.na(y_col)) {
-    cat("⚠ No coordinate columns found in metadata; Giotto object will be created without explicit spatial_locs\n\n")
+    cat("Warning: No coordinate columns found in metadata; Giotto object will be created without explicit spatial_locs\n\n")
     return(NULL)
   }
   
@@ -158,7 +158,7 @@
     dplyr::filter(!is.na(sdimx) & !is.na(sdimy))
   
   if (nrow(spatlocs) == 0) {
-    cat("⚠ Metadata coordinates were empty after numeric conversion; Giotto object will be created without explicit spatial_locs\n\n")
+    cat("Warning: Metadata coordinates were empty after numeric conversion; Giotto object will be created without explicit spatial_locs\n\n")
     return(NULL)
   }
   
@@ -325,7 +325,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   
   required_files <- c(expr_file, meta_file, fov_file, poly_file)
   for (file_path in required_files) {
-    cat("✓", basename(file_path), "\n")
+    cat("OK", basename(file_path), "\n")
   }
   cat("\n")
   
@@ -392,11 +392,11 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   # Handle duplicate gene names
   if (any(duplicated(rownames(expr_matrix)))) {
     n_dups <- sum(duplicated(rownames(expr_matrix)))
-    cat("⚠ Making", n_dups, "duplicate gene names unique...\n")
+    cat("Warning: Making", n_dups, "duplicate gene names unique...\n")
     rownames(expr_matrix) <- make.unique(rownames(expr_matrix), sep = "_")
   }
   
-  cat("✓ Expression matrix prepared:", nrow(expr_matrix), "genes x",
+  cat("OK Expression matrix prepared:", nrow(expr_matrix), "genes x",
       ncol(expr_matrix), "cells\n\n")
   
   # Prepare metadata
@@ -414,7 +414,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
     instructions = instructions
   )
   
-  cat("✓ Giotto object created\n\n")
+  cat("OK Giotto object created\n\n")
   
   # Add metadata
   cat("Adding metadata...\n")
@@ -426,10 +426,10 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
     column_cell_ID = "giotto_cell_ID"
   )
   
-  cat("✓ Metadata added\n\n")
+  cat("OK Metadata added\n\n")
   
   if (!is.null(spatial_locs)) {
-    cat("✓ Spatial locations registered during object creation\n\n")
+    cat("OK Spatial locations registered during object creation\n\n")
   }
   
   .write_fov_report(
@@ -442,7 +442,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
   # Add polygons
   cat("Loading polygons...\n")
   cosmx <- add_polygons_from_csv(cosmx, poly_file)
-  cat("✓ Polygons added\n\n")
+  cat("OK Polygons added\n\n")
   
   # ── NEW: Object integrity report ──────────────────────────────────────────────
   .giotto_object_report(
@@ -464,7 +464,7 @@ load_cosmx_sample <- function(sample_id, data_dir, output_dir,
     gc(verbose = FALSE)
   }
   
-  cat("\n✓ Data loading complete\n")
+  cat("\nOK Data loading complete\n")
   
   return(cosmx)
 }
@@ -481,7 +481,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     "Polygon file"
   )
   
-  cat("✓ Polygon data loaded:", nrow(poly_data), "vertices\n")
+  cat("OK Polygon data loaded:", nrow(poly_data), "vertices\n")
   
   # The 'cell' column already has the proper IDs!
   cat("Using existing cell IDs from polygon file\n")
@@ -519,7 +519,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
     stop("No valid polygons created")
   }
   
-  cat("✓ Created", length(vects), "valid polygons\n")
+  cat("OK Created", length(vects), "valid polygons\n")
   
   # Combine all polygons
   spat_vect <- do.call(rbind, vects)
@@ -559,7 +559,7 @@ add_polygons_from_csv <- function(gobj, polygon_file) {
         poly_info = "cell"
       )
     }, error = function(e) {
-      cat("⚠ Could not add centroid locations (non-critical)\n")
+      cat("Warning: Could not add centroid locations (non-critical)\n")
     })
   }
   

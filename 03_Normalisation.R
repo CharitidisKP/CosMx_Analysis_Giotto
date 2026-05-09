@@ -122,7 +122,7 @@ if ((!exists("presentation_theme") || !exists("sample_plot_title") || !exists("s
     
     slot_ids <- colnames(slot_matrix)
     if (is.null(slot_ids) || !identical(slot_ids, reference_ids)) {
-      cat("⚠ Removing misaligned expression slot:", slot_name, "\n")
+      cat("Warning: Removing misaligned expression slot:", slot_name, "\n")
       gobj@expression$cell$rna[[slot_name]] <- NULL
     }
   }
@@ -150,7 +150,7 @@ normalize_expression <- function(gobj,
   if (is.character(gobj)) {
     cat("Loading Giotto object from:", gobj, "\n")
     gobj <- loadGiotto(gobj)
-    cat("✓ Loaded\n\n")
+    cat("OK Loaded\n\n")
   }
 
   results_folder <- file.path(output_dir, "03_Normalization")
@@ -205,7 +205,7 @@ normalize_expression <- function(gobj,
   
   gobj <- .sanitize_expression_slots(gobj)
   
-  cat("\n✓ Normalization complete\n\n")
+  cat("\nOK Normalization complete\n\n")
   
   # Check normalized data
   cat("=== Normalization Summary ===\n")
@@ -258,7 +258,7 @@ normalize_expression <- function(gobj,
       bg = "white"
     )
     
-    cat("\n✓ Comparison plots saved\n")
+    cat("\nOK Comparison plots saved\n")
   }
 
   # Audit trail: record normalization parameters + summary statistics.
@@ -297,7 +297,7 @@ normalize_expression <- function(gobj,
         conditionMessage(e), "\n")
   })
 
-  cat("\n✓ Normalization complete for", sample_id, "\n\n")
+  cat("\nOK Normalization complete for", sample_id, "\n\n")
 
   return(gobj)
 }

@@ -101,7 +101,7 @@ run_composition_tests <- function(gobj,
                                   output_dir,
                                   cfg) {
   if (!requireNamespace("speckle", quietly = TRUE)) {
-    cat("⚠ speckle not installed — skipping composition tests.\n")
+    cat("Warning: speckle not installed, skipping composition tests.\n")
     return(invisible(NULL))
   }
 
@@ -114,7 +114,7 @@ run_composition_tests <- function(gobj,
     # Fall back to any celltype_*_supervised column present.
     cand <- grep("^celltype_.*_supervised$", names(meta), value = TRUE)
     if (length(cand) == 0L) {
-      cat("⚠ Composition tests: no cell-type column found.\n")
+      cat("Warning: Composition tests: no cell-type column found.\n")
       return(invisible(NULL))
     }
     celltype_col <- cand[1]
@@ -135,7 +135,7 @@ run_composition_tests <- function(gobj,
     label <- cp$label %||% "<unnamed>"
     design_kind <- cp$design %||% "unpaired"
     if (design_kind == "descriptive") {
-      cat("  [", label, "] design=descriptive — skipped (no inferential test).\n",
+      cat("  [", label, "] design=descriptive, skipped (no inferential test).\n",
           sep = "")
       next
     }
@@ -143,12 +143,12 @@ run_composition_tests <- function(gobj,
 
     grp <- .composition_resolve_groups(meta, cp, sample_col = sample_col)
     if (is.null(grp)) {
-      cat("  [", label, "] group_a or group_b empty — skipped.\n", sep = "")
+      cat("  [", label, "] group_a or group_b empty, skipped.\n", sep = "")
       next
     }
     samples <- c(grp$samples_a, grp$samples_b)
     if (length(samples) < 2L) {
-      cat("  [", label, "] only ", length(samples), " sample(s) — skipped.\n",
+      cat("  [", label, "] only ", length(samples), " sample(s), skipped.\n",
           sep = "")
       next
     }
@@ -218,9 +218,9 @@ run_composition_tests <- function(gobj,
     rownames(out_df) <- NULL
     out_path <- file.path(out_dir, paste0(label, ".csv"))
     utils::write.csv(out_df, out_path, row.names = FALSE)
-    cat("  ✓ [", label, "] design=", propeller_design,
+    cat("  OK [", label, "] design=", propeller_design,
         " n=", n_a, "/", n_b,
-        " — wrote ", out_path, "\n", sep = "")
+        ", wrote ", out_path, "\n", sep = "")
     results[[label]] <- out_df
   }
 
@@ -236,16 +236,16 @@ run_niche_composition_tests <- function(gobj,
                                         cfg,
                                         niche_col = "niche_id") {
   if (!requireNamespace("speckle", quietly = TRUE)) {
-    cat("⚠ speckle not installed — skipping niche composition tests.\n")
+    cat("Warning: speckle not installed, skipping niche composition tests.\n")
     return(invisible(NULL))
   }
   meta <- as.data.frame(.giotto_pdata_dt(gobj))
   if (!niche_col %in% names(meta)) {
     cat("  Niche composition: '", niche_col,
-        "' column missing — run BANKSY (Phase 7) first.\n", sep = "")
+        "' column missing, run BANKSY (Phase 7) first.\n", sep = "")
     return(invisible(NULL))
   }
-  # Re-use run_composition_tests by renaming niche_col → celltype_<niche>
+  # Re-use run_composition_tests by renaming niche_col -> celltype_<niche>
   # in a shadow object so the existing path picks it up. To avoid mutating
   # the merged Giotto object, we re-implement the small inner loop here
   # against a tweaked celltype_col.
@@ -258,7 +258,7 @@ run_niche_composition_tests <- function(gobj,
   results <- run_composition_tests(
     gobj         = gobj,
     comparisons  = comparisons,
-    output_dir   = out_dir,        # → out_dir/15_Composition/<label>.csv
+    output_dir   = out_dir,        # -> out_dir/15_Composition/<label>.csv
     cfg          = cfg2
   )
   invisible(results)

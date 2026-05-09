@@ -616,7 +616,7 @@ select_best_annotation <- function(gobj,
   id_col <- intersect(c("poly_ID", "cell_ID", "id"), names(poly_attr))
   if (length(id_col) == 0) return(NULL)
 
-  # Map geom index → cell ID (geom is 1-based sequential integer)
+  # Map geom index -> cell ID (geom is 1-based sequential integer)
   poly_coords$cell_ID <- poly_attr[[id_col[1]]][poly_coords$geom]
   poly_coords
 }
@@ -2199,7 +2199,7 @@ annotate_cells <- function(gobj,
                                function(p) identical(p$name, default_profile),
                                logical(1)))
       if (length(keep_idx) == 0) {
-        cat("⚠ default_profile '", default_profile,
+        cat("Warning: default_profile '", default_profile,
             "' not found in profile list; keeping first profile only.\n", sep = "")
         keep_idx <- 1
       }
@@ -2269,7 +2269,7 @@ annotate_cells <- function(gobj,
   
   if (!.profile_set_has_immune_reference(profiles)) {
     cat(
-      "⚠ The configured annotation profiles look kidney-centric and may coarsely label infiltrating immune cells.\n",
+      "Warning: The configured annotation profiles look kidney-centric and may coarsely label infiltrating immune cells.\n",
       "  For lupus nephritis work, consider adding a PBMC, immune atlas, or custom LN immune reference.\n\n",
       sep = ""
     )
@@ -2817,7 +2817,7 @@ annotate_cells <- function(gobj,
       
       # BLOCK D: OPTIONAL INLINE REFINEMENT --------------------------------
       if (!isTRUE(refinement)) {
-        cat("  ↻ Refinement disabled by config (annotation.refinement = false)\n")
+        cat("  Skip: Refinement disabled by config (annotation.refinement = false)\n")
       } else if (!is.null(conf_threshold) && conf_threshold > 0) {
         gobj <- refine_annotation(
           gobj           = gobj,
@@ -3285,7 +3285,6 @@ annotate_cells <- function(gobj,
         ) +
         ggplot2::labs(
           title    = sample_plot_title(sample_id, "Per-cluster annotation purity"),
-          subtitle = paste0("Dominant label fraction (", best, ")"),
           x = "Leiden cluster", y = "Dominant-label fraction",
           fill = "Dominant label"
         ) +
@@ -3353,7 +3352,7 @@ annotate_cells <- function(gobj,
             width    = max(10, 0.4 * nrow(best_per_cluster) + 4),
             height   = 10, dpi = 300
           )
-          cat("  ✓ cluster_purity_with_bcell_top saved\n")
+          cat("  OK cluster_purity_with_bcell_top saved\n")
         } else {
           # Fallback: just save the top strip alongside the existing plot.
           save_presentation_plot(
@@ -3365,7 +3364,7 @@ annotate_cells <- function(gobj,
           )
         }
       }, error = function(e) {
-        cat("  ⚠ cluster_purity_with_bcell_top failed: ",
+        cat("  Warning: cluster_purity_with_bcell_top failed: ",
             conditionMessage(e), "\n", sep = "")
       })
 
@@ -3439,7 +3438,7 @@ if (!interactive() && !isTRUE(getOption("cosmx.disable_cli", FALSE))) {
 
     # Composite-awareness: resolve sample sheet + sample_row so the spatial
     # annotation wrapper can emit per-sub-biopsy variants. Optional: unset env
-    # var + missing sheet → single plot only (wrapper silently no-ops).
+    # var + missing sheet -> single plot only (wrapper silently no-ops).
     sheet_path <- Sys.getenv("COSMX_SAMPLE_SHEET", unset = "")
     if (!nzchar(sheet_path) && !is.null(config$paths$sample_sheet)) {
       sheet_path <- config$paths$sample_sheet
