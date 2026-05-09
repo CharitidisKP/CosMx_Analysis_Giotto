@@ -230,6 +230,11 @@ export APPTAINERENV_COSMX_PYTHON_PATH="$COSMX_PYTHON_PATH"
 export APPTAINERENV_RETICULATE_PYTHON="$COSMX_PYTHON_PATH"
 export APPTAINERENV_VROOM_TEMP_PATH="$TMPDIR_HOST"
 export APPTAINERENV_TMPDIR="$TMPDIR_HOST"
+# Cap BLAS/OMP threads to 1 to keep fork-parallel code (smiDE mclapply, future inner_workers, BANKSY/Harmony helpers) from oversubscribing. Multi-threaded BLAS x N forked workers crashes glmmTMB/TMB; capping at 1 trades per-step throughput for stability across every fork-parallel consumer.
+export APPTAINERENV_OMP_NUM_THREADS=1
+export APPTAINERENV_OPENBLAS_NUM_THREADS=1
+export APPTAINERENV_MKL_NUM_THREADS=1
+export APPTAINERENV_BLIS_NUM_THREADS=1
 
 if (( IS_DRY_RUN )); then
   apptainer exec --cleanenv \
@@ -242,6 +247,10 @@ if (( IS_DRY_RUN )); then
     --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
     --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
     --env TMPDIR="$TMPDIR_HOST" \
+    --env OMP_NUM_THREADS=1 \
+    --env OPENBLAS_NUM_THREADS=1 \
+    --env MKL_NUM_THREADS=1 \
+    --env BLIS_NUM_THREADS=1 \
     --bind ~/rs-nss/passwd:/etc/passwd:ro \
     --bind ~/rs-nss/group:/etc/group:ro \
     --bind "$HOME":"$HOME" \
@@ -261,6 +270,10 @@ else
     --env RETICULATE_PYTHON="$COSMX_PYTHON_PATH" \
     --env VROOM_TEMP_PATH="$TMPDIR_HOST" \
     --env TMPDIR="$TMPDIR_HOST" \
+    --env OMP_NUM_THREADS=1 \
+    --env OPENBLAS_NUM_THREADS=1 \
+    --env MKL_NUM_THREADS=1 \
+    --env BLIS_NUM_THREADS=1 \
     --bind ~/rs-nss/passwd:/etc/passwd:ro \
     --bind ~/rs-nss/group:/etc/group:ro \
     --bind "$HOME":"$HOME" \

@@ -215,7 +215,7 @@ cci:
     nichenet: true
     misty: true
     nnsvg: true
-  nichenet_mode: "single"
+  nichenet_mode: "all_senders_to_receiver"   # one ligand-activity comparison per sender celltype against the receiver, giving per-sender ranking instead of one bundled signal
   sender_celltypes: null
   receiver_celltype: "B cell"
   target_genes: null
