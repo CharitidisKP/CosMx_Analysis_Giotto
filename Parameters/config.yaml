@@ -265,7 +265,7 @@ interaction:
 spatial_de:
   annotation_column: "celltype_HCA_Kidney_supervised"
   leiden_column: "leiden_clust"
-  stratify_by: ["celltype", "leiden"]      # one smiDE call per (stratifier x comparison), [] = legacy single-call
+  stratify_by: ["celltype", "leiden"]      # merged pipeline only - has no effect on per-sample runs
   use_pathway_comparisons: true            # mirror pathway.comparisons, set false to use spatial_de.comparisons
   smide_min_cells_per_stratum: 200
   smide_max_strata_per_comparison: 30
@@ -287,7 +287,16 @@ spatial_de:
   smide_ncores: 1                          # only consumed by smiDE::smi_de(nCores=); multi-core fork crashes glmmTMB/TMB under multi-threaded BLAS
   smide_inner_workers: 1                   # reserved for the per-cell-type parallel refactor
   smide_overlap_threshold: 0.8             # 1 = disabled, lower = stricter cross-cell contamination filter
-  smide_annotation_subset: null            # legacy filter, used only when stratify_by is empty
+  smide_annotation_subset:                 # restrict to immune infiltrates; structural types skipped
+    - "B cell"
+    - "Naive B cell"
+    - "Memory B cell"
+    - "Plasma cell"
+    - "Plasmablast"
+    - "CD4 T cell"
+    - "CD8 T cell"
+    - "Treg"
+    - "T cell"
   smide_min_detection_fraction: 0.01
   smide_custom_predictor: null
   smide_partner_celltypes: null
