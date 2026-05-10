@@ -156,6 +156,7 @@ parameters:
       high_conf_fraction: 0.25
       composition: 0.30
       coverage: 0.10
+    markers_top_n: 25             # top N upregulated markers per celltype written to 07_Annotation/tables/
 
   # Step 08: Visualization
   visualization:

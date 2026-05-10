@@ -2156,6 +2156,62 @@ if (!exists("%||%")) {
   any(grepl("immune|pbmc|lymph|lupus|bcell|tcell|myeloid", profile_text, ignore.case = TRUE))
 }
 
+# Per-celltype markers (one-vs-all scran). Runs after celltype column is committed.
+.run_annotation_markers <- function(gobj, sample_id, output_dir,
+                                    celltype_col = "celltype", top_n = 25) {
+  tables_dir <- file.path(output_dir, "07_Annotation", "tables")
+  dir.create(tables_dir, recursive = TRUE, showWarnings = FALSE)
+
+  meta <- as.data.frame(pDataDT(gobj))
+  if (!celltype_col %in% names(meta)) {
+    cat(sprintf("  [annotation markers] column '%s' not found; skipping\n", celltype_col))
+    return(invisible(NULL))
+  }
+  n_types <- length(unique(stats::na.omit(as.character(meta[[celltype_col]]))))
+  if (n_types < 2L) {
+    cat("  [annotation markers] fewer than 2 celltypes; skipping\n")
+    return(invisible(NULL))
+  }
+
+  cat(sprintf("  [annotation markers] running findMarkers_one_vs_all by celltype (%d types)...\n", n_types))
+  markers_all <- tryCatch(
+    findMarkers_one_vs_all(
+      gobject           = gobj,
+      method            = "scran",
+      expression_values = "normalized",
+      cluster_column    = celltype_col,
+      min_feats         = 3,
+      direction         = "up"
+    ),
+    error = function(e) {
+      cat(sprintf("  [annotation markers] failed: %s\n", conditionMessage(e)))
+      NULL
+    }
+  )
+  if (is.null(markers_all)) return(invisible(NULL))
+
+  markers_df <- as.data.frame(markers_all)
+  if ("feats" %in% names(markers_df) && !"gene" %in% names(markers_df))
+    names(markers_df)[names(markers_df) == "feats"] <- "gene"
+
+  lfc_col <- intersect(c("summary.logFC", "summary_logFC", "logFC"), names(markers_df))[1]
+
+  readr::write_csv(markers_df,
+    file.path(tables_dir, paste0(sample_id, "_annotation_all_markers.csv")))
+
+  top_markers <- markers_df
+  if (!is.na(lfc_col)) top_markers <- dplyr::filter(top_markers, .data[[lfc_col]] > 0)
+  top_markers <- dplyr::group_by(top_markers, cluster) |>
+    dplyr::slice_head(n = top_n) |>
+    dplyr::ungroup()
+
+  readr::write_csv(top_markers,
+    file.path(tables_dir, paste0(sample_id, "_annotation_top_markers.csv")))
+
+  cat(sprintf("  [annotation markers] OK - %d rows written to 07_Annotation/tables/\n", nrow(top_markers)))
+  invisible(top_markers)
+}
+
 annotate_cells <- function(gobj,
                            sample_id,
                            output_dir,
@@ -2176,7 +2232,8 @@ annotate_cells <- function(gobj,
                            save_object       = TRUE,
                            seed              = 42,
                            sample_row        = NULL,
-                           sample_sheet_path = NULL) {
+                           sample_sheet_path = NULL,
+                           annotation_markers_top_n = 25) {
 
   cat("\n========================================\n")
   cat("STEP 07: Cell Type Annotation\n")
@@ -3164,6 +3221,14 @@ annotate_cells <- function(gobj,
           conditionMessage(e), "\n", sep = "")
     })
   }
+
+  # Per-annotated-celltype markers (after celltype column is committed in either branch).
+  tryCatch(
+    .run_annotation_markers(gobj, sample_id, output_dir,
+                            celltype_col = "celltype",
+                            top_n        = annotation_markers_top_n),
+    error = function(e) cat(sprintf("  Warning: annotation markers failed: %s\n", conditionMessage(e)))
+  )
 
   # B cell highlight plots (runs in every profile_strategy) --------------
   if (!is.null(annotation_selection)) {

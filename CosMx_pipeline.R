@@ -932,6 +932,7 @@ invoke_sample_step <- function(runtime_env, step_id, gobj, sample_row, cfg) {
       create_plots      = cfg$parameters$annotation$create_plots %||% TRUE,
       conf_threshold    = cfg$parameters$annotation$conf_threshold %||% NULL,
       score_weights     = cfg$parameters$annotation$score_weights %||% NULL,
+      annotation_markers_top_n = cfg$parameters$annotation$markers_top_n %||% 25,
       profile_strategy  = cfg$parameters$annotation$profile_strategy %||% "default",
       refinement              = isTRUE(cfg$parameters$annotation$refinement %||% TRUE),
       unsupervised_n_clusts   = cfg$parameters$annotation$unsupervised_n_clusts   %||% "auto",
