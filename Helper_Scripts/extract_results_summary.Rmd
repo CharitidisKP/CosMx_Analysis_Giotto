@@ -365,6 +365,80 @@ if (nrow(markers_capped) > 0) {
 }
 ```
 
+# 5b. Cell-type markers (annotation DE)
+
+```{r annotation_markers, results = "asis"}
+annot_markers_all <- samples_df %>%
+  filter(!is.na(sample_dir)) %>%
+  pmap_dfr(function(sample_id, sample_dir, treatment, timepoint, ...) {
+    p <- file.path(sample_dir, "07_Annotation", "tables",
+                   paste0(sample_id, "_annotation_all_markers.csv"))
+    df <- read_csv_safe(p)
+    if (is.null(df)) return(NULL)
+    df %>% mutate(sample_id = sample_id, treatment = treatment, timepoint = timepoint, .before = 1)
+  })
+
+annot_markers_all %>% write_summary("04b_annotation_marker_summary_all.csv",
+                                     n_samples_expected = nrow(samples_df))
+
+if (nrow(annot_markers_all) > 0) {
+  rank_col_a <- intersect(c("FDR", "padj", "p.value", "p_val", "pval"), names(annot_markers_all))[1]
+  lfc_col_a  <- intersect(c("summary.logFC", "summary_logFC", "logFC", "median.logFC.other"),
+                           names(annot_markers_all))[1]
+  if (!is.na(rank_col_a)) {
+    annot_markers_capped <- annot_markers_all %>%
+      group_by(sample_id, cluster) %>%
+      arrange(.data[[rank_col_a]],
+              if (!is.na(lfc_col_a)) dplyr::desc(.data[[lfc_col_a]]) else 0,
+              .by_group = TRUE) %>%
+      slice_head(n = top_n_markers) %>%
+      ungroup()
+  } else {
+    annot_markers_capped <- annot_markers_all
+  }
+} else {
+  annot_markers_capped <- tibble::tibble()
+}
+
+annot_markers_capped %>% write_summary("04b_annotation_marker_summary.csv",
+                                        n_samples_expected = nrow(samples_df))
+
+# B-cell marker spotlight: flag genes of interest across samples.
+bcell_genes <- c("CD19", "MS4A1", "CD79A", "CD79B", "IGHG1", "IGHG2", "IGHM",
+                 "IGKC", "IGLC1", "IGLC2", "IGLL1", "IGHD", "CR2", "FCRL4",
+                 "TNFRSF13B", "PRDM1", "IRF4", "XBP1", "CD38", "SDC1",
+                 "PTPRC", "SELL", "CXCR5", "BCL6", "AID", "AICDA")
+
+gene_col_a <- intersect(c("gene", "feats", "feature"), names(annot_markers_capped))[1]
+
+if (nrow(annot_markers_capped) > 0 && !is.na(gene_col_a)) {
+  bcell_hits <- annot_markers_capped %>%
+    filter(.data[[gene_col_a]] %in% bcell_genes) %>%
+    select(sample_id, treatment, timepoint, cluster,
+           gene = all_of(gene_col_a),
+           any_of(c(rank_col_a, lfc_col_a))) %>%
+    arrange(sample_id, cluster, .data[[gene_col_a]])
+
+  if (nrow(bcell_hits) > 0) {
+    cat("\n\n#### B-cell gene hits across cell-type comparisons\n\n")
+    print(kable(bcell_hits, caption = "B-cell / plasma-cell gene markers by annotated cell type"))
+  } else {
+    cat("\n\n_No canonical B-cell or plasma-cell genes significant in any cell-type comparison._\n\n")
+  }
+}
+
+# Per-sample tables
+if (nrow(annot_markers_capped) > 0) {
+  for (sid in unique(annot_markers_capped$sample_id)) {
+    cat("\n\n#### ", sid, "\n\n", sep = "")
+    print(kable(annot_markers_capped %>% filter(sample_id == sid),
+                caption = paste0("Top ", top_n_markers, " annotation markers per cell type - ", sid)))
+  }
+} else {
+  cat("\n\n_No annotation marker results found. Check that 07_Annotation/tables/ files exist._\n\n")
+}
+```
+
 # 6. Spatial DE (smiDE)
 
 ```{r spatial_de}
