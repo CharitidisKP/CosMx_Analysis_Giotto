@@ -33,6 +33,14 @@ table.kable-table { font-size:0.88em; }
 ```
 
 ```{r setup, include=FALSE}
+# Fix knitr notebook mode resetting getwd() between chunks.
+# Anchor root.dir to the Rmd's own parent (the CosMx project root).
+.rmd_file <- knitr::current_input(dir = TRUE)
+if (!is.null(.rmd_file) && nzchar(.rmd_file)) {
+  .rmd_root <- normalizePath(dirname(dirname(.rmd_file)), mustWork = FALSE)
+  knitr::opts_knit$set(root.dir = .rmd_root)
+}
+
 knitr::opts_chunk$set(echo=FALSE, message=FALSE, warning=FALSE)
 
 suppressPackageStartupMessages({
@@ -47,9 +55,26 @@ if (has_kex) library(kableExtra)
 # ---- path resolution -------------------------------------------------------
 resolve_project_dir <- function(p) {
   if (!is.na(p) && nzchar(p) && dir.exists(p)) return(normalizePath(p, mustWork=TRUE))
-  cands <- c(normalizePath("..", mustWork=FALSE), normalizePath("../..", mustWork=FALSE), getwd())
+  # Candidates in priority order:
+  #   1. Rmd's own parent (script is in Helper_Scripts/, project root is one up)
+  #   2. knitr root.dir (set above)
+  #   3. Standard relative paths from getwd()
+  rmd_parent <- tryCatch({
+    f <- knitr::current_input(dir=TRUE)
+    if (!is.null(f) && nzchar(f)) dirname(dirname(f)) else NA_character_
+  }, error=function(e) NA_character_)
+  cands <- unique(c(
+    rmd_parent,
+    normalizePath(knitr::opts_knit$get("root.dir") %||% ".", mustWork=FALSE),
+    normalizePath("..",   mustWork=FALSE),
+    normalizePath("../..", mustWork=FALSE),
+    getwd()
+  ))
+  cands <- cands[!is.na(cands)]
   hit   <- cands[file.exists(file.path(cands, "Parameters", "sample_sheet.csv"))]
-  if (!length(hit)) stop("Cannot resolve project_dir. Set COSMX_PROJECT_DIR.")
+  if (!length(hit)) stop(
+    "Cannot resolve project_dir. Pass params$project_dir or set COSMX_PROJECT_DIR.\n",
+    "  Tried: ", paste(cands, collapse=", "))
   normalizePath(hit[1], mustWork=TRUE)
 }
 
